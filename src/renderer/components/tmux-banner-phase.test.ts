@@ -8,7 +8,7 @@ vi.mock('../session/localSession', () => ({
   localSession: { api: { pty: { tmuxStatus: async () => ({ available: false }) } } }
 }))
 
-import { INSTALL_CAP_MS, pollOutcome } from './TmuxBanner'
+import { INSTALL_CAP_MS, pollOutcome, windowsPersistenceUnavailable } from './TmuxBanner'
 
 describe('pollOutcome', () => {
   it('stays installing while unavailable and under the cap', () => {
@@ -21,5 +21,39 @@ describe('pollOutcome', () => {
   })
   it('fails once the cap elapses without tmux', () => {
     expect(pollOutcome(false, INSTALL_CAP_MS)).toBe('failed')
+  })
+})
+
+describe('windowsPersistenceUnavailable', () => {
+  it('reports an explicitly unavailable Windows session host', () => {
+    expect(
+      windowsPersistenceUnavailable({
+        available: false,
+        sessionPersistenceAvailable: false,
+        installCommand: null,
+        installLabel: null,
+        platform: 'win32'
+      })
+    ).toBe(true)
+  })
+
+  it('keeps old cores and non-Windows platforms fail-open', () => {
+    expect(
+      windowsPersistenceUnavailable({
+        available: false,
+        installCommand: null,
+        installLabel: null,
+        platform: 'win32'
+      })
+    ).toBe(false)
+    expect(
+      windowsPersistenceUnavailable({
+        available: false,
+        sessionPersistenceAvailable: false,
+        installCommand: null,
+        installLabel: null,
+        platform: 'linux'
+      })
+    ).toBe(false)
   })
 })

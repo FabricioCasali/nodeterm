@@ -787,6 +787,9 @@ export const EMPTY_WORKSPACE: Workspace = {
 /** Wire shape of pty:tmux-status — behind the "tmux not found" banner. */
 export interface TmuxStatus {
   available: boolean
+  /** Whether this core can preserve local sessions across app restarts. Present on newer cores;
+   *  absent callers retain the old platform-specific banner behavior. */
+  sessionPersistenceAvailable?: boolean
   /** One-shot install command for a terminal node; null = no known installer (text-only banner). */
   installCommand: string | null
   /** Button caption for installCommand (e.g. "Install Homebrew + tmux" when brew must come first). */

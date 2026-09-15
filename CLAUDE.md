@@ -2307,19 +2307,18 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
   re-asks the same refusals. Server Edition needs no intercept (no menu; Chrome/Firefox hand ⌘0 to
   the page) and stubs the subscription.
 - **"Go to node" (`goToNode`)** — the one camera-travel path (notification click, sessions
-  sidebar, ⌘K jump, presence travel, minimap double-click, double-click focus). It frames the node
-  with `fitView({nodes:[{id}]})` **only when React Flow has MEASURED it**: `getFitViewNodes` filters
-  the fit set by `measured` (no `width`/`height` fallback in there), so an unmeasured node leaves the
-  set EMPTY, its bounds collapse to `{0,0,0,0}` and the camera lands on the canvas **ORIGIN** at max
-  zoom — empty canvas, node off-screen. That is the state every node is in for the first tick after
-  its project loads, which is why **cross-project** focus (the load and the focus happen in the same
-  tick, and measuring can lose the race — heavier canvas = more likely) used to land on nothing and
-  only work on a second try. `renderer/lib/nodeFocus.ts` computes the identical framing from the
-  node's PERSISTED size for that window (`nodeFitRect` resolves the group-parent chain →
-  `viewportForRect` → `setViewport`), and the measured check reads React Flow's **store**
-  (`getInternalNode`), not our node object — `measured` reaches our state one render later (via
-  `onNodesChange`), so our copy lies about nodes the store has long sized. Unknowable size ⇒ the
-  camera **stands still**; never fall back to a bare `fitView` there, that IS the origin jump.
+  sidebar, ⌘K jump, presence travel, minimap double-click, double-click focus). It resolves the
+  node's absolute rect (`nodeFitRect` walks the group-parent chain), asks `solveFitArea` for the
+  largest chrome-free screen rectangle, then `viewportForRectInArea` centres the node THERE — not
+  in the whole window underneath a pinned sidebar. Do not replace that last step with asymmetric
+  `fitView` padding: xyflow only enforces those insets when needed, so once `maxZoom` clamps a small
+  node it remains centred in the whole window rather than in the free rectangle (the Windows
+  sidebar-focus offset). The size comes from React Flow's OWN store when measured
+  (`getInternalNode` — our node copy receives `measured` one render later), or from the persisted
+  size during the first tick after a cross-project load. If the free-area solve fails, a measured
+  node may fall back to `fitView`; an unmeasured one uses the old flat `viewportForRect` fallback.
+  Unknowable size ⇒ the camera **stands still**; never call bare `fitView` for that node, because an
+  empty measured fit set collapses to `{0,0,0,0}` and teleports the camera to the canvas origin.
 - **Breadcrumb trail** (`renderer/lib/breadcrumbs.ts` — all the pure logic lives there) — every
   deliberate `goToNode` landing records a `NavStop` ({nodeId, at, note}) for the ACTIVE project, and
   **Cmd+[ / Cmd+]** (`canvas.goBack` / `canvas.goForward`, bound in `shared/keybindings.ts`) plus the
@@ -2741,7 +2740,16 @@ elevated) and runs `npm ci`. Its `--check-vs-build-tools` mode is the narrow exc
 `quality-windows`: it branches before the elevation refusal, runs only the VS C++ probe, and exits
 before the Node / Python / `npm ci` steps. Fixture injection additionally requires the explicit
 `NODETERM_BOOTSTRAP_TESTING=1` sentinel. `.github/workflows/win-package-smoke.yml` is a
-**workflow_dispatch-only** packaging smoke on windows-latest — build only, never publishes.
+**workflow_dispatch-only** packaging smoke on windows-latest — build only, never publishes. The
+Windows package has a dedicated `nodeterm-session-host.exe`, copied from the app executable by the
+`afterPack` hook before signing and launched with `ELECTRON_RUN_AS_NODE=1`; using `nodeterm.exe`
+itself would leave the application binary locked after the UI exits. `build/installer.nsh` preserves
+ordinary app-exit continuity but makes an accepted NSIS install/update an explicit session boundary:
+after the normal app-running confirmation it runs `taskkill /T /F` on the sidecar, verifies it is
+gone, and aborts rather than overwriting a live host. Cancelling at the confirmation leaves the
+host and its sessions untouched. The package smoke checks both the sidecar and `host.cjs` inside
+`app.asar`; checking only the installer filename previously let an unusable persistence backend
+ship.
 **Follow-ups, in order:** code signing, then Windows auto-update wiring (electron-updater NSIS leg
 + `latest.yml` on the nodeterm.dev feed — blocked on signing: an unsigned auto-update is a
 downgrade in trust), and the fork's PE-identity polish (electron-builder leaves `OriginalFilename`

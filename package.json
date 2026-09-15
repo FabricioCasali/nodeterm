@@ -37,6 +37,7 @@
   "build": {
     "appId": "com.nodeterm.app",
     "productName": "nodeterm",
+    "afterPack": "scripts/stage-session-host-executable.cjs",
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -134,6 +135,7 @@
     },
     "nsis": {
       "artifactName": "${productName}-Setup-${version}.${ext}",
+      "include": "build/installer.nsh",
       "oneClick": true,
       "perMachine": false
     },

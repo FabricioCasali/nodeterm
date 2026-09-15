@@ -1748,6 +1748,8 @@ export class PtyManager {
       : tmuxInstall(process.platform, (cmd) => findCommand(cmd, process.env, fs.existsSync))
     return {
       available,
+      sessionPersistenceAvailable:
+        available || (process.platform === 'win32' && sessionHostSupported()),
       installCommand: hint?.command ?? null,
       installLabel: hint?.label ?? null,
       platform: process.platform

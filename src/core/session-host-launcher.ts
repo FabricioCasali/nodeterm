@@ -52,6 +52,26 @@ export function resolveSessionHostScript(opts: {
   return null
 }
 
+export const WINDOWS_SESSION_HOST_EXECUTABLE = 'nodeterm-session-host.exe'
+
+/** A packaged Windows host must not reuse the app executable: that process intentionally survives
+ * app quit, and an in-use `nodeterm.exe` prevents NSIS from replacing the application. */
+export function resolveSessionHostExecutable(opts: {
+  appPath?: string | null
+  isPackaged: boolean
+  hostPlatform?: NodeJS.Platform
+  exists?: (p: string) => boolean
+}): string | null {
+  if ((opts.hostPlatform ?? process.platform) !== 'win32' || !opts.isPackaged) return process.execPath
+  if (!opts.appPath) return null
+  const candidate = path.join(path.dirname(opts.appPath), '..', WINDOWS_SESSION_HOST_EXECUTABLE)
+  try {
+    return (opts.exists ?? fs.existsSync)(candidate) ? candidate : null
+  } catch {
+    return null
+  }
+}
+
 /**
  * Spawn the session host, detached, unref'd, with no attached stdio — so it survives this
  * process exiting (`app.quit()` never touches it; `PtyManager.killAll()` explicitly does not
@@ -67,9 +87,9 @@ export function resolveSessionHostScript(opts: {
  * exactly like `pty.spawn` failures elsewhere in this codebase degrade to an error the renderer
  * can show rather than crashing the main process.
  */
-export function spawnSessionHost(scriptPath: string, userDataDir: string): void {
+export function spawnSessionHost(executablePath: string, scriptPath: string, userDataDir: string): void {
   try {
-    const child = spawn(process.execPath, [scriptPath, userDataDir], {
+    const child = spawn(executablePath, [scriptPath, userDataDir], {
       detached: true,
       stdio: 'ignore',
       windowsHide: true,

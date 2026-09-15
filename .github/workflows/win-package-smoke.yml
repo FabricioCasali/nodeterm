@@ -38,6 +38,13 @@ jobs:
       - name: Package (NSIS installer + zip, never published)
         run: npm run dist:win
 
+      - name: Verify packaged session host
+        shell: bash
+        run: |
+          test -f "dist/win-unpacked/nodeterm-session-host.exe" || { echo "::error::session-host executable missing"; exit 1; }
+          npx asar list "dist/win-unpacked/resources/app.asar" | grep -Fxq '/out/session-host/host.cjs' || { echo "::error::session-host bundle missing from app.asar"; exit 1; }
+          node scripts/smoke-packaged-session-host.cjs
+
       # The artifact names are the contract: a silent target/artifactName regression should
       # fail here, not on a release day.
       - name: Verify expected artifacts

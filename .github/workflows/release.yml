@@ -211,6 +211,13 @@ jobs:
       - name: Build Windows packages (NSIS installer + zip, unsigned)
         run: npm run dist:win
 
+      - name: Verify packaged session host
+        shell: bash
+        run: |
+          test -f "dist/win-unpacked/nodeterm-session-host.exe" || { echo "::error::session-host executable missing"; exit 1; }
+          npx asar list "dist/win-unpacked/resources/app.asar" | grep -Fxq '/out/session-host/host.cjs' || { echo "::error::session-host bundle missing from app.asar"; exit 1; }
+          node scripts/smoke-packaged-session-host.cjs
+
       # The artifact names are the contract (same check as win-package-smoke.yml): a silent
       # target/artifactName regression must fail here, before the upload step lies about it.
       - name: Verify expected artifacts

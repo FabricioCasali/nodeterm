@@ -12,18 +12,24 @@ import {
 import { SessionHostPty } from './session-host-pty'
 import type { ExecuteLaunchResult, SessionHostSpawnOptions } from '../session-host/protocol'
 import type { PreparedAgentLaunch } from './agent-launch'
+import { resolveSessionHostExecutable } from './session-host-launcher'
 
 let client: SessionHostClient | null = null
 
 function getClient(): SessionHostClient {
   if (!client) {
+    const corePlatform = platform()
     client = new SessionHostClient({
-      userDataDir: platform().userDataDir,
-      resourcesPath: platform().resourcesPath,
+      userDataDir: corePlatform.userDataDir,
+      executablePath: resolveSessionHostExecutable({
+        appPath: corePlatform.appPath,
+        isPackaged: corePlatform.isPackaged
+      }),
+      resourcesPath: corePlatform.resourcesPath,
       // The one that actually answers in a packaged build: `app.getAppPath()` is the asar, where
       // `build.files` already carries `out/session-host/host.cjs`. In dev it is the repo root, so
       // the same candidate covers both.
-      appPath: platform().appPath,
+      appPath: corePlatform.appPath,
       // Dev-mode fallback, mirroring `findTmux`'s own `process.cwd()` use: under `electron-vite
       // dev` the cwd is the repo root, which is where `npm run host:build` writes its bundle.
       repoRoot: process.cwd()

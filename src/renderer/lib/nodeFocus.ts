@@ -102,6 +102,23 @@ export function viewportForRect(
   )
 }
 
+/**
+ * Frame `rect` centred inside a specific screen-space area of the canvas wrapper. Unlike xyflow's
+ * asymmetric padding path, this remains centred when the node is small enough to hit maxZoom.
+ */
+export function viewportForRectInArea(rect: Rect, area: Rect): Viewport | null {
+  if (!(area.width > 0) || !(area.height > 0)) return null
+  const viewport = getViewportForBounds(
+    rect,
+    area.width,
+    area.height,
+    FIT_NODE_OPTIONS.minZoom,
+    FIT_NODE_OPTIONS.maxZoom,
+    0
+  )
+  return { ...viewport, x: viewport.x + area.x, y: viewport.y + area.y }
+}
+
 /** Whether React Flow already knows this node's on-screen size — i.e. whether `fitView` will
  *  actually include it in its fit set. Takes the minimal shape so it reads either a user-land
  *  node or React Flow's own internal node (the authoritative one; see Canvas.goToNode). */

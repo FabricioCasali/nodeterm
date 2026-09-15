@@ -10,7 +10,8 @@ import { localSession } from '../session/localSession'
 // version, which dismissed the banner optimistically and left the user guessing (second field
 // report) — keeps the banner up as a status strip: installing → ready | failed. tmuxStatus()
 // re-probes on every call (ensureTmux), so `available` flipping true is also what makes NEW
-// terminals tmux-backed without a restart. Hidden on win32 and on any fetch error (fail-open).
+// terminals tmux-backed without a restart. On Windows it instead reports a broken packaged
+// session host; there is no tmux install action there. Hidden on any fetch error (fail-open).
 
 export const INSTALL_POLL_MS = 3000
 export const INSTALL_CAP_MS = 5 * 60_000
@@ -22,6 +23,10 @@ export type InstallPhase = 'missing' | 'installing' | 'ready' | 'failed'
 export function pollOutcome(available: boolean, elapsedMs: number): InstallPhase {
   if (available) return 'ready'
   return elapsedMs >= INSTALL_CAP_MS ? 'failed' : 'installing'
+}
+
+export function windowsPersistenceUnavailable(status: TmuxStatus): boolean {
+  return status.platform === 'win32' && status.sessionPersistenceAvailable === false
 }
 
 export function TmuxBanner({ onInstall }: { onInstall: (command: string) => void }): JSX.Element | null {
@@ -73,13 +78,21 @@ export function TmuxBanner({ onInstall }: { onInstall: (command: string) => void
     return () => clearTimeout(t)
   }, [phase])
 
-  if (!status || dismissed || status.platform === 'win32') return null
-  if (status.available && phase === 'missing') return null
+  if (!status || dismissed) return null
+  const windowsMissing = windowsPersistenceUnavailable(status)
+  if (status.platform === 'win32' && !windowsMissing) return null
+  if (!windowsMissing && status.available && phase === 'missing') return null
 
-  const title =
-    phase === 'installing' ? 'Installing tmux' : phase === 'ready' ? 'tmux ready' : 'tmux not found'
-  const body =
-    phase === 'installing'
+  const title = windowsMissing
+    ? 'Session persistence unavailable'
+    : phase === 'installing'
+      ? 'Installing tmux'
+      : phase === 'ready'
+        ? 'tmux ready'
+        : 'tmux not found'
+  const body = windowsMissing
+    ? 'This Windows package is missing its session host. Terminals will end when nodeterm closes; reinstall or update nodeterm.'
+    : phase === 'installing'
       ? 'Running the install in a terminal node — watch it for progress (it may ask for your password).'
       : phase === 'ready'
         ? 'New terminals will survive restarts from now on. Terminals opened before the install stay on the plain shell.'
@@ -89,7 +102,8 @@ export function TmuxBanner({ onInstall }: { onInstall: (command: string) => void
             ? 'Terminals won’t survive restarts and the mobile app can’t attach until tmux is installed.'
             : 'Terminals won’t survive restarts and the mobile app can’t attach. Install tmux with your package manager (e.g. brew install tmux), then restart nodeterm.'
 
-  const showInstall = (phase === 'missing' || phase === 'failed') && !!status.installCommand
+  const showInstall =
+    !windowsMissing && (phase === 'missing' || phase === 'failed') && !!status.installCommand
   return (
     <div className="announce-banner announce-banner--warning">
       <span className="announce-banner__dot" />

@@ -42,6 +42,12 @@ The repo is split by Electron process boundary and the split is enforced, not ad
 `src/core/no-electron.test.ts` and `src/server/no-electron.test.ts` fail if `src/core` or
 `src/server` import `electron` or `../main/*`.
 
+The packaged Windows app intentionally contains two Electron executables: `nodeterm.exe` and
+`nodeterm-session-host.exe`. The latter runs `host.cjs` under `ELECTRON_RUN_AS_NODE=1` and survives
+ordinary app exits so terminals do too. Keep its `afterPack` staging before signing and keep the
+NSIS `taskkill /T /F` boundary: an accepted install/update ends those sessions; cancelling before
+that point must not.
+
 **Put new service logic in `src/core` behind `CorePlatform`, not inline in `src/main`.** That is the
 seam the Server Edition boots from; logic left in `src/main` silently does not exist there, and the
 boundary tests cannot tell you a feature is *missing*.
@@ -131,6 +137,13 @@ lane unaffected.
   nodes), and why a background project's pages stay mounted as hidden ghosts instead of
   unmounting. `display:none` is safe (measured: state, scroll and viewport size survive); a reorder
   or unmount reloads the user's page and loses their in-page state.
+
+- **Frame a node against the chrome-free rectangle, not asymmetric `fitView` padding.** React
+  Flow treats directional padding as minimum insets. Once `maxZoom` clamps, a small node can clear
+  a pinned sidebar while remaining centred in the whole window, visibly offset from the usable
+  canvas. The shared path is `solveFitArea` → `viewportForRectInArea`; keep measured and
+  just-deserialized nodes on it. A sizeless unmeasured node must leave the camera alone rather than
+  call `fitView` with an empty measured fit set, which jumps to the canvas origin.
 
 These are the ones that come up in review most often. Each exists because its absence caused a real
 bug.

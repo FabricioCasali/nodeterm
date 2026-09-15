@@ -352,10 +352,12 @@ Mirrors tmux's server lifetime rule as closely as a different OS allows:
 
 - **Spawned detached, unref'd, `stdio: 'ignore'`, `windowsHide: true`**
   (`session-host-launcher.ts`) — survives the spawning app process exiting entirely.
-- In a **packaged** app, `process.execPath` is the Electron binary itself (there is no separate
-  `node` executable to shell out to), so the child is spawned with `ELECTRON_RUN_AS_NODE=1`,
-  which tells Electron to run as a plain Node process with no Chromium/BrowserWindow machinery.
-  Harmless on a real Node binary too (dev mode): unrecognized, ignored.
+- In a **packaged Windows** app, `afterPack` copies the Electron binary to
+  `nodeterm-session-host.exe` before signing. The launcher uses that dedicated filename with
+  `ELECTRON_RUN_AS_NODE=1`, which runs `host.cjs` as plain Node with no Chromium/BrowserWindow.
+  It must not use `nodeterm.exe`: the host intentionally survives UI exit, and keeping the app
+  executable open prevents NSIS from replacing it. Development and non-Windows builds continue
+  to use `process.execPath`; real Node ignores the Electron-only environment variable.
 - A client disconnecting **detaches only** — the underlying `node-pty` process, and the
   `HostSession` holding it, are completely untouched. This is the entire point.
 - The app quitting detaches every client (the OS closes the sockets; the host's own `'close'`
@@ -364,6 +366,13 @@ Mirrors tmux's server lifetime rule as closely as a different OS allows:
   running. `PtyManager.killAll()` was NOT touched — it already never kills tmux sessions, and it
   correctly does nothing to session-host sessions either (no code path in it reaches this backend
   at all).
+- An accepted **NSIS install, update, or uninstall is an explicit session boundary**. The custom
+  app-running check first preserves electron-builder's confirmation flow; only after acceptance
+  (or when the app was already closed) does it run `taskkill /T /F` for
+  `nodeterm-session-host.exe`, ending the host and its shell/agent descendants. It verifies the
+  host is gone and aborts the installation if not. Cancelling at the app-running prompt reaches no
+  sidecar kill and leaves every session alive. Windows auto-update is currently disabled for the
+  unsigned beta, but the same NSIS rule already covers manual upgrades and the future updater.
 - The host exits when its **last session is killed** (`killSession`, or a session's own pty
   exiting naturally with nothing else left), plus a **30-second grace window**
   (`GRACE_EXIT_MS` in `host.ts`) so an app restart that briefly closes every node does not tear
@@ -488,7 +497,11 @@ The focused suites exercise behaviour rather than scan implementation source:
   correlated responses, failed-subscriber rollback, reconnect replay, and transport uncertainty;
   and
 - workspace/node-exec tests prove `terminalProfileId` never enters shared/exported/inbound state
-  and that the local overlay survives reload.
+  and that the local overlay survives reload;
+- packaging tests exercise the `afterPack` copy and pin the runtime/installer sidecar filename;
+  installer tests pin confirmation-before-kill, descendant teardown, and abort-on-failure; and
+- the Windows package smoke opens the actual output contract: the unpacked directory must contain
+  `nodeterm-session-host.exe`, while `app.asar` must contain `out/session-host/host.cjs`.
 
 The guards were mutation-checked by temporarily accepting a hostile profile, allowing a missing
 WSL distribution to fall back, and removing machine-local stripping; each corresponding focused

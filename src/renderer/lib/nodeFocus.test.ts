@@ -5,7 +5,8 @@ import {
   absolutePosition,
   isMeasured,
   nodeFitRect,
-  viewportForRect
+  viewportForRect,
+  viewportForRectInArea
 } from './nodeFocus'
 import type { FocusableNode } from './nodeFocus'
 
@@ -145,6 +146,27 @@ describe('viewportForRect', () => {
 
   it('refuses to compute against a container it cannot size', () => {
     expect(viewportForRect({ x: 0, y: 0, width: 600, height: 400 }, 0, 0)).toBeNull()
+  })
+})
+
+describe('viewportForRectInArea', () => {
+  it('centres a max-zoom-clamped node in the chrome-free area, not the whole window', () => {
+    const rect = { x: 4000, y: 3000, width: 600, height: 400 }
+    const area = { x: 326, y: 12, width: 942, height: 876 }
+    const vp = viewportForRectInArea(rect, area)!
+
+    expect(vp.zoom).toBe(FIT_NODE_OPTIONS.maxZoom)
+    expect(vp.x + 4300 * vp.zoom).toBeCloseTo(area.x + area.width / 2)
+    expect(vp.y + 3200 * vp.zoom).toBeCloseTo(area.y + area.height / 2)
+  })
+
+  it('refuses a chrome-free area with no usable size', () => {
+    expect(
+      viewportForRectInArea(
+        { x: 0, y: 0, width: 600, height: 400 },
+        { x: 0, y: 0, width: 0, height: 800 }
+      )
+    ).toBeNull()
   })
 })
 

@@ -238,6 +238,7 @@ export class SessionHostClient {
   constructor(
     private readonly deps: {
       userDataDir: string
+      executablePath?: string | null
       resourcesPath?: string | null
       appPath?: string | null
       repoRoot?: string | null
@@ -246,6 +247,7 @@ export class SessionHostClient {
 
   bundleAvailable(): boolean {
     return (
+      this.deps.executablePath !== null &&
       resolveSessionHostScript({
         resourcesPath: this.deps.resourcesPath,
         appPath: this.deps.appPath,
@@ -357,7 +359,10 @@ export class SessionHostClient {
           'or `npm run build` which now runs it too)'
       )
     }
-    spawnSessionHost(script, this.deps.userDataDir)
+    if (this.deps.executablePath === null) {
+      throw new Error('session-host executable not found')
+    }
+    spawnSessionHost(this.deps.executablePath ?? process.execPath, script, this.deps.userDataDir)
     let lastPublicationError: Error | null = null
     for (let attempt = 0; attempt < 30; attempt++) {
       await sleep(150)

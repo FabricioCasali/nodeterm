@@ -36,7 +36,7 @@ import {
   isSessionReady,
   subscribeSessionReady
 } from '../nodes/TerminalNode'
-import { solveFitPadding } from './fit-view'
+import { solveFitArea, solveFitPadding } from './fit-view'
 import { MacWheelGestureRouter, trackpadRoutingEnabled } from './wheel-gesture'
 import { isBrowserRuntime } from '@renderer/bridge/runtime'
 import { WheelZoomBurstLimiter, clampWheelZoomSpeed, nextWheelZoom } from './wheel-zoom'
@@ -260,6 +260,7 @@ import {
   isMeasured,
   nodeFitRect,
   viewportForRect,
+  viewportForRectInArea,
   type FocusableNode
 } from '../lib/nodeFocus'
 import { NODE_MAXIMIZE_MARGIN_PX, maximizeTargetRect } from '../lib/nodeMaximize'
@@ -6427,35 +6428,48 @@ export function Canvas() {
    * object: `measured` only reaches our state one render later, when `onNodesChange` applies
    * the dimensions change, so our copy says "unmeasured" for nodes the store has long sized.
    *
-   * The framing itself is solved against the CURRENT chrome layout, exactly like `fitAll`:
-   * a flat 20% ratio has to reserve enough slack for the dock/minimap on EVERY side, which
-   * is what kept a big node (a group frame most of all) further away than it needed to be.
-   * The free-rect solver reclaims the space the chrome does not actually occupy, so the node
-   * is framed tighter without sliding underneath anything. Falls back to the flat ratio when
-   * there is nothing sensible to solve — the same ratio the unmeasured branch uses.
+   * The framing itself is solved against the CURRENT chrome layout, exactly like `fitAll`, but
+   * uses the winning free rectangle directly. xyflow's asymmetric padding only guarantees the
+   * node clears that rectangle's edges: when maxZoom clamps, it leaves a small node centred in the
+   * whole window instead of the visible area beside a sidebar. Direct framing keeps both measured
+   * and just-loaded nodes centred in the space the user can actually see.
    */
   const frameNode = useCallback(
     (node: Node) => {
       const internal = getInternalNode(node.id)
-      if (isMeasured(internal)) {
-        const wrap = flowWrapRef.current
-        const size = internal?.measured
-        const solved =
-          wrap && size?.width && size?.height ? solveFitPadding(wrap, size.width, size.height) : null
+      const measured = isMeasured(internal)
+      const focusNode = measured
+        ? ({ ...node, measured: internal?.measured } as FocusableNode)
+        : (node as FocusableNode)
+      const rect = nodeFitRect(focusNode, nodesRef.current as FocusableNode[])
+      const wrapElement = flowWrapRef.current
+      const wrap = wrapElement?.getBoundingClientRect()
+      const area = rect && wrapElement ? solveFitArea(wrapElement, rect.width, rect.height) : null
+      const viewport =
+        rect && wrap && area
+          ? viewportForRectInArea(rect, {
+              x: area.left - wrap.left,
+              y: area.top - wrap.top,
+              width: area.right - area.left,
+              height: area.bottom - area.top
+            })
+          : null
+      if (viewport) {
+        void setViewport(viewport, { duration: 300 })
+        return
+      }
+      if (measured) {
         void fitView({
           nodes: [{ id: node.id }],
           duration: 300,
-          ...FIT_NODE_OPTIONS,
-          padding: solved ?? FIT_NODE_OPTIONS.padding
+          ...FIT_NODE_OPTIONS
         })
         return
       }
-      const rect = nodeFitRect(node as FocusableNode, nodesRef.current as FocusableNode[])
-      const wrap = flowWrapRef.current?.getBoundingClientRect()
-      const viewport = rect && wrap ? viewportForRect(rect, wrap.width, wrap.height) : null
+      const fallback = rect && wrap ? viewportForRect(rect, wrap.width, wrap.height) : null
       // Size unknowable / no pane yet: leave the camera where it is. Standing still beats
       // teleporting the user to the origin, which is the bug this branch exists for.
-      if (viewport) void setViewport(viewport, { duration: 300 })
+      if (fallback) void setViewport(fallback, { duration: 300 })
     },
     [fitView, setViewport, getInternalNode]
   )

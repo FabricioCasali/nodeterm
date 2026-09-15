@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import path from 'path'
-import { resolveSessionHostScript } from './session-host-launcher'
+import {
+  resolveSessionHostExecutable,
+  resolveSessionHostScript,
+  WINDOWS_SESSION_HOST_EXECUTABLE
+} from './session-host-launcher'
 
 const asar = path.join('/app', 'resources', 'app.asar')
 const resources = path.join('/app', 'resources')
@@ -58,5 +62,39 @@ describe('resolveSessionHostScript', () => {
       return p === inAsar
     }
     expect(resolveSessionHostScript({ resourcesPath: resources, appPath: asar, exists })).toBe(inAsar)
+  })
+})
+
+describe('resolveSessionHostExecutable', () => {
+  it('uses a dedicated executable beside the packaged Windows app', () => {
+    const executable = path.join('/app', WINDOWS_SESSION_HOST_EXECUTABLE)
+    expect(
+      resolveSessionHostExecutable({
+        appPath: asar,
+        isPackaged: true,
+        hostPlatform: 'win32',
+        exists: only(executable)
+      })
+    ).toBe(executable)
+  })
+
+  it('refuses a packaged Windows build without the dedicated executable', () => {
+    expect(
+      resolveSessionHostExecutable({
+        appPath: asar,
+        isPackaged: true,
+        hostPlatform: 'win32',
+        exists: () => false
+      })
+    ).toBeNull()
+  })
+
+  it('uses the current executable on other platforms and in development', () => {
+    expect(
+      resolveSessionHostExecutable({ isPackaged: false, hostPlatform: 'win32' })
+    ).toBe(process.execPath)
+    expect(
+      resolveSessionHostExecutable({ isPackaged: true, hostPlatform: 'darwin' })
+    ).toBe(process.execPath)
   })
 })

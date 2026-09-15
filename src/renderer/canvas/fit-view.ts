@@ -6,8 +6,10 @@
  * that never reaches the offending panel (narrow content paying for a bottom-RIGHT minimap).
  *
  * Instead every visible overlay becomes an obstacle rect, and we pick the free rectangle that lets
- * the content — at its own aspect ratio — reach the highest zoom. xyflow's directional padding is
- * exactly "fit inside the viewport minus these insets", so the winning rect maps straight onto it.
+ * the content — at its own aspect ratio — reach the highest zoom. Fit-all maps that rectangle to
+ * xyflow's directional padding; single-node focus uses the rectangle itself, because directional
+ * padding only guarantees containment once maxZoom clamps and does not centre inside asymmetric
+ * free space.
  *
  * Kept DOM-light and free of React so the geometry can be unit-tested on its own.
  */
@@ -129,6 +131,37 @@ export type FitPadding = {
   bottom: `${number}px`
 }
 
+const fitArea = (
+  outer: FitRect,
+  contentW: number,
+  contentH: number,
+  root?: ParentNode
+): FitRect | null => {
+  const viewport: FitRect = {
+    left: outer.left + FIT_VIEW_GAP,
+    top: outer.top + FIT_VIEW_GAP,
+    right: outer.right - FIT_VIEW_GAP,
+    bottom: outer.bottom - FIT_VIEW_GAP
+  }
+  if (width(viewport) < 1 || height(viewport) < 1) return null
+  return largestFreeRect(viewport, chromeObstacles(viewport, root), contentW, contentH)
+}
+
+/** The current chrome-free screen rectangle selected for content of this shape. */
+export function solveFitArea(
+  wrap: HTMLElement,
+  contentW: number,
+  contentH: number
+): FitRect | null {
+  if (contentW <= 0 || contentH <= 0) return null
+  const v = wrap.getBoundingClientRect()
+  return fitArea(
+    { left: v.left, top: v.top, right: v.right, bottom: v.bottom },
+    contentW,
+    contentH
+  )
+}
+
 /** Express a chosen free rect as the directional insets `fitView` expects, relative to `outer`. */
 export function rectToPadding(outer: FitRect, rect: FitRect): FitPadding {
   return {
@@ -151,13 +184,6 @@ export function solveFitPadding(
   if (contentW <= 0 || contentH <= 0) return null
   const v = wrap.getBoundingClientRect()
   const outer: FitRect = { left: v.left, top: v.top, right: v.right, bottom: v.bottom }
-  const viewport: FitRect = {
-    left: outer.left + FIT_VIEW_GAP,
-    top: outer.top + FIT_VIEW_GAP,
-    right: outer.right - FIT_VIEW_GAP,
-    bottom: outer.bottom - FIT_VIEW_GAP
-  }
-  if (width(viewport) < 1 || height(viewport) < 1) return null
-  const rect = largestFreeRect(viewport, chromeObstacles(viewport), contentW, contentH)
+  const rect = fitArea(outer, contentW, contentH)
   return rect ? rectToPadding(outer, rect) : null
 }
