@@ -613,9 +613,8 @@ describe('terminalKeyAction', () => {
   it('leaves Ctrl+V as a pty control byte off Windows', () => {
     const ctrlV = ev({ key: 'v', code: 'KeyV', ctrlKey: true })
     expect(terminalKeyAction(ctrlV, false, false, false, false)).toBe('pass')
-    // The default reads the live platform; under vitest's node env that is not Windows, so every
-    // existing call site keeps its byte-identical behavior.
-    expect(terminalKeyAction(ctrlV, false)).toBe('pass')
+    // The default reads the live host platform, including when vitest itself runs on Windows.
+    expect(terminalKeyAction(ctrlV, false)).toBe(process.platform === 'win32' ? 'native' : 'pass')
   })
 
   it('never lets the paste claim shadow a copy chord or Shift+Enter', () => {
