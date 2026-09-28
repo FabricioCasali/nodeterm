@@ -1,3 +1,4 @@
+import { subagentReplay } from './subagent-replay'
 import fs from 'fs'
 import path from 'path'
 import { writeFileAtomic } from './fs-atomic'
@@ -38,6 +39,10 @@ export const EXPIRE_MS = 6 * 60 * 60_000
 export const WRITE_DEBOUNCE_MS = 300
 
 export interface MirrorEntry {
+  /** Tickets introduced concurrently with a picker, retained until reply or explicit reset. */
+  concurrentApprovalIds?: string[]
+  /** Live question identity, independent of the short-lived display stash. */
+  pendingQuestion?: { sessionId: string; toolUseId: string }
   /** working/waiting/blocked/done; undefined = idle/unknown (e.g. after a session reset). */
   state?: AgentState
   agentId?: AgentId
@@ -146,7 +151,7 @@ export interface MirrorEntry {
    * unmessageable forever: the boundary left it unverified and only a turn could re-verify it.
    * Runtime-only (not in `buildFile`'s allowlist); cleared by every state commit.
    */
-  sessionStarted?: true
+  sessionStarted?: { sessionId: string; agentId: NormalizedAgentEvent['agentId']; at: number }
 }
 
 /** This host's Server-Edition install metadata (spec: server-update). Written by the installer
@@ -177,6 +182,44 @@ export interface MirrorSettings {
   autoSupported?: boolean
   /** Managed accounts usable on THIS host; dirs are absolute on that host. */
   claudeAccounts?: { id: string; dir: string }[]
+  /**
+   * Which values THIS host's `codex` accepts for `--ask-for-approval`, read from its own `--help`.
+   * Absent = not probed / not knowable for this host, which means "use `on-request` and `never`
+   * only" — the two values every codex from 0.146.0 to 0.154.0 takes.
+   *
+   * A reader must not emit a value that is not in this list. `untrusted` was removed in codex
+   * 0.149.0 and clap EXITS on an unknown value, so a phone that launches Manual-mode Codex from a
+   * hardcoded table gets a dead pane with the CLI's usage error in it (issue #785). It is a
+   * per-agent, per-host fact for the same reason `autoSupported` is: it answers for *codex* on
+   * *this* host and generalizes to neither another agent nor another machine.
+   */
+  codexApprovalValues?: string[]
+  /**
+   * The user's custom agents (Settings → Agents), reduced to what a phone needs to chat with one:
+   * which builtin harness it inherits (the chat capability follows `baseAgent`) and which binary
+   * names its pane runs as (the pane-owner check before a send). Built ONLY by
+   * `mirrorCustomAgents` (`core/mirror-custom-agents.ts`) — never the raw `launchCmd`/`args`/`env`,
+   * which routinely carry API keys and proxy URLs. Absent on old files ⇒ a reader refuses every
+   * custom node, exactly as before this field existed.
+   */
+  customAgents?: MirrorCustomAgent[]
+}
+
+/** One custom agent as the mirror advertises it (see MirrorSettings.customAgents). */
+export interface MirrorCustomAgent {
+  /** `custom:<uuid>` — the node's `agentId`. */
+  id: string
+  label: string
+  /** The builtin harness it inherits capabilities from; absent for a baseless custom agent. */
+  baseAgent?: string
+  /**
+   * Plain binary basenames the pane-owner predicate would accept — `binariesFor(id, customAgents)`,
+   * published only when every name matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` (enforced by the
+   * builder). EMPTY when the launch command cannot be named honestly (e.g. `bash -lc …`) or the
+   * derived name is outside that alphabet (a URL, credential, quoted value or `${env:…}` template);
+   * a reader must then refuse, never fall back to a guess.
+   */
+  binaries: string[]
 }
 
 export interface MirrorFile {
@@ -436,12 +479,23 @@ export function reduceEntry(
   return reduceEffectiveEntry(prev, resolveGrokStopCancelled(ev), now)
 }
 
+function uncorrelatedStartIdle(prev: MirrorEntry | undefined, ev: NormalizedAgentEvent, now: number): boolean {
+  const started = prev?.sessionStarted
+  return !!started && ev.kind === 'state' && !!ev.idle &&
+    (ev.sessionId !== started.sessionId || ev.agentId !== started.agentId ||
+     prev.sessionId !== started.sessionId || now < started.at)
+}
+
 function reduceEffectiveEntry(
   prev: MirrorEntry | undefined,
   ev: NormalizedAgentEvent,
   now: number
 ): MirrorEntry {
   const next: MirrorEntry = prev ? { ...prev } : { updatedAt: now }
+  // Ignore foreign idle proof before generic identity capture can overwrite the session.
+  const started = prev?.sessionStarted
+  if (uncorrelatedStartIdle(prev, ev, now)) return next
+
   /**
    * Commit a state onto `next` — and everything that must move WITH it. One function rather than
    * the same four lines at each branch, because the alternative was measured: of the three branches
@@ -479,6 +533,39 @@ function reduceEffectiveEntry(
     // boot", and gate 2 will read it as the former.
     delete next.restored
   }
+  // Unrelated tool hooks (including untagged child hooks) are not answers. Keep both
+  // the state and its original evidence/identity until a correlated result or explicit reset.
+  const resetApprovals = (ev.kind === 'session' && ev.sessionPhase === 'start') ||
+    (ev.sessionId === prev?.sessionId && (ev.kind === 'session' || ev.newTurn || ev.interrupted))
+  if (resetApprovals) delete next.concurrentApprovalIds
+  else {
+    if (ev.pendingId && ev.state === 'blocked' && ev.askKind === 'approval' &&
+        (prev?.pendingQuestion || prev?.concurrentApprovalIds?.length)) {
+      next.concurrentApprovalIds = [...new Set([...(prev?.concurrentApprovalIds ?? []), ev.pendingId])]
+    }
+    if (ev.pendingId && ev.state === 'working' && next.concurrentApprovalIds) {
+      next.concurrentApprovalIds = next.concurrentApprovalIds.filter(id => id !== ev.pendingId)
+      if (!next.concurrentApprovalIds.length) delete next.concurrentApprovalIds
+    }
+  }
+  const ask = prev?.pendingQuestion
+  if (ask) {
+    const sameSession = ev.sessionId === ask.sessionId
+    const reset = (ev.kind === 'session' && ev.sessionPhase === 'start') ||
+      (sameSession && (ev.kind === 'session' || ev.newTurn || ev.interrupted))
+    const answered = sameSession && ev.answeredQuestionId === ask.toolUseId
+    if (!reset && !answered) return next
+    delete next.pendingQuestion
+  }
+  if (ev.questionId && ev.sessionId) {
+    next.pendingQuestion = { sessionId: ev.sessionId, toolUseId: ev.questionId }
+  }
+  if (next.concurrentApprovalIds?.length && !next.pendingQuestion) {
+    // A new picker is independent of outstanding child permissions. Other state events
+    // hold blocked attention; lifecycle events must not refresh that state's evidence.
+    if (ev.kind === 'state') commitState('blocked', !!ev.verified)
+    return next
+  }
   // Identity is captured off ANY event (mirrors the renderer's per-event setSessionId +
   // agentId threading). agentId is always present on a NormalizedAgentEvent.
   if (ev.agentId) next.agentId = ev.agentId
@@ -500,7 +587,7 @@ function reduceEffectiveEntry(
     const idleAfterSessionStart =
       ev.idle === true &&
       ev.verified === true &&
-      prev?.sessionStarted === true &&
+      !!started &&
       prev.state === undefined
     if (ev.idle && prev?.state !== 'working' && !idleAfterSessionStart) return next
     // An unanswered Codex `request_user_input`: the ask arrives as waiting+awaitingInput and the
@@ -544,7 +631,9 @@ function reduceEffectiveEntry(
     next.awaitingInput = undefined
     // The boundary proves nothing about a state (and leaves `verifiedAt` alone), but a VERIFIED
     // start arms the idle rescue above.
-    if (ev.sessionPhase === 'start' && ev.verified === true) next.sessionStarted = true
+    if (ev.sessionPhase === 'start' && ev.verified === true && ev.sessionId) {
+      next.sessionStarted = { sessionId: ev.sessionId, agentId: ev.agentId, at: now }
+    }
   }
   // subagent-start / subagent-end / recurring: identity captured above, main state untouched.
   return next
@@ -1170,6 +1259,22 @@ function pushInboxEvent(e: Omit<InboxEvent, 'id'>): void {
  * event — never seen, or aged off the capped feed — is NOT relevant either (returns false), so a
  * held push whose event the mirror no longer tracks is dropped rather than sent late. Pure read.
  */
+/**
+ * The hook-reply tickets the mirror still considers open for ONE node: its unresolved approval
+ * cards' `pendingId`s plus the approvals held concurrently with a picker. The phone's
+ * `agent.answer` uses it to bind a ticket to the node it names (a pendingId from another node, or
+ * one already answered, is refused). Question/plan holds are not here — their pendingId is
+ * stripped from the inbox card — so those bind through the renderer's `held` instead. Pure read.
+ */
+export function pendingTicketsFor(nodeId: string): string[] {
+  const out = new Set<string>()
+  for (const e of inboxEvents) {
+    if (e.nodeId === nodeId && !e.resolved && e.kind === 'approval' && e.pendingId) out.add(e.pendingId)
+  }
+  for (const id of state.get(nodeId)?.concurrentApprovalIds ?? []) out.add(id)
+  return [...out]
+}
+
 export function isEventUnresolved(nodeId: string, eventId: string): boolean {
   for (const e of inboxEvents) {
     if (e.id === eventId && e.nodeId === nodeId) return !e.resolved
@@ -1177,10 +1282,11 @@ export function isEventUnresolved(nodeId: string, eventId: string): boolean {
   return false
 }
 
-/** Mark a node's unresolved approval/question events resolved (it left blocked/waiting). */
-function resolveUnresolvedFor(nodeId: string): void {
+/** Settle older attention cards, optionally retaining independent child approval tickets. */
+function resolveUnresolvedFor(nodeId: string, keepApprovalIds: readonly string[] = []): void {
   for (const e of inboxEvents) {
-    if (e.nodeId === nodeId && !e.resolved && (e.kind === 'approval' || e.kind === 'question')) {
+    if (e.nodeId === nodeId && !e.resolved && (e.kind === 'approval' || e.kind === 'question') &&
+        !(e.kind === 'approval' && e.pendingId && keepApprovalIds.includes(e.pendingId))) {
       e.resolved = true
     }
   }
@@ -1411,21 +1517,68 @@ interface NeedsYouClassification {
  */
 export function recordAgentEvent(rawEvent: NormalizedAgentEvent): NormalizedAgentEvent {
   if (!rawEvent?.nodeId) return rawEvent
+  subagentReplay.record(rawEvent)
   const ev = resolveGrokStopCancelled(rawEvent)
   const nodeId = ev.nodeId
   const now = Date.now()
   const prev = state.get(nodeId)
   const prevState = prev?.state
+  if (uncorrelatedStartIdle(prev, ev, now)) {
+    // Broadcast no state proof either: a renderer must not show this stale done as fresh.
+    return { nodeId, kind: 'state', agentId: prev?.sessionStarted?.agentId ?? ev.agentId, sessionId: prev?.sessionId }
+  }
   const next = reduceEffectiveEntry(prev, ev, now)
   state.set(nodeId, next)
+  const questionAnswered = !!prev?.pendingQuestion && !next.pendingQuestion &&
+    ev.sessionId === prev.pendingQuestion.sessionId && ev.answeredQuestionId === prev.pendingQuestion.toolUseId
+  if (questionAnswered || (ev.pendingId && ev.state === 'working')) {
+    for (const card of inboxEvents) {
+      if (card.nodeId !== nodeId) continue
+      if ((questionAnswered && card.kind === 'question') ||
+          (ev.pendingId && card.kind === 'approval' && card.pendingId === ev.pendingId)) card.resolved = true
+    }
+  }
+  if (next.concurrentApprovalIds?.length && !next.pendingQuestion) {
+    if (ev.kind !== 'state' && ev.kind !== 'session') {
+      scheduleWrite()
+      return ev
+    }
+    if (ev.pendingId && ev.state === 'blocked' && ev.askKind === 'approval') {
+      produceInboxFromState(nodeId, ev, prevState, 'blocked', now, true)
+    }
+    const pendingId = next.concurrentApprovalIds[next.concurrentApprovalIds.length - 1]
+    const card = inboxEvents.find(e => e.nodeId === nodeId && e.pendingId === pendingId && !e.resolved)
+    if (questionAnswered || (ev.pendingId && ev.state === 'working')) {
+      fireNodeStateChange({ nodeId, agentId: ev.agentId, sessionId: next.sessionId, ts: now,
+        event: 'update', state: 'needsYou', kind: 'approval', pendingId, message: card?.title ?? 'Needs approval' })
+    }
+    scheduleWrite()
+    return { ...ev, kind: 'state', state: 'blocked', sessionId: next.sessionId, askKind: 'approval', pendingId }
+  }
   // reduceEntry held an unanswered `request_user_input` through its turn-end `done` — rewrite
   // the broadcast to what the reducer decided, so every consumer (canvas store, notch, phone)
   // agrees the node is still waiting rather than each re-deriving it from the raw done.
   let out = ev
+  if (next.pendingQuestion && prev?.pendingQuestion && next.state) {
+    if (ev.kind !== 'state' && ev.kind !== 'session') return ev
+    // A concurrent permission is independent of the held picker. Publish its ticket/card,
+    // but keep the parent's waiting badge and question correlation until its own answer.
+    if (ev.pendingId && ev.state === 'blocked' && ev.askKind === 'approval') {
+      produceInboxFromState(nodeId, ev, prevState, 'blocked', now, true)
+      scheduleWrite()
+      return { ...ev, state: next.state, sessionId: next.sessionId }
+    }
+    scheduleWrite()
+    // Broadcast the same held state to Desktop, Server, canvas/board and the phone.
+    return { ...ev, kind: 'state', state: next.state, sessionId: next.sessionId,
+      verified: ev.verified, newTurn: undefined, interrupted: undefined,
+      askKind: 'question', pendingId: undefined }
+  }
   if (ev.kind === 'state' && ev.state === 'done' && next.awaitingInput && next.state === 'waiting') {
     out = { ...ev, state: 'waiting' }
   }
-  const classification = produceInboxFromState(nodeId, out, prevState, next.state, now)
+  const classification = produceInboxFromState(nodeId, out, prevState, next.state, now, false,
+    next.concurrentApprovalIds)
   scheduleWrite()
   if (!classification) return out
   // Enrich the broadcast event from the SAME classification the inbox used. A question drops
@@ -1444,16 +1597,18 @@ function produceInboxFromState(
   ev: NormalizedAgentEvent,
   prevState: AgentState | undefined,
   nextState: AgentState | undefined,
-  now: number
+  now: number,
+  concurrentApproval = false,
+  keepApprovalIds: readonly string[] = []
 ): NeedsYouClassification | undefined {
   // Clear any stashed question options on a new turn or session boundary — a stale option set must
   // never attach to a later, unrelated question. (State-leave clearing is handled below.)
   if (ev.kind === 'session' || (ev.kind === 'state' && ev.state === 'working' && ev.newTurn)) {
     pendingQuestions.delete(nodeId)
   }
-  // Leaving blocked/waiting (any newer, different state — incl. a session reset to idle) resolves
+  // Leaving needs-you (including a session reset to idle) resolves
   // that node's pending approval/question cards; they move to the phone's archive.
-  if ((prevState === 'blocked' || prevState === 'waiting') && nextState !== prevState) {
+  if ((prevState === 'blocked' || prevState === 'waiting') && nextState !== 'blocked' && nextState !== 'waiting') {
     resolveUnresolvedFor(nodeId)
     pendingQuestions.delete(nodeId)
   }
@@ -1491,7 +1646,7 @@ function produceInboxFromState(
     const stash = freshStash(nodeId, now)
     // Only a real AskUserQuestion picker (options present) forces the QUESTION classification — an
     // approval-only stash (a PermissionRequest summary) must stay an approval.
-    const options = stash?.options
+    const options = concurrentApproval ? undefined : stash?.options
     // multiSelect rides only a real question (options present) — an approval-only stash never sets it.
     const multiSelect = options ? stash?.multiSelect : undefined
     const hasQuestion = !!options
@@ -1531,7 +1686,10 @@ function produceInboxFromState(
     // stops muzzling — and the new ask fires. A different-title unresolved event never suppresses:
     // that is a genuinely NEW ask. Always return the classification below so the broadcast
     // enrichment stays consistent across the re-assert.
-    const dup = newestUnresolved(inboxEvents, nodeId)
+    const dup = concurrentApproval
+      ? inboxEvents.find(e => e.nodeId === nodeId && e.kind === 'approval' && !e.resolved && e.pendingId === ev.pendingId)
+      : newestUnresolved(inboxEvents.filter(e =>
+        !(e.kind === 'approval' && e.pendingId && keepApprovalIds.includes(e.pendingId))), nodeId)
     const sameTitle = !!dup && dup.title === title
     const freshDup = sameTitle && dup ? now - dup.ts < QUESTION_DEDUP_WINDOW_MS : false
     const newAsk = !freshDup
@@ -1554,11 +1712,10 @@ function produceInboxFromState(
       })
     }
     if (newAsk) {
-      // A NEW ask settles every older one for this node: the CLI blocks on an ask, so it cannot be
-      // asking something else unless the previous one was answered. Without this the Inbox kept a
-      // card per ask and the user had to dismiss answered questions by hand — the state never
-      // leaves `blocked` between them, so the transition-based resolve never ran.
-      resolveUnresolvedFor(nodeId)
+      // A new parent ask settles older parent asks, but child approval tickets are independent.
+      // Preserve those tickets while the parent proceeds to another picker; settle older questions
+      // even when the state never leaves needs-you between them.
+      if (!concurrentApproval) resolveUnresolvedFor(nodeId, keepApprovalIds)
       pushInboxEvent({
         ...baseEvent,
         kind,
@@ -1635,6 +1792,14 @@ function clearActivity(nodeId: string, now: number): void {
   inboxNodes.set(nodeId, { contextPercent: n.contextPercent, updatedAt: now })
 }
 
+/** Child hooks must not replace the parent transcript association while a picker is open. */
+export function ignoreQuestionHook(nodeId: string, payload: Record<string, unknown>): boolean {
+  if (payload.agent_id) return true
+  const ask = state.get(nodeId)?.pendingQuestion
+  return !!ask && payload.hook_event_name !== 'SessionStart' &&
+    typeof payload.session_id === 'string' && payload.session_id !== ask.sessionId
+}
+
 /**
  * Fold a RAW hook tool event into the per-node "what it's doing now" line (spec:
  * mobile-usage-inbox). Called from the shells' `setRawListener` for claude events. PreToolUse sets
@@ -1642,7 +1807,8 @@ function clearActivity(nodeId: string, now: number): void {
  * the line actually changes (raw POSTs are bursty).
  */
 export function recordRawToolEvent(nodeId: string, payload: Record<string, unknown>): void {
-  if (!nodeId) return
+  // Approval summaries must reach the phone even when the child transcript is excluded.
+  if (!nodeId || (payload.hook_event_name !== 'PermissionRequest' && ignoreQuestionHook(nodeId, payload))) return
   const hook = typeof payload.hook_event_name === 'string' ? payload.hook_event_name : ''
   const now = Date.now()
   if (hook === 'PreToolUse') {
@@ -1734,6 +1900,7 @@ export function recordContextUsage(nodeId: string, percent: number): void {
  * fires ONE end edge when the node was mid-turn (see below).
  */
 export function clearNode(nodeId: string): void {
+  subagentReplay.clearParent(nodeId)
   // Read BEFORE the delete — the end edge below is decided on the state the node died holding.
   const prev = state.get(nodeId)
   let changed = state.delete(nodeId)
@@ -1828,6 +1995,16 @@ export function setNodeHibernated(nodeId: string, on: boolean): void {
 /** A node's published session name (see MirrorEntry.name), or undefined. */
 export function nodeSessionName(nodeId: string): string | undefined {
   return state.get(nodeId)?.name
+}
+
+/** Shared Desktop/Server transcript rescue. An unrelated result is never an answer. */
+export function recordQuestionResult(
+  nodeId: string, sessionId: string, toolUseId: string
+): NormalizedAgentEvent | undefined {
+  const ask = state.get(nodeId)?.pendingQuestion
+  if (!ask || ask.sessionId !== sessionId || ask.toolUseId !== toolUseId) return
+  return recordAgentEvent({ nodeId, agentId: 'claude', sessionId, kind: 'state',
+    state: 'working', answeredQuestionId: toolUseId })
 }
 
 /** A node's current main state, or undefined when unknown. Read-only peek for the shells. */
@@ -2005,6 +2182,7 @@ export async function flush(): Promise<void> {
 
 /** Reset all module state (in-memory map + config + listeners + inbox). Test-only. */
 export function _resetForTest(): void {
+  subagentReplay.clear()
   state.clear()
   if (sweepTimer) clearInterval(sweepTimer)
   sweepTimer = null

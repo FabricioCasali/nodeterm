@@ -141,7 +141,8 @@ export function buildAntigravityBundle(
       command: commandFor(eventName(e)),
       timeout: ANTIGRAVITY_HOOK_TIMEOUT
     }
-    bundle[eventName(e)] = typeof e === 'string' ? [handler] : [{ matcher: e.matcher, hooks: [handler] }]
+    bundle[eventName(e)] =
+      typeof e === 'string' || e.matcher === undefined ? [handler] : [{ matcher: e.matcher, hooks: [handler] }]
   }
   return bundle
 }

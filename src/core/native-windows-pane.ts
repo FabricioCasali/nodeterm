@@ -1,7 +1,8 @@
+import type { TextDeliveryResult } from '../shared/text-delivery'
 import { randomUUID } from 'crypto'
 import { TerminalEmulator } from '../session-host/terminal-emulator'
 import { readWindowsConsoleOwner, sameNativeProcess } from '../session-host/windows-pane-owner'
-import { sendKeysWrites } from '../session-host/send-keys-delivery'
+import { sendTextWhenSettled } from './settled-text'
 import type { PaneOwner } from '../shared/agents/pane-owner-predicate'
 import { sanitizePasteText } from './paste-injection'
 import { pasteThenSubmitWhenSettled, type SettleOptions } from './settled-submit'
@@ -70,8 +71,10 @@ export class NativeWindowsPane {
         } catch { return false }
       },
       submit: async () => {
-        if (!this.alive) return
-        try { this.proc.write('\r') } catch { /* paste landed; receipt reports stalled */ }
+        try {
+          if (!sameNativeProcess(expected, await this.owner()) || !(await this.pasteAware()) || !this.alive) return
+          this.proc.write('\r')
+        } catch { /* paste landed; receipt reports stalled */ }
       }
     }, this.settle)
   }
@@ -84,18 +87,13 @@ export class NativeWindowsPane {
    * the pane. Without it those callers fell through to the session-host backend, which has no
    * session for a direct PTY, and failed every time.
    */
-  async sendText(text: string, enter: boolean): Promise<boolean> {
-    if (!this.alive) return false
-    // The write plan is the session host's `sendKeysWrites` — one rule for both Windows backends,
-    // so the direct PTY cannot drift from the host on where the Enter goes or what gets stripped.
-    const bracketed = sanitizePasteText(text) ? await this.pasteAware() : false
-    if (!this.alive) return false
-    try {
-      for (const chunk of sendKeysWrites(text, enter, bracketed)) this.proc.write(chunk)
-      return true
-    } catch {
-      return false
-    }
+  async sendText(text: string, enter: boolean): Promise<TextDeliveryResult> {
+    return sendTextWhenSettled(this, text, enter, {
+      current: () => this.alive,
+      bracketed: () => this.pasteAware(),
+      capture: () => this.capture(false),
+      write: (chunk) => this.proc.write(chunk)
+    }, this.settle)
   }
 
   dispose(): void {
