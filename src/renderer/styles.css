@@ -4223,7 +4223,11 @@ body,
 
 .welcome__recent-name {
   font-size: 13px;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .welcome__recent-path {
@@ -8366,14 +8370,13 @@ button.group-node__setup:disabled {
   margin-left: 0;
 }
 
-/* Popover-footer action (issue #420): opens the system-scoped `claude /login` terminal. A quiet
-   full-width row, styled with the same tint/accent tokens as `.usage-account__use` so it reads
-   in both themes. */
+/* "Switch Claude account…" (issue #420): opens the system-scoped `claude /login` terminal. A
+   quiet full-width row, styled with the same tint/accent tokens as `.usage-account__use` so it
+   reads in both themes. It sits INSIDE the Claude / System block it acts on (issue #912) — as a
+   popover footer it read as the action of whichever provider happened to be listed last. */
 .usage-popover__switch {
   display: block;
   width: 100%;
-  /* Stays put below the scrolling account list (issue #503). */
-  flex: none;
   margin-top: 10px;
   padding: 5px 8px;
   border: none;
@@ -8670,6 +8673,9 @@ button.group-node__setup:disabled {
   color: rgba(var(--tint-rgb), 0.65);
   overflow-wrap: anywhere;
 }
+/* A personal organization's name is derived from the email printed right above it
+   ("<email>'s Organization"): kept (it is the real name), but quieter, since it repeats (#912). */
+.usage-account__organization--derived { color: rgba(var(--tint-rgb), 0.45); }
 
 .seg-pill {
   display: inline-flex;
@@ -9289,7 +9295,7 @@ button.group-node__setup:disabled {
 }
 .ss-group__chev:hover { background: rgba(var(--tint-rgb), 0.12); color: var(--text); }
 .ss-group__dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
-.ss-group__name { font-size: 12px; font-weight: 600; color: var(--text); }
+.ss-group__name { flex: 0 1 auto; min-width: 0; font-size: 12px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ss-group.is-active .ss-group__name { color: var(--accent); }
 .ss-group__branch { font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ss-group__count { font-size: 10px; color: var(--muted); }
@@ -14838,6 +14844,10 @@ body.focus-mode .dock:hover {
   text-align: center;
 }
 
+.node-icon svg {
+  display: block;
+}
+
 .node-icon img {
   width: 100%;
   height: 100%;
@@ -14920,6 +14930,16 @@ body.focus-mode .dock:hover {
 }
 .node-icon-dialog__swatch.is-current {
   background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* A glyph swatch (issue #291) draws an svg in `currentColor`, so it needs the text color a
+   button does not inherit, and centering the emoji swatches get from their line box. */
+.node-icon-dialog__swatch--glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text);
+  padding: 5px 0;
 }
 
 .node-icon-dialog__row {

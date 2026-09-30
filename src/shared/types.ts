@@ -1467,8 +1467,18 @@ export interface DialogApi {
   selectFile(): Promise<string | null>
 }
 
+export interface ClipboardWriteOptions {
+  /**
+   * Never raise a failure toast. For writes the user did not explicitly ask for as a copy — today
+   * only copy-on-select (issue #759), which writes on every completed drag, where a toast per drag
+   * would be unusable. The write still tries every route; only the banner is withheld. The desktop
+   * preload's write is fire-and-forget IPC with no failure surface at all, so it ignores this.
+   */
+  quiet?: boolean
+}
+
 export interface ClipboardApi {
-  writeText(text: string): void
+  writeText(text: string, opts?: ClipboardWriteOptions): void
   /** Copy local files so Finder and other file-aware macOS apps can paste them. */
   writeFiles(paths: string[]): Promise<boolean>
 }
@@ -1805,6 +1815,13 @@ export interface Settings {
   worktreePathTemplate: string
   /** ms to dwell over a terminal before it takes pointer focus (pan-across guard). */
   panHoverDelay: number
+  /** Issue #757. Whether a terminal node's keyboard focus follows the POINTER (the long-standing
+   *  behaviour and the default): a `panHoverDelay` dwell takes it and leaving the node gives it
+   *  back. Off = click to focus (the Mac model): the pointer decides nothing, a click or a "go to
+   *  node" takes the keyboard, and the terminal keeps it until focus really moves elsewhere
+   *  (another node, the empty canvas, a field). Machine-local, Settings → Behavior. Decisions live
+   *  in `renderer/lib/terminalFocusMode.ts`. */
+  terminalFocusFollowsPointer: boolean
   doubleClickFocus: boolean
   /** "Go to node" (sessions sidebar, notification click, ⌘K jump, breadcrumb steps, presence
    *  travel) fits the node in view. Off: the camera keeps the CURRENT zoom and only pans, which is
@@ -1851,6 +1868,30 @@ export interface Settings {
    * click drops whatever was last selected anywhere on the machine into a live agent prompt.
    */
   terminalMiddleClickPaste: boolean
+  /**
+   * Copy a completed MOUSE selection that the terminal emulator (xterm) owns to the system
+   * clipboard (issue #759). OFF by default: it preserves the explicit-copy behaviour, and silently
+   * changing what is on the clipboard is a surprise worth opting into.
+   *
+   * Scope, stated honestly: it covers only selections xterm makes itself — a drag, double/triple
+   * click, or a FORCED selection (Option-drag on macOS, Shift-drag elsewhere) inside an app that
+   * tracks the mouse. It cannot copy a selection an app draws itself, and OSC 52 copies (tmux
+   * copy-mode, vim `"+y`) reach the clipboard whether this is on or off. Programmatic selections
+   * (find-bar hits) never copy. Read live, so a toggle applies to the next drag on every open
+   * terminal. Logic: `renderer/terminal/copy-on-select.ts`.
+   */
+  copyOnSelect: boolean
+  /**
+   * Windows SSH projects: after a key is unlocked with its passphrase, also load it into the
+   * Windows OpenSSH agent service, so later connections (and the user's own `ssh`) do not prompt
+   * again. OFF by default because that agent STORES the key — DPAPI-encrypted in
+   * `HKCU\Software\OpenSSH\Agent\Keys`, surviving service restarts — until it is removed
+   * (`ssh-add -d` / `-D`), and it refuses a lifetime constraint (measured on windows-latest,
+   * OpenSSH_for_Windows_9.5p2), so there is no "for this session only". A host whose own
+   * `~/.ssh/config` says `AddKeysToAgent yes` gets the add without this switch: that user already
+   * asked OpenSSH for exactly this. Logic: `core/remote-ssh/native/agent-add.ts`.
+   */
+  windowsSshAgentAddKeys: boolean
   /** Plain mouse wheel zooms the canvas (no Cmd/Ctrl needed). On macOS a two-finger trackpad
    *  scroll keeps panning independently (see canvas/wheel-gesture.ts), so mouse and trackpad
    *  coexist; elsewhere this still trades away scroll-to-pan, so it stays opt-in. */
@@ -2215,12 +2256,15 @@ export const DEFAULT_SETTINGS: Settings = {
   omniKanbanAsDefault: false,
   worktreePathTemplate: DEFAULT_WORKTREE_PATH_TEMPLATE,
   panHoverDelay: 600,
+  terminalFocusFollowsPointer: true,
   doubleClickFocus: true,
   focusZoomToNode: true,
   rememberCanvasLock: false,
   openMarkdownPreview: true,
   openMarkdownPreviewMigrated: true,
   terminalMiddleClickPaste: false,
+  copyOnSelect: false,
+  windowsSshAgentAddKeys: false,
   wheelZoom: false,
   wheelZoomSpeed: 1,
   trackpadPan: true,

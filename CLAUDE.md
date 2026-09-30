@@ -34,7 +34,8 @@ means — and what you may assume when writing a feature — is three tiers, not
   no tmux (Windows), a standalone session-host process — the mechanism differs, the guarantee does
   not.
 - **POSIX-bound edges degrade explicitly, never silently.** Some subsystems are structurally tied
-  to POSIX (SSH ControlMaster, the unix-socket askpass transport, some tmux-only paths). On a
+  to POSIX (SSH ControlMaster, the unix-socket askpass transport, some tmux-only paths — SSH
+  projects on Windows use the in-process transport instead, see **SSH projects on Windows**). On a
   platform where they cannot work they must either use a platform-appropriate mechanism or be
   clearly gated off — a feature that throws `EACCES`/`EPERM` on Windows because nobody checked is a
   bug, not an accepted limitation.
@@ -253,7 +254,7 @@ Fire-time `TriggerArmStore.isArmed` re-ask everywhere; every rule test-pinned. T
 machine-local, content-bound `core/trigger-arm-store.ts` (a spec that arrives or CHANGES via git
 reads as disarmed until armed on this machine). A node's `data`
 carries `title, color, group, tags, collapsed, expandedHeight, shell, cwd, text,
-initialCommand, filePath, diffStaged`, `icon` (a user-chosen emoji or picture — see **Node icons**
+initialCommand, filePath, diffStaged`, `icon` (a user-chosen emoji, glyph or picture — see **Node icons**
 below), `agentId` (which agent CLI a terminal node runs —
 persisted), and `accountId` (which managed Claude account a terminal node runs under — resolved
 at creation, changed ONLY by the explicit account-switch actions, persisted; see **Managed Claude accounts**). `nodeStatesToFlow` defaults a
@@ -595,6 +596,14 @@ tmux 3.4:
 - **No `pbcopy` pipe.** The copy-mode bindings are bare `copy-pipe-and-cancel` (no command): piping
   to `pbcopy` was macOS-only, and over SSH it would have copied on the *remote* host anyway. OSC 52
   is cross-platform and works over SSH.
+
+**Copy-on-select (opt-in, `copyOnSelect`, default off — #759)** is the route for a selection
+**xterm** owns, which OSC 52 never sees: a plain drag on Windows (no tmux), a forced Option/Shift
+drag inside a mouse-tracking app. `terminal/copy-on-select.ts` triggers on the GESTURE (a press
+xterm's SelectionService takes, then a release anywhere), not on `onSelectionChange` — the search
+addon's `select()` must never touch the clipboard. Canvas node and kanban modal only, never the
+settings preview; attached once per xterm (it survives park/adopt) and written via the bridge's
+`{ quiet: true }` path so a failed write raises no toast per drag.
 
 **A tmux client is not necessarily a watcher.** `SessionInfo.clients` is a COUNT
 (`#{session_attached}`), never a boolean, because one session can hold several: the app's painter,
@@ -1434,6 +1443,39 @@ session.
 - The xterm container is `nodrag nowheel`; a transparent **hover-guard** overlay sits on top
   until you dwell `settings.panHoverDelay` (so quick drag = move node, scroll = pan). After
   the dwell the guard is removed and xterm takes input. The header stays draggable.
+- **Click to focus** (`settings.terminalFocusFollowsPointer`, default ON = the dwell above; issue
+  #757, Settings → Behavior). Off, the pointer decides nothing: no dwell, and `mouseleave` no
+  longer blurs, re-arms or releases. A click (`HoverGuard` pointer events → `onGuardClick` → `enterNow`) or a "go to node" takes the
+  keyboard, and the node's active flag, presence focus AND guard then follow DOM focus. ONE hook
+  owns all of it, `nodes/useClickToFocus.ts`, and it binds to the stable `.term-node` ROOT, never
+  the React Flow wrapper: focus mode MOVES that root into the fullscreen surface
+  (`surface.appendChild(root)`), so a listener or containment check captured on the wrapper went
+  deaf there and read every body press as an outside press. The wrapper is re-resolved at event
+  time only to recognise the node's own React Flow chrome (resize handles). Root `focusin`/
+  `focusout` run `focusLossOutcome` (`lib/terminalFocusMode.ts`): focus moving inside the node or
+  the WINDOW blurring (Cmd+Tab) keeps it, a press on the node's own chrome (header drag — React Flow
+  focuses its wrapper, MEASURED in Electron 42) hands it back to the element that lost it (the ⌘M
+  composer) or the xterm (`reclaimTarget`), anything else — another node, a field, the empty canvas
+  (`onPaneClick` blurs the xterm textarea, `shouldReleasePaneFocus`) — releases it and re-arms the
+  guard. One document capture `pointerdown` does the rest: outside the node it releases activity
+  claimed WITHOUT focus (go-to-node under the ⌘M view, Canvas's own `setActive` on a jump — no
+  focusout ever comes, `outsidePressReleases`), and a document capture `focusin` landing outside
+  the node (its own wrapper counts as inside) does the same for KEYBOARD focus moves — ⌘M open,
+  then ⌘K's autofocus — else the stale `activeId` suppresses that node's unread dot; inside the BODY, any deliberate primary press that is not on the guard runs `enterNow`
+  (`bodyPressAcknowledges`) — guard down, xterm focused, ⌘M view open, all the same — so an unread
+  finish is cleared by clicking the terminal, not only by clicking the guard. A focus RESTORE that
+  no press caused (window activation) never acknowledges. The xterm blur that OPENING the ⌘M view
+  causes is `keep`, not a release (`lostIsCoveredXterm`). Focus mode's reparent blurs a focused xterm SYNCHRONOUSLY inside
+  `appendChild` (MEASURED, Electron 42: `relatedTarget` null, root still connected — so an
+  `isConnected` test cannot see it); `nodes/reparentKeepingFocus.ts` brackets the move with a flag the
+  hook honours (`reparenting`) and re-focuses the element that held the keyboard, in BOTH modes —
+  before it, entering/leaving focus mode dropped the keyboard in the default mode too. The guard listens to POINTER events
+  (`nodes/HoverGuard.tsx`): React Flow's d3-drag swallows a left `mousedown`/`mouseup` on a
+  draggable node before React sees them, so the old mouse-event guard never received a left click
+  (#87's click-to-focus only ever worked through the dwell). Only a literal `false` in
+  settings.json selects it (`resolveFocusFollowsPointer`). The ⌘/ shortcuts panel prints "Click" instead of
+  the dwell. Renderer only: Desktop + Server Edition identical; kanban card modal N/A (it has no
+  hover guard); Mobile N/A.
 - **Where the wheel stops being the terminal's is decided by HIT TEST, per packet** — `Canvas.tsx`
   answers `overNativeScrollable` with `target?.closest('.nowheel')`, and React Flow's own
   `panOnScroll` walks the same class (`noWheelClassName`). Two consequences, and issue #767 reported
@@ -1959,6 +2001,16 @@ checks unique project membership, runtime ownership, consent, verified status an
 An unrelated active canvas is not saved for a background message. Server control already writes
 its nodes through the authoritative store; the renderer barrier is a desktop concern. Mobile is
 not an agent-message sender.
+
+**A `send` to a node that has not STARTED yet is queued, not refused** (`targetNotStarted`,
+`agent-messaging.ts`). A node opened into a project that is not on screen without `--run-now`
+exists only as a held launch until the project is viewed, so no spawn has recorded its pane owner.
+When the owner is unproven AND no session exists AND this machine holds a launch for it
+(`WorkspaceStore.heldLaunch`, the machine-local `localExec` overlay), the outcome is
+`targetNotStarted` and the deliver-on-idle queue holds it; the flush re-runs every gate against the
+pane the spawn will have proven. A LIVE pane with no proven owner stays `unproven-target-owner` —
+that refusal is the security property. The queue TTL still runs, so a project nobody opens expires
+the message (sender told). Both shells wire `heldLaunch`.
 
 **A board comment that @mentions a session is a message from a PERSON** (`@shared/board-comment`,
 `deliverBoardCommentFromUi` in `core/agents/agent-messaging.ts`). The comment composer's @ picker
@@ -3240,6 +3292,13 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   its `contextTail`, the hook-fed path authority). The browser's real reader is
   `buildTranscriptApi` in ws-bridge — deliberately NOT folded into `buildClaudeApi`, which the
   relay shares and must not adopt it.
+  **System-injected user records are not the user's words** — a `<task-notification>`, a peer
+  `<agent-message>`/`<cross-session-message>`, an auto-continuation/coordinator prompt — so
+  `parseChatRecords` (and the find-bar index) renders each as ONE assistant tool part
+  (`classifySystemRecord`: "Background task" / "Agent message" / "System", no wire change; each is
+  a turn boundary in `assistantTurnEnds`) and fences a human paste's `<pasted_content>` span (the
+  CLI's own 4-hex-id grammar only; titles keep the raw text) — all `indexOf` scans, never a
+  backtracking regex (quadratic on unclosed tags); exact rules in `src/shared/chat-fixtures/README.md`.
   **Paged reads (2026-09).** `chat.readTranscript` takes a trailing optional `page`
   (`{before?, maxBytes?}`, `shared/chat-page.ts`). Absent = the legacy 5 MB-tail read, byte for byte
   (result is exactly `{messages, found}`). Present = ONE window of at most `maxBytes` (clamped
@@ -5824,10 +5883,10 @@ tokens `--danger --warn --caution --success --agent-working`, which the light th
   project files at creation), kanban label chips (own palette), presence colours, the onboarding
   scenes, the notch HUD's own stylesheet.
 
-## Node icons (emoji or picture)
+## Node icons (emoji, glyph or picture)
 
-A node may carry `data.icon` (`NodeIcon` in `@shared/node-icon`): `{type:'emoji', value}` or
-`{type:'image', path}`. Absent = the node draws exactly as it did before the feature, which is the
+A node may carry `data.icon` (`NodeIcon` in `@shared/node-icon`): `{type:'emoji', value}`,
+`{type:'lucide', name}` or `{type:'image', path}`. Absent = the node draws exactly as it did before the feature, which is the
 degrade every failure path falls back to. Set from the node right-click menu ("Set icon…", hideable
 like Colors — id `icon`), from the icon itself in the terminal node header, and from the kanban card
 modal's header slot; drawn by the one `NodeIconView` on all four surfaces that list a node (canvas
@@ -5837,6 +5896,20 @@ kind, deliberately: offering it on an editor or a group frame would persist a va
 which is the "looks like it worked" failure this file warns about elsewhere. Extending it to sticky
 or browser nodes means adding the draw and the set together, in one change.
 
+- **Glyphs (issue #291) are a closed allowlist, `NODE_GLYPHS`** — shell, git repo, database, server,
+  … with a label each (tooltip / accessible name, never stored). It is typed as a SUBSET of the
+  project icon's `LUCIDE_ICON_IDS`, so a glyph draws from the one `LUCIDE_ICONS` map `ProjectGlyph`
+  owns; a new glyph needs an id already in that map (or added to both). The name is matched exactly —
+  a name outside the list, a newer build's glyph, is no icon, and an OLDER build drops it on its next
+  save of a shared project.json (its `normalizeNodeIcon` does not know the variant). Picked from the
+  same dialog as emoji, drawn in `currentColor`. Agent nodes are terminal nodes, so they are offered
+  a glyph like any icon: it sits beside the agent's own identity, it does not replace it. No
+  auto-suggest (cwd is git → git glyph, pane command `psql` → database): an icon written without the
+  user choosing it would land in the git-shared file.
+- **The icon survives a close/reopen.** Both reopen paths carry it re-validated — `withCosmetics`
+  (⇧⌘T and the sidebar history both end there) and `stateToReopenSnapshot` (the persisted twin is
+  read from hand-editable workspace.json). Before, `icon` was not a cosmetic key and a reopened
+  session came back bare.
 - **`.nodeterm/project.json` is hostile input, so the icon is validated at BOTH serializer seams.**
   `normalizeNodeIcon` runs in `nodeStatesToFlow` (a cloned file becoming live state) *and* in
   `flowToNodeStates` (live state becoming the next reader's file — live node data is reachable by a
@@ -7833,6 +7906,117 @@ terminals, 1470×923 @2x, CDP-driven wheel zoom 0.8 ↔ 0.12 and pans, dev build
 which users saw as the canvas flickering on zoom — and no CPU gain (~170% total during the gesture
 either way; the scripted gesture itself ran 36 s vs 28 s); without it, 0. The small-canvas gain
 does not survive a real canvas. `canvas/camera-moving.test.ts` pins the absence.
+
+## Performance: measure it, then fix what the measurement names
+
+Performance work in this app has been wrong by intuition more often than right, so the rule is
+the one every bullet below learned the hard way: **measure on the real thing, find the mechanism,
+fix that, measure again — and write the before/after in the commit.** Say which build the
+numbers come from (a dev build's React is several times slower than production; a percentage
+from one is a direction, not a prediction).
+
+**How to measure (works on the dev app, no code changes):** start it with
+`npx electron-vite dev --remoteDebuggingPort 9333` and drive it over CDP from a small Node
+script (`fetch('http://localhost:9333/json')`, then a WebSocket to the page):
+- `Runtime.evaluate` for DOM facts; a module's live instance is reached with
+  `import(<its URL from performance.getEntriesByType('resource')>)` — importing the bare path
+  after an HMR update gives a SECOND copy of the module and silently measures nothing;
+- `Profiler.start/stop` for where main-thread time goes (group samples by the outermost APP
+  frame, not by self time — self time drowns in React internals);
+- `document.getAnimations()` for what is keeping the compositor busy;
+- patch `ResizeObserver.prototype.observe` / `setTimeout` for a few seconds to count who calls
+  them; `Input.dispatchMouseEvent` (`mouseWheel`, `modifiers: 2`) for zoom/pan gestures;
+- process CPU from `ps -o time` deltas of the renderer + GPU processes (not `%cpu`, which is a
+  lifetime average); tile/raster trouble shows as `tile memory limits exceeded` in the dev log;
+- for SSH: the host's `journalctl -u ssh | grep -c 'Accepted publickey'` over the test window is
+  the number that says whether multiplexing held (healthy ≈ 0–1 per connect).
+
+**Rules this produced (each has its measurement in the linked section or commit):**
+- **One running animation keeps the whole window at display rate** — see **Idle energy** above.
+  Status animations are bounded (they settle lit), never infinite, except needs-you. Measured on a
+  46-node canvas: idle renderer+GPU ~120% → ~25% (#1050).
+- **Never promote the React Flow viewport** (`will-change: transform`) — it is a canvas-sized
+  layer; on a real canvas it overran the tile budget (flicker) with no CPU gain (#1047).
+- **An all-filtered node-change batch must not reach `onNodesChange`** (`handleNodesChange` returns
+  early). `applyNodeChanges([])` returns a NEW array; a new `nodes` rebuilds the ephemeral
+  subagent/loop cards without `measured`, React Flow re-observes them and its ResizeObserver
+  (`force: true`) emits another change — the whole Canvas re-rendered every frame while idle with
+  one subagent card on screen (~111% → ~55% idle, #1047; `canvas-empty-changes.test.ts`).
+- **Per-terminal work on a project switch must be coalesced and ordered.** A switch mounts every
+  node in one tick. Join an in-flight read instead of issuing one per node (the SSH project's
+  settings.json read, `overridesInFlight` in pty-manager), and let on-screen nodes go first
+  (`PtyCreateOptions.onScreen` → `pty-spawn-gate.ts`): on a 41-terminal SSH project the visible
+  ones went from painting LAST (1.5–2.1 s) to first (0.55–1.1 s), 0 extra logins (#1057).
+- **A hint must fail toward the old behavior.** `onScreen` absent/unknown = on screen = the old
+  FIFO; a coalesced read is never a cache (a spawn after it settles reads again).
+
+## SSH projects on Windows: the in-process transport
+
+Windows' own OpenSSH cannot multiplex, and that is measured, not assumed (windows-latest,
+`OpenSSH_for_Windows_9.5p2`): `ssh -M` fails with `getsockname failed: Not a socket`, and a child
+carrying `ControlPath` FAILS rather than falling back — so every remote command, terminal and
+tunnel of an SSH project failed on a stock Windows machine. Git for Windows' ssh (10.5p1) starts a
+master but every session over it is reset and falls back to a full login per command. So on
+Windows the app does not run the ssh binary for SSH projects at all: `src/core/remote-ssh/native/`
+holds ONE `ssh2` connection per ControlPath and carries every exec, pty, SFTP session and reverse
+unix-socket forward over it. POSIX keeps OpenSSH untouched.
+
+- **One switch:** `useNativeSsh()` — always on win32; `NODETERM_NATIVE_SSH=1` turns it on anywhere
+  (how it is tested live from macOS against a real host), `=0` forces it off. Decided once per app
+  run for the SshProjectManager runners.
+- **Call sites do not change.** They keep building OpenSSH argv (`control-master.ts`);
+  `ssh-argv.ts` is a STRICT parser that reads it back and refuses (by name) any option it does not
+  know. A builder that grows a flag must teach the parser, or the native path fails loudly —
+  `ssh-argv.test.ts` parses every builder's output.
+- **Seams wired:** SshProjectManager's runners (`initSshProject`), pty-manager's
+  `runAsync`/`runWithStdin` and the remote terminal itself (`NativeSshPty`, a pty channel shaped
+  like `IPty`), remote-git, the setup runner (`spawnSshArgvStream`), the workspace poll's
+  master check. A new ssh call site owes the same routing.
+- **Semantics are OpenSSH's:** ControlMaster auto/no, `-O check|exit|forward|cancel`,
+  `StrictHostKeyChecking=accept-new` over the user's own known_hosts (hashed entries included —
+  that is why HMAC-SHA1 appears; CodeQL's alert on it is dismissed with the reason), publickey
+  only (agent, then key files, passphrase through the existing dialog, never in BatchMode), the
+  user's `~/.ssh/config` via `ssh -G` (never a second parser of it), a dropped connection ends
+  every channel with 255 (what `SshReconnector` reads).
+- **Channels past the server's MaxSessions spill onto more connections** (10 on a stock sshd; a
+  live 89-terminal project left 25 terminals blank before this). A refusal marks that connection
+  full until one of its channels closes; overflow connections are bounded
+  (`MAX_OVERFLOW_CONNECTIONS`) and live and die with the primary. A key unlocked with a passphrase
+  is held in memory while any connection is alive so overflow connections do not prompt again —
+  the Windows tradeoff for having no app-private ssh-agent.
+- **Channel races — keep these, each was a real bug:** open-confirmation, exit-status and close can
+  arrive in ONE read, so the exit status is recorded inside ssh2's callback (`recordExit`) and exec
+  consumers attach there too (`openOn`'s `onOpen`); late consumers check `channelExit(ch).closed`.
+  A killed streaming child must never write to its ended pipes (an uncaught
+  `ERR_STREAM_WRITE_AFTER_END` in main). A stream nobody reads never emits `close` — tests must
+  `resume()` the channels they hold.
+- **Tests run on every OS** against ssh2's own in-process `Server` (loopback, no sshd); the
+  directory is in the `windows-latest` CI job. Live numbers (macOS, `NODETERM_NATIVE_SSH=1`,
+  89-terminal project): 89/89 attached, 0 ssh processes, ~1 login per connect, main CPU 3–5% idle.
+- **ProxyJump** (#1078) follows OpenSSH: each hop is resolved by ITS OWN `ssh -G` and gets its own
+  host-key check and publickey auth; the chain is ssh2 `forwardOut` streams used as the next hop's
+  socket. `ssh -J a,b t` means `ssh -J a -W t b`, so only the FIRST hop's own ProxyJump is followed
+  (recursively); loops and chains deeper than 8 are refused by name. Jump connections belong to
+  the target connection and die with it (a dropped jump → 255 on the target's channels). MaxSessions
+  overflow connections REUSE the primary's chain (one bastion login; direct-tcpip does not count
+  against the bastion's MaxSessions); one-off connections build their own. Known hosts are checked
+  under `HostName` (or `HostKeyAlias`), as OpenSSH does — not under the alias as typed.
+  **ProxyCommand stays refused by name**, on the target and on a hop.
+- **The Windows ssh-agent only on the user's say-so** (#1080). MEASURED on windows-latest
+  (OpenSSH_for_Windows_9.5p2): the agent service REFUSES any lifetime or confirm constraint
+  (`ssh-add -t` / `-c` and our `ADD_ID_CONSTRAINED` alike), and an unconstrained key is stored in
+  `HKCU\Software\OpenSSH\Agent\Keys` (DPAPI) and survives service restarts — "until removed" is
+  the only add Windows offers. So a passphrase-unlocked key is added (`agent-add.ts`, our own
+  agent-protocol writer; ssh2 only lists and signs) ONLY when the host's own config says
+  `AddKeysToAgent yes` (what Windows' ssh.exe would do) or the user turned on Settings → Remote
+  (SSH) → "Keep unlocked keys in the Windows ssh-agent" (`settings.windowsSshAgentAddKeys`, default
+  OFF, copy says Windows keeps it until `ssh-add -d`). A config lifetime is sent as a constraint and
+  Windows' refusal stands: a refused constrained add is NEVER retried unconstrained. Fail-open: an
+  agent error never affects the connection. Reboot persistence is inferred from the registry hive,
+  not measured.
+- **Not done yet:** sleep/wake verification on the native transport, a like-for-like timing against
+  OpenSSH on the same project, and any run on a real Windows desktop (all evidence so far is CI plus
+  the macOS run of the same code path).
 
 ## Remote access (phone relay) — free, not Pro
 

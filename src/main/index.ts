@@ -19,6 +19,7 @@ import { IPC } from '../shared/ipc'
 // in-memory and redacted at its push boundary; the panel/IPC side is gated on the setting.
 const logBuffer = new LogBuffer()
 installLogSink(logBuffer)
+import { nativeMux, setNativeWindowsAgentOptIn, useNativeSsh } from '../core/remote-ssh/native/native-runtime'
 import { writeFilesToClipboard } from './clipboard-files'
 import { pickProjectIcon } from './project-icon-upload'
 import { allowGuestNavigation } from './webview-nav'
@@ -1959,6 +1960,8 @@ app.whenReady().then(async () => {
     // (core/agents/pane-ownership.ts). The gate trusts this over the attacker-writable store to
     // decide whose grant applies; unproven ⇒ refused (PR #237 fix round 2).
     paneOwnerProject: (id) => paneOwnerProject(id),
+    // A node opened off screen without `--run-now` has no pane yet: queued, not refused.
+    heldLaunch: (projectId, id) => workspaceStore.heldLaunch(projectId, id),
     customAgents: () => settingsStore.get().customAgents,
     appendBoardLog: (projectId, entry) => appendBoardLogVia(boardLogRouter, projectId, entry)
   }
@@ -4657,6 +4660,9 @@ app.whenReady().then(async () => {
     // Forgetting a team also forgets the device token this app run holds for it in memory.
     ipcMain.handle(IPC.relayHostedBookmarkRemove, async (_e, hostId: string) => removeHostedBookmark(String(hostId), bookmarks))
   }
+  // Windows SSH projects: the opt-in to keep passphrase-unlocked keys in the Windows OpenSSH agent
+  // (core/remote-ssh/native/agent-add.ts). Read at each unlock, so a toggle applies to the next one.
+  setNativeWindowsAgentOptIn(() => settingsStore.get().windowsSshAgentAddKeys === true)
   sshProjectManager = initSshProject(
     (projectId) => {
       // On (re)connect, reconcile the server's .nodeterm/project.json with our offline cache by rev.
@@ -4832,7 +4838,10 @@ app.whenReady().then(async () => {
         hasLiveRef: (projectId) => !!mgr.refForProject(projectId),
         busy: (projectId) => inFlight.has(projectId),
         // Reuse-only gate: no socket file ⇒ no master to adopt ⇒ this project is left alone.
-        hasControlSocket: (projectId) => existsSync(controlPathFor(projectId))
+        // Native transport (Windows): there is no socket FILE, and a connection never outlives the
+        // app run — ask the transport whether it holds one for this path.
+        hasControlSocket: (projectId) =>
+          useNativeSsh() ? nativeMux().check(controlPathFor(projectId)) : existsSync(controlPathFor(projectId))
       })
       for (const projectId of plan.poll) {
         inFlight.add(projectId)
