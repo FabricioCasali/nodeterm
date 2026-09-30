@@ -8261,6 +8261,18 @@ bundle itself (`/Applications/nodeterm.app`) carries `nodeterm`. `scripts/uninst
 under `…/nodeterm` and never found the desktop's data; `scripts/uninstall.test.ts` now ties its
 `APP_NAME` to package.json `name`.
 
+**A local Windows version handed to Fabricio for testing is ALWAYS an installable snapshot of the
+current workspace, unless he explicitly asks for another form.** Run
+`pwsh -NoProfile -File scripts/build-local-windows-installer.ps1 -Label <short-label>`; never hand
+off `npm start`, a preview build or a cleaned checkout by default. The workspace may intentionally
+combine committed, modified and untracked work, so the script must not clean, reset, stash or
+switch branches. It records the HEAD, dirty status, binary patch and untracked source copies,
+builds every product bundle, archives the installer/zip under the ignored
+`build/local-windows/<build-id>/`, hashes the ASAR/session-host/Codex relay and prints the exact
+installer command. Previous archives are never replaced. `dist:win` must call the full `build`
+script rather than bare `electron-vite build`: the latter omits `out/main/codex-relay.js`, so a
+package can otherwise contain a stale relay left by an earlier build or none at all.
+
 **Linux ships AppImage + deb + rpm**, all unsigned, all built by `release-linux` on a plain
 `ubuntu-latest` runner (`npm run dist:linux` locally). Three things about it are easy to get wrong:
 

@@ -24,6 +24,23 @@ plain `npm install` under a stock Node 26 with node-gyp 12 otherwise fails with 
 
 `npm run server:dev` boots the Server Edition (browser UI) if you are working on that surface.
 
+### Local Windows test builds
+
+When handing a new local version to the maintainer for testing, build an installable NSIS package
+from the exact current workspace. Do not substitute `npm start`, a preview build or a cleaned
+checkout unless the maintainer explicitly asks for one:
+
+```powershell
+pwsh -NoProfile -File scripts/build-local-windows-installer.ps1 -Label <short-label>
+```
+
+The script leaves the workspace untouched, runs the complete Windows packaging pipeline, and
+archives every installer/zip under `build/local-windows/<build-id>/`. The same directory records
+the commit, dirty status, tracked patch, copies of untracked source files, hashes of the packaged
+ASAR, session host and Codex relay, plus the exact `Start-Process` command to run. Never clean,
+reset or switch branches as part of a local test handoff; the dirty workspace may contain the
+combined version being tested. Previous archived builds are retained.
+
 **If `src/main/node-pty-patch.test.ts` is red, your `node_modules` is unpatched — not your code.**
 Run `npm run rebuild`. node-pty 1.1.0 leaks a pty device per spawn on macOS
 ([node-pty#950](https://github.com/microsoft/node-pty/issues/950)) and, on Windows, leaves a
