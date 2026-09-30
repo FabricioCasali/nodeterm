@@ -19,9 +19,11 @@ import {
   barFillPercent,
   formatResetCountdown,
   formatTimeAgo,
+  heldUsageText,
   percentNumber,
   percentText,
-  severityColor
+  severityColor,
+  usageFailureText
 } from '../lib/usageFormat'
 import {
   enabledProviders,
@@ -37,6 +39,11 @@ import { systemAccountDisplay } from '../state/workspace'
 /** Grace period before a hover-opened popover closes, so the pointer can cross the pill's own
  *  gap (or clip a corner en route elsewhere) without the panel flickering shut. */
 const USAGE_HOVER_CLOSE_MS = 220
+
+/** How often the collapsed pill re-asks for a MANAGED default account's snapshot. Only the system
+ *  account is polled + pushed by the service; the service caches managed reads for its own
+ *  debounce, so a re-ask inside that window is free. */
+const DEFAULT_ACCOUNT_POLL_MS = 5 * 60 * 1000
 
 /**
  * A single limit row in the popover: bar, "% left"/"% used", reset countdown. The bar's fill
@@ -105,10 +112,24 @@ function DefaultAccountMark({
   )
 }
 
+/** Why the bars above are old — only for numbers kept through a failed read. */
+function HeldNote({ u }: { u: ClaudeUsage | null | undefined }) {
+  const text = u ? heldUsageText(u) : null
+  return text ? <div className="usage-popover__held">{text}</div> : null
+}
+
 /** Where a bulk move can send an account's sessions: another account on the same machine. */
 export interface MoveTarget {
   id: string | undefined
   label: string
+}
+
+/** A bulk move in flight (Canvas `moveAccountSessions`): which account it empties, on which machine
+ *  (`usageScopeKey`), and how many sessions it started. */
+export interface AccountMoveProgress {
+  from: string | undefined
+  count: number
+  scopeKey: string
 }
 
 /**
@@ -117,30 +138,52 @@ export interface MoveTarget {
  * the picked account, and resumed there (Canvas `moveAccountSessions`). It sits where the limit is
  * read, because that is where the user learns an account is spent. Absent when there is nothing to
  * move or nowhere to move it.
+ *
+ * While a move runs (`moving`), the sessions it is moving still carry their OLD account until each
+ * one lands, so the live count would offer them again — and a second bulk move is refused while one
+ * runs. So the source row says "Moving N sessions…", and every other row's control is disabled.
  */
 function MoveSessionsControl({
   count,
   targets,
+  moving,
   onMove
 }: {
   count: number
   targets: readonly MoveTarget[]
+  /** null = no move running; 'this' = this row's account is being moved; 'other' = some other. */
+  moving: null | { row: 'this' | 'other'; count: number }
   onMove: (to: MoveTarget) => void
 }) {
   const [picking, setPicking] = useState(false)
+  const plural = (n: number): string => `${n} ${n === 1 ? 'session' : 'sessions'}`
+  if (moving?.row === 'this') {
+    return (
+      <span className="usage-account__move">
+        <button type="button" className="usage-account__use" disabled>
+          ⇄ Moving {plural(moving.count)}…
+        </button>
+      </span>
+    )
+  }
   if (count === 0 || targets.length === 0) return null
   return (
     <span className="usage-account__move">
       <button
         type="button"
         className="usage-account__use"
-        aria-expanded={picking}
-        title="Quit these sessions, move their conversations to another account and resume them there — no login needed. Busy sessions are skipped."
+        aria-expanded={!moving && picking}
+        disabled={!!moving}
+        title={
+          moving
+            ? 'Another move is still running — wait for it to finish.'
+            : 'Quit these sessions, move their conversations to another account and resume them there — no login needed. Busy sessions are skipped.'
+        }
         onClick={() => setPicking((v) => !v)}
       >
-        ⇄ Move {count} {count === 1 ? 'session' : 'sessions'}
+        ⇄ Move {plural(count)}
       </button>
-      {picking ? (
+      {!moving && picking ? (
         <span className="usage-account__move-targets" role="group" aria-label="Move sessions to">
           {targets.map((t) => (
             <button
@@ -194,9 +237,10 @@ function AccountUsageBlock({
       {u?.limits.map((l) => (
         <LimitRow key={limitKey(l)} limit={l} mode={mode} />
       ))}
+      <HeldNote u={u} />
       {u && u.limits.length === 0 && (
         <div className="usage-popover__empty">
-          {u.status === 'error' ? 'Could not read usage.' : 'No usage data.'}
+          {u.status === 'error' ? usageFailureText(u) : 'No usage data.'}
         </div>
       )}
       {!u && <div className="usage-popover__empty usage-pill__pulse">···</div>}
@@ -242,9 +286,10 @@ function RemoteUsageBlock({
       {row.usage.limits.map((l) => (
         <LimitRow key={limitKey(l)} limit={l} mode={mode} />
       ))}
+      <HeldNote u={row.usage} />
       {row.usage.limits.length === 0 && (
         <div className="usage-popover__empty">
-          {row.usage.status === 'error' ? 'Could not read usage on this host.' : 'No usage data.'}
+          {row.usage.status === 'error' ? usageFailureText(row.usage, 'on this host') : 'No usage data.'}
         </div>
       )}
     </div>
@@ -299,7 +344,8 @@ export function UsageIndicator({
   overBoard = false,
   onSetDefaultAccount,
   countAccountSessions,
-  onMoveSessions
+  onMoveSessions,
+  accountMove = null
 }: {
   overBoard?: boolean
   /** Writes `project.defaultAccountId` + persists (Canvas's own TabBar handler). When absent the
@@ -310,6 +356,8 @@ export function UsageIndicator({
   countAccountSessions?: (accountId: string | undefined) => number
   /** Move every such session from one account to another (Canvas `moveAccountSessions`). */
   onMoveSessions?: (from: string | undefined, to: string | undefined, toLabel: string) => void
+  /** The bulk move in flight, if any (Canvas owns it; see `MoveSessionsControl`). */
+  accountMove?: AccountMoveProgress | null
 }): JSX.Element | null {
   const [usage, setUsage] = useState<ClaudeUsage | null>(null)
   const [open, setOpen] = useState(false)
@@ -356,6 +404,14 @@ export function UsageIndicator({
       ),
     [claudeAccounts, scopeHostKey]
   )
+  // The validated "Use for new sessions" account (undefined = system) — the identity the collapsed
+  // pill describes. Same validation as the rows' ✓: a stale id falls back to the system account.
+  const defaultAccountId =
+    projectDefaultId && eligibleAccounts.some((a) => a.id === projectDefaultId)
+      ? projectDefaultId
+      : undefined
+  const defaultAccountLabel = eligibleAccounts.find((a) => a.id === defaultAccountId)?.label
+
   // One rule for every row, local and remote alike — `accountRowAction` (pure, tested) decides
   // default/offer/none; this pair just turns its answer into props. Absent handler / no project =
   // pure readout, exactly as before. null = the System row (clears the override).
@@ -390,6 +446,18 @@ export function UsageIndicator({
       <MoveSessionsControl
         count={countAccountSessions(from)}
         targets={targets}
+        moving={
+          accountMove
+            ? {
+                row:
+                  accountMove.scopeKey === scopeHostKey &&
+                  (accountMove.from || undefined) === (from || undefined)
+                    ? 'this'
+                    : 'other',
+                count: accountMove.count
+              }
+            : null
+        }
         onMove={(to) => {
           setOpen(false)
           onMoveSessions(from, to.id, to.label)
@@ -461,6 +529,25 @@ export function UsageIndicator({
     }
   }, [open, accounts, scope.kind])
 
+  // The LOCAL managed default's snapshot, kept fresh while the popover is CLOSED too — the pill
+  // spells it out. (The popover's per-account fetch above only runs while open.)
+  const localDefaultId = scope.kind === 'local' ? defaultAccountId : undefined
+  useEffect(() => {
+    if (!localDefaultId) return
+    let cancelled = false
+    const load = (): void => {
+      void window.nodeTerminal.usage.fetch(localDefaultId).then((u) => {
+        if (!cancelled) setAcctUsage((m) => ({ ...m, [localDefaultId]: u }))
+      })
+    }
+    load()
+    const timer = window.setInterval(load, DEFAULT_ACCOUNT_POLL_MS)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [localDefaultId])
+
   // Close the popover on an outside click.
   useEffect(() => {
     if (!open) return
@@ -498,7 +585,9 @@ export function UsageIndicator({
     providers: providers.filter((p) => !hidden.has(p.provider)),
     // Its own switch, not Claude's: hiding the local rows must not silently take the SSH hosts
     // down with them, and vice versa.
-    remote: remote.filter(r => !hidden.has(r.provider === 'codex' ? 'codex' : 'claude-remote'))
+    remote: remote.filter(r => !hidden.has(r.provider === 'codex' ? 'codex' : 'claude-remote')),
+    defaultAccountId,
+    defaultUsage: localDefaultId && !hidden.has('claude') ? (acctUsage[localDefaultId] ?? null) : null
   })
   const claudeUsage = scoped.claude
   const visibleProviders = scoped.providers
@@ -509,7 +598,17 @@ export function UsageIndicator({
   // Claude alone, which is what this did, left a Codex-only user with no pill at all.
   const enabled = enabledProviders([...visibleProviders,
     ...visibleRemote.flatMap(r => r.provider === 'codex' ? [r.usage] : [])])
-  if (!hasAnyUsage(claudeUsage, visibleProviders, visibleRemote)) return null
+  if (!hasAnyUsage(claudeUsage, visibleProviders, visibleRemote) && scoped.pillLimits.length === 0)
+    return null
+  // Name the identity when the pill shows a managed account, so its numbers are never read as the
+  // system account's. The system identity stays unlabelled — exactly the pill as it always was.
+  const pillAccountLabel =
+    scoped.pillAccountId === null
+      ? null
+      : scope.kind === 'local'
+        ? defaultAccountLabel
+        : visibleRemote.find((r) => r.provider !== 'codex' && r.accountId === scoped.pillAccountId)
+            ?.label
 
   // On an SSH project these are the HOST's limits — same shape, same labels, read somewhere else.
   const limits = scoped.pillLimits
@@ -542,7 +641,12 @@ export function UsageIndicator({
           .catch((): RemoteAccountUsage[] => [])
         if (remoteScope.current === requestedScope) setRemote(rows)
       } else {
-        setUsage(await window.nodeTerminal.usage.refresh())
+        const [sys, def] = await Promise.all([
+          window.nodeTerminal.usage.refresh(),
+          localDefaultId ? window.nodeTerminal.usage.refresh(localDefaultId) : Promise.resolve(null)
+        ])
+        setUsage(sys)
+        if (localDefaultId && def) setAcctUsage((m) => ({ ...m, [localDefaultId]: def }))
       }
     } finally {
       setRefreshing(false)
@@ -557,6 +661,18 @@ export function UsageIndicator({
   } else {
     pillBody = (
       <>
+        {pillAccountLabel && (
+          <span
+            className="usage-pill__account"
+            title={
+              scoped.pillAccountId === defaultAccountId
+                ? 'Account used for new sessions in this project'
+                : 'Account these limits belong to'
+            }
+          >
+            {pillAccountLabel}
+          </span>
+        )}
         {primary && (
           <span className="usage-pill__minibar" aria-hidden>
             <span
@@ -655,11 +771,12 @@ export function UsageIndicator({
                   {limits.map((l) => (
                     <LimitRow key={limitKey(l)} limit={l} mode={percentMode} />
                   ))}
+                  <HeldNote u={claudeUsage} />
                   {/* Another provider's data must not hide a failed Claude read. Keep any
                       last-known Claude bars instead of replacing them with the empty state. */}
                   {((!hasData && !providerError) || (claudeError && limits.length === 0)) && (
                     <div className="usage-popover__empty">
-                      {claudeError ? 'Could not read usage.' : 'No usage data.'}
+                      {claudeError ? usageFailureText(claudeUsage) : 'No usage data.'}
                     </div>
                   )}
                   {(claudeUsage?.email || claudeUsage?.organization) && (

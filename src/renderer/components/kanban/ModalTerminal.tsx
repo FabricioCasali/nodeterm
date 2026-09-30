@@ -19,6 +19,7 @@ import { FindBar } from '../FindBar'
 import { useAgentStatus } from '../../state/agentStatus'
 import { useProjects } from '../../state/projects'
 import { useSession } from '../../session/session'
+import { isHostedReadOnly } from '../../state/hostedTeams'
 import { useSettings } from '../../state/settings'
 import { useTerminalSearch } from '../../terminal/useTerminalSearch'
 import { useTerminalGlass } from '../../lib/useTerminalGlass'
@@ -34,8 +35,12 @@ import {
 import { urlLinkMenuItems } from '../../terminal/link-menu'
 import { ContextMenu } from '../ContextMenu'
 import { parseOsc52 } from '../../terminal/osc52'
+import { createOsc52Notice, dispatchOsc52Toast, handleOsc52Write } from '../../terminal/osc52-policy'
 import { activateUnicode11 } from '../../terminal/unicode-width'
 import { useCopyFeedback } from '../../terminal/useCopyFeedback'
+import { pasteWithImageReceipt } from '../../terminal/image-paste-confirm'
+import { usePasteReceipt } from '../../terminal/usePasteReceipt'
+import { agentProcessInPane } from '../../terminal/live-work'
 import {
   attachReplay,
   cursorPlacementSeq,
@@ -101,7 +106,8 @@ interface ModalTerminalProps {
 }
 
 export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covered = false }: ModalTerminalProps) {
-  const { api } = useSession()
+  const session = useSession()
+  const { api } = session
   const hostRef = useRef<HTMLDivElement>(null)
   const middleClickPaste = useSettings((st) => st.settings.terminalMiddleClickPaste)
   // Chromium pastes the X PRIMARY selection into xterm's hidden textarea on middle click — a path
@@ -148,6 +154,7 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covere
   glassRef.current = glass
   const [dropping, setDropping] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const pasteReceipt = usePasteReceipt()
   // Same copy feedback as the canvas node — a copy here is the same act as a copy there, including
   // the agent gate: a claude card stays silent because claude prints its own copy line.
   const copy = useCopyFeedback({
@@ -204,6 +211,8 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covere
     // view of one session, and a card that renders it in different colours reads as a different
     // terminal. (It used to hardcode its own background, which is exactly what happened.)
     const term = new Terminal(xtermOptionsFromSettings(s, glassRef.current))
+    // The same read-only rule as the canvas node: a hosted team's Viewer/Commenter never types here.
+    if (isHostedReadOnly(session.id)) term.options.disableStdin = true
     // Without a handler xterm answers an OSC 8 click with a window.confirm — the one surface
     // where this session's links would prompt instead of opening like the canvas node's.
     term.options.linkHandler = createOsc8LinkHandler((uri) =>
@@ -267,11 +276,17 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covere
     // tmux's mouse is ON, so a drag-select in copy-mode emits OSC 52 to this client; this handler
     // writes the system clipboard. `parseOsc52` returns null for a `?` read query so a remote program
     // can never read the local clipboard. Returning true swallows the sequence (also the read query).
+    // MIRROR TerminalNode: a RELAY tab's writes are refused (osc52-policy.ts).
+    const osc52Notice = createOsc52Notice()
     term.parser.registerOscHandler(52, (data) => {
       const text = parseOsc52(data)
       if (text !== null) {
-        window.nodeTerminal.clipboard.writeText(text)
-        copy.notifyCopy(text)
+        handleOsc52Write(text, session.source, {
+          write: (t) => window.nodeTerminal.clipboard.writeText(t),
+          notifyCopied: (t) => copy.notifyCopy(t),
+          shouldNotify: osc52Notice,
+          toast: dispatchOsc52Toast
+        })
       }
       return true
     })
@@ -513,7 +528,17 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covere
     // A paste came from this window, which already has focus.
     if (opts.raiseWindow) window.nodeTerminal.focusWindow()
     term.focus()
-    term.paste(paths.join(' ') + ' ')
+    // Same receipt as the canvas node (TerminalNode.insertFiles): attached only once the pane
+    // shows it.
+    const st = useAgentStatus.getState().byId[nodeId]
+    const paneAgent = spawn.agentId ?? st?.agentId
+    pasteWithImageReceipt(
+      term,
+      paths.join(' ') + ' ',
+      paths,
+      agentProcessInPane(paneAgent, st) ? paneAgent : undefined,
+      pasteReceipt.report
+    )
   }
 
   const onDrop = async (e: React.DragEvent) => {
@@ -559,6 +584,11 @@ export function ModalTerminal({ nodeId, spawn, searchOpen, onCloseSearch, covere
       {copy.feedback && (
         <div className={`term-copy-pill term-copy-pill--${copy.feedback.kind}`}>
           {copy.feedback.label}
+        </div>
+      )}
+      {pasteReceipt.receipt && (
+        <div className={`term-paste-pill${pasteReceipt.receipt.ok ? '' : ' term-paste-pill--warn'}`}>
+          {pasteReceipt.receipt.text}
         </div>
       )}
       {searchOpen && (

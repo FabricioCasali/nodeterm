@@ -147,7 +147,7 @@ describe('ChatPanel live progress', () => {
     expect(pending).toHaveLength(1)
     await advance(CHAT_LIVE_RELOAD_MIN_MS)
     expect(pending).toHaveLength(2)
-    expect(pending[1].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES })
+    expect(pending[1].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES, background: true })
 
     // A burst while that read is in flight: held, never overlapped…
     await hook('working')
@@ -185,7 +185,7 @@ describe('ChatPanel live progress', () => {
     await settle(1, { messages: [say(0, 'older')], olderCursor: null })
     expect(bubbles()).toEqual(['older', 'tail'])
     expect(pending).toHaveLength(3) // …then served once it landed
-    expect(pending[2].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES })
+    expect(pending[2].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES, background: true })
   })
 
   it('the live read the send itself triggers does not erase the prompt the transcript lacks yet', async () => {
@@ -232,7 +232,7 @@ describe('ChatPanel live progress', () => {
     await hook('working')
     await advance(CHAT_LIVE_RELOAD_MIN_MS)
     expect(pending).toHaveLength(3)
-    expect(pending[2].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES })
+    expect(pending[2].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES, background: true })
     expect(host.querySelector('.term-chat__older--error')).not.toBeNull()
     await settle(2, { messages: [say(1000, 'tail'), say(2000, 'more')], olderCursor: 1000 })
     expect(host.querySelector('.term-chat__older--error')).not.toBeNull()
@@ -365,7 +365,7 @@ describe('ChatPanel — a sent local command', () => {
     expect(pending.length).toBe(1)
     await advance(1)
     expect(pending.length).toBe(2)
-    expect(pending[1].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES })
+    expect(pending[1].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES, background: true })
     await settle(1, { messages: [say(0, 'hello'), cmd(100, '/model')], olderCursor: 0 })
     expect(activity()).toBeNull()
     // Exactly one read: nothing else is scheduled.
@@ -459,5 +459,56 @@ describe('ChatPanel — a sent local command', () => {
     const after = pending.length // the new session's own initial read
     await advance(CHAT_LIVE_RELOAD_MIN_MS * 3)
     expect(pending.length).toBe(after)
+  })
+})
+
+describe('ChatPanel — a sent built-in that opens a dialog in the TUI', () => {
+  async function renderWith(onShowTerminal: () => void): Promise<void> {
+    await act(async () => {
+      root.render(<ChatPanel nodeId={NODE} sessionId="s1" agentId="claude" onShowTerminal={onShowTerminal} />)
+    })
+  }
+  async function send(text: string): Promise<void> {
+    const ta = host.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(ta, text)
+      ta.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    })
+  }
+
+  it('/rewind is sent, THEN the view flips to the terminal (the dialog is there, and the next Enter would answer it)', async () => {
+    const onShowTerminal = vi.fn(() => {
+      // The flip happens only after the pane accepted the text.
+      expect(sendText).toHaveBeenCalledWith(NODE, '/rewind')
+    })
+    await hook('done')
+    await renderWith(onShowTerminal)
+    await settle(0, { messages: [say(0, 'hello')] })
+    await send('/rewind')
+    expect(onShowTerminal).toHaveBeenCalledOnce()
+  })
+
+  it('a built-in that runs with no dialog (/compact) and a plain message stay in the view', async () => {
+    const onShowTerminal = vi.fn()
+    await hook('done')
+    await renderWith(onShowTerminal)
+    await settle(0, { messages: [say(0, 'hello')] })
+    await send('/compact')
+    await send('please rewind the file')
+    expect(sendText).toHaveBeenCalledTimes(2)
+    expect(onShowTerminal).not.toHaveBeenCalled()
+  })
+
+  it('a refused send (pane not writable) never flips', async () => {
+    const onShowTerminal = vi.fn()
+    sendText.mockResolvedValueOnce(false as never)
+    await hook('done')
+    await renderWith(onShowTerminal)
+    await settle(0, { messages: [say(0, 'hello')] })
+    await send('/model')
+    expect(onShowTerminal).not.toHaveBeenCalled()
   })
 })

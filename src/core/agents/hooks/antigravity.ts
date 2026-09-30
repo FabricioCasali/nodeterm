@@ -37,6 +37,7 @@ import {
   writeManagedHookFileAtomic
 } from './install-helper'
 import { buildManagedScript } from './managed-script'
+import { updateSettingsFile } from './settings-file'
 import { ANTIGRAVITY_EVENT_ENV, antigravityDecisionFor } from './antigravity-decision'
 import {
   ANTIGRAVITY_SCRIPT_FILE,
@@ -65,6 +66,36 @@ export function agyFallbackPaths(
     return [path.win32.join(local, 'agy', 'bin', 'agy.exe')]
   }
   return [path.posix.join(home, '.local', 'bin', 'agy')]
+}
+
+/**
+ * `pathValue` with agy's directory APPENDED, unless an entry already names it — the one PATH
+ * change an Antigravity session gets (`PtyManager`, local sessions only).
+ *
+ * Why it exists: measured on Windows 11 with agy 1.2.7, the vendor installer writes
+ * `%LOCALAPPDATA%\agy\bin` into the user PATH as REG_SZ, so the percent expression stays literal
+ * and `agy` does not resolve while `findAgy`'s vendor-location fallback finds the executable.
+ * Why APPEND, not prepend: on macOS/Linux the directory is typically `/usr/local/bin`,
+ * `~/.local/bin` or `/snap/bin`, and moving it AHEAD of the user's own entries would shadow their
+ * nvm/pyenv/Homebrew tools for the life of the pane — every command agy runs included. Appending
+ * only fills the gap; a PATH that already resolves agy (or already lists the dir) is untouched.
+ * Entries compare case-insensitively on win32, ignoring a trailing separator.
+ */
+export function pathWithAgyDir(
+  pathValue: string | undefined,
+  dir: string,
+  platform: NodeJS.Platform | string = process.platform
+): string {
+  const win = platform === 'win32'
+  const delim = win ? ';' : ':'
+  const norm = (p: string): string => {
+    const t = p.replace(win ? /[\\/]+$/ : /\/+$/, '')
+    return win ? t.toLowerCase() : t
+  }
+  const current = pathValue ?? ''
+  const entries = current.split(delim).filter(Boolean)
+  if (entries.some((e) => norm(e) === norm(dir))) return current
+  return current ? `${current}${delim}${dir}` : dir
 }
 
 /**
@@ -141,19 +172,30 @@ export function buildAntigravityBundle(
       command: commandFor(eventName(e)),
       timeout: ANTIGRAVITY_HOOK_TIMEOUT
     }
+    // A matcher-less object form (main's ManagedHookEvent made `matcher` optional) is written as a
+    // plain handler list, exactly like the string form: an explicit `matcher: undefined` has no
+    // meaning to agy and would not round-trip through JSON anyway.
     bundle[eventName(e)] =
       typeof e === 'string' || e.matcher === undefined ? [handler] : [{ matcher: e.matcher, hooks: [handler] }]
   }
   return bundle
 }
 
-/** Does a handler command belong to us? Both leaves, on every platform (codex's #558 rule). */
+/**
+ * Does a handler command belong to us? Both leaves, on every platform (codex's #558 rule), and
+ * ANCHORED on `.nodeterm/agent-hooks/`: our script only ever lives in `~/.nodeterm/agent-hooks/`
+ * (`antigravityScriptPath`; the Windows command reaches it as `..\..\.nodeterm\agent-hooks\…`).
+ * The bare `agent-hooks/antigravity.sh` suffix codex/claude match on (they need it for old userData
+ * script paths; this agent has no such history) would also sweep a user's OWN gate that happens to
+ * live at `~/work/agent-hooks/antigravity.sh` — and the withdrawal pass would then log that it
+ * removed "the nodeterm-status bundle".
+ */
 export function isAntigravityManagedCommand(command: unknown): boolean {
   if (typeof command !== 'string') return false
   const c = normalizeHookCommand(command)
   return (
-    c.includes(`agent-hooks/${ANTIGRAVITY_SCRIPT_FILE}`) ||
-    c.includes(`agent-hooks/${ANTIGRAVITY_WINDOWS_WRAPPER_FILE}`)
+    c.includes(`.nodeterm/agent-hooks/${ANTIGRAVITY_SCRIPT_FILE}`) ||
+    c.includes(`.nodeterm/agent-hooks/${ANTIGRAVITY_WINDOWS_WRAPPER_FILE}`)
   )
 }
 
@@ -227,7 +269,15 @@ export function applyAntigravityBundle(
     if (key === ANTIGRAVITY_BUNDLE_KEY) continue
     setOwn(next, key, sweepBundle(value))
   }
-  if (bundle) setOwn(next, ANTIGRAVITY_BUNDLE_KEY, bundle)
+  if (bundle) {
+    // agy's own switch is the user's opt-out: `"enabled": false` on our bundle turns the whole
+    // gate off, and every launch rewrites the bundle — so a `false` found there is carried over,
+    // or nodeterm would silently switch back on a gate in front of every tool call the user had
+    // switched off. Only a literal `false` counts; anything else is the default (enabled).
+    const prior = file[ANTIGRAVITY_BUNDLE_KEY]
+    const disabled = isRecord(prior) && prior.enabled === false
+    setOwn(next, ANTIGRAVITY_BUNDLE_KEY, disabled ? { enabled: false, ...bundle } : bundle)
+  }
   return next
 }
 
@@ -242,9 +292,32 @@ function readHooksFile(file: string): AntigravityHooksFile | null | undefined {
   }
 }
 
-function writeHooksFile(file: string, data: AntigravityHooksFile): void {
-  mkdirSync(path.dirname(file), { recursive: true })
-  writeManagedHookFileAtomic(file, `${JSON.stringify(data, null, 2)}\n`)
+/**
+ * Publish hooks.json through the shared settings transaction (#851, `updateSettingsFile`): resolve
+ * a symlinked file (a dotfiles setup) and update its TARGET instead of replacing the link, keep the
+ * file's mode, serialize our writers behind a lock, and refuse to publish over a file that changed
+ * while we computed the update — agy's own `/hooks` editor writes this same file. `transform` is
+ * re-applied to the config read INSIDE the lock, so the published file is never built from a
+ * snapshot someone else has since replaced.
+ *
+ * `writeFile` (tests only) receives the transformed snapshot instead, as before.
+ */
+function publishHooksFile(
+  file: string,
+  current: AntigravityHooksFile,
+  transform: (config: AntigravityHooksFile) => AntigravityHooksFile,
+  writeFile?: (file: string, data: AntigravityHooksFile) => void
+): void {
+  if (writeFile) {
+    writeFile(file, transform(current))
+    return
+  }
+  if (updateSettingsFile(file, transform)) return
+  // `false` is both "nothing to change" and "could not publish". Re-read to tell them apart: a
+  // file that already says what we would write is a success, anything else is a failed write.
+  const now = readHooksFile(file)
+  if (now && JSON.stringify(transform(now)) === JSON.stringify(now)) return
+  throw new Error(`could not update ${file} (locked by another writer, changed during the update, or unreadable)`)
 }
 
 /**
@@ -395,7 +468,7 @@ export function installAntigravityHooks(opts: AntigravityInstallOptions = {}): A
     return 'refused'
   }
   try {
-    ;(opts.writeFile ?? writeHooksFile)(hooksJson, applyAntigravityBundle(current ?? {}, bundle))
+    publishHooksFile(hooksJson, current ?? {}, (cfg) => applyAntigravityBundle(cfg, bundle), opts.writeFile)
     return 'installed'
   } catch (e) {
     console.warn('[agent-hooks] antigravity install failed', e)
@@ -489,7 +562,7 @@ export function removeAntigravityHooks(
   // `__proto__` key as data, so it compares like any other.
   if (JSON.stringify(next) === JSON.stringify(current)) return 'absent'
   try {
-    ;(opts.writeFile ?? writeHooksFile)(hooksJson, next)
+    publishHooksFile(hooksJson, current, (cfg) => applyAntigravityBundle(cfg, null), opts.writeFile)
     return 'withdrawn'
   } catch {
     return 'failed'

@@ -59,6 +59,12 @@ describe('bridge stubs', () => {
     }).not.toThrow()
   })
 
+  it('hosted-team bookmarks answer an empty list: a browser cannot join a relay host', async () => {
+    const s = buildStubApi()
+    await expect(s.relayHosted.bookmarks()).resolves.toEqual([])
+    await expect(s.relayHosted.removeBookmark('H')).resolves.toBeUndefined()
+  })
+
   it('boot-path promise members resolve benignly', async () => {
     const s = buildStubApi()
     await expect(s.announcements.fetch()).resolves.toEqual([])
@@ -216,5 +222,14 @@ describe('bridge clipboard', () => {
     const ev = dispatchEvent.mock.calls[0][0] as CustomEvent<{ message: string }>
     expect(ev.detail.message).not.toMatch(/plain http/i)
     expect(ev.detail.message).toMatch(/copy/i)
+  })
+})
+
+describe('bridge stubs: canvasAuthority', () => {
+  it('governs nothing and assumes nothing by default (only the Server Edition bridge overrides it)', async () => {
+    const s = buildStubApi()
+    expect(s.canvasAuthority.assumeAllUntilAnswered).toBe(false)
+    expect(await s.canvasAuthority.governed()).toEqual([])
+    expect(typeof s.canvasAuthority.onChanged(() => {})).toBe('function')
   })
 })

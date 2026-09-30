@@ -35,7 +35,7 @@ import * as fsOps from '../../core/fs-ops'
 import { TITLE_MAX, type RemoteNodeInput } from '../../core/project-node-append'
 import { parseCardLabelEdit, type CardLabelEdit } from '../../core/project-kanban-write'
 import { isValidPendingId } from '../../core/agents/pending-approvals'
-import { normalizeChatPage } from '../../shared/chat-page'
+import { GROK_AMBIGUOUS_SESSION_MESSAGE, isGrokAmbiguousSessionError, normalizeChatPage } from '../../shared/chat-page'
 import {
   CHAT_SEND_TEXT_MAX,
   sanitizeChatText,
@@ -52,6 +52,7 @@ import { sanitizeClientMutation } from './canvas-sync'
 import { connectRelay, type RelaySocket, type RpcRequest } from './relay-socket'
 import { initHostCanvasHub, currentCanvas, subscribeCanvas } from './host-canvas-hub'
 import { createPhonePresence, type PhonePresence } from './phone-presence'
+import { registerPeerSessionKiller } from './peer-revoke'
 
 // Default relay endpoint; `NODETERM_RELAY_URL` overrides it (mirrors license.ts's API_BASE /
 // CHECKOUT_URL env-override pattern — used both as the dev gate and for local testing).
@@ -202,8 +203,9 @@ export interface HostChatOps {
    *  for a failure). */
   page(nodeId: string, rawPage: unknown): Promise<ChatPage | null | 'unsupported'>
   /** The node's agent state + held request. `null` ⇒ unknown node. Rejects when the desktop
-   *  window did not answer — never a guessed state. */
-  status(nodeId: string): Promise<ChatStatus | null>
+   *  window did not answer — never a guessed state. `catalog` (the phone asked for it) adds the
+   *  composer's `/` catalog; a failure to build it drops the field, never the status. */
+  status(nodeId: string, opts?: { catalog?: boolean }): Promise<ChatStatus | null>
   /** Type `text` (already stripped of control chars) into the node's pane through the desktop's
    *  own send gate. Only `'sent'` means Enter was confirmed. */
   send(nodeId: string, text: string): Promise<ChatSendOutcome | 'unknown-node'>
@@ -857,12 +859,17 @@ export function createHostHandlers(
                 ? socket.respond(req.id, true, { page })
                 : fail('Unknown node.')
           )
-          .catch(() => fail('Could not read the transcript.'))
+          // An id naming two host grok sessions is its own sentence: "could not read" would
+          // promise a retry that can never help. Every other failure stays generic.
+          .catch((e: unknown) =>
+            fail(isGrokAmbiguousSessionError(e) ? GROK_AMBIGUOUS_SESSION_MESSAGE : 'Could not read the transcript.')
+          )
         return
       }
       case 'chat.status':
         void chat
-          .status(nodeId)
+          // Opt-in (`catalog: true`): an older phone sends no such param and gets the old shape.
+          .status(nodeId, p.catalog === true ? { catalog: true } : undefined)
           .then((status) => (status ? socket.respond(req.id, true, { status }) : fail('Unknown node.')))
           .catch(() => fail('The desktop window is not available.'))
         return
@@ -1401,6 +1408,13 @@ export function initRemoteHost(
     session = null
     pendingApprovalId = null
   }
+
+  // Revocation (peer-revoke.ts): this session is never pinned, so an unpin alone would never reach
+  // it — a revoke must be able to cut it by the key it authenticated (or is awaiting SAS for).
+  registerPeerSessionKiller('phone', (match) => {
+    const key = session?.peerPublicKeyB64()
+    if (key && match(key)) endSession()
+  })
 
   ipcMain.handle(IPC.remoteHostStart, async (): Promise<{ offer: string }> => {
     if (!isPremium()) {

@@ -349,10 +349,10 @@ describe('reopen-last-closed records and dispatches through the shared history s
     expect(CANVAS_SRC).toContain("'app.reopenLastClosed': reopenLastClosedCommand")
   })
 
-  it('never live-inserts into a non-active project — routes through applyNodeMutation instead', () => {
+  it('never live-inserts into a non-active project — routes through applyOwnNodeMutation instead', () => {
     // The bug this pins: a synchronous setNodes() right after switchProject()/reopenProject()
     // races the active-project load effect and silently loses the recreated nodes.
-    expect(CANVAS_SRC).toContain('.applyNodeMutation(plan.projectId, {')
+    expect(CANVAS_SRC).toContain('.applyOwnNodeMutation(plan.projectId, {')
   })
 
   it('arms a cold-open command before writing a restored node into a non-active project', () => {
@@ -397,7 +397,8 @@ describe('node creation resolves its project LIVE and only onto a matching canva
   it('reads the active project from the store at call time in every creation funnel', () => {
     const liveReads =
       CANVAS_SRC.match(/const targetProjectId = useProjects\.getState\(\)\.activeProjectId/g) ?? []
-    // addAgentNode, addTerminal, createNodeInColumn, explainCommit.
+    // addAgentNode, addTerminal, createNodeInColumn, explainCommit. (startIssueAgent creates THROUGH
+    // addAgentNode and uses the project id it returns — it never reads the store a second time.)
     expect(liveReads.length).toBe(4)
   })
 

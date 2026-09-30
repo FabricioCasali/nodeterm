@@ -25,6 +25,8 @@ import {
   hasSharedIdentity,
   agentLaunchProgram,
   resumeCommand,
+  hasHooksOverSsh,
+  LOCAL_ONLY_HOOK_AGENTS,
   reportsSessionEnd
 } from './config'
 
@@ -77,7 +79,6 @@ describe('copilot capabilities', () => {
       canRecur,
       canBranch,
       hasUsage,
-      canChat,
       canTransferFrom,
       canRename,
       canReadTitle,
@@ -85,6 +86,15 @@ describe('copilot capabilities', () => {
     ]) {
       expect(can('copilot')).toBe(false)
     }
+  })
+
+  it('shows its conversation in the chat panel from its OWN journal, never through claude\'s resolver', () => {
+    // The ⌘M leaf is `core/copilot-chat.ts` (`<COPILOT_HOME>/session-state/<id>/events.jsonl`, keyed
+    // strictly by session id). Joining CHAT_CAPABLE must not join CLAUDE_TRANSCRIPT_READABLE: that
+    // list gates the find bar's index and the meter's rehydration, both of which resolve through
+    // claude's cwd fallback and would hand a copilot node someone else's claude session.
+    expect(canChat('copilot')).toBe(true)
+    expect(readsClaudeShapedTranscript('copilot')).toBe(false)
   })
 })
 
@@ -104,9 +114,16 @@ describe('opencode capabilities', () => {
     expect(canControlCanvas('opencode')).toBe(true)
   })
   it('stays out of the claude-only capability lists', () => {
-    for (const can of [canSubagent, canRecur, canBranch, hasUsage, canChat, canTransferFrom, canRename, canReadTitle, hasPermissionMode]) {
+    for (const can of [canSubagent, canRecur, canBranch, hasUsage, canTransferFrom, canRename, canReadTitle, hasPermissionMode]) {
       expect(can('opencode')).toBe(false)
     }
+  })
+  it('shows its conversation in the ⌘M chat panel — read through `opencode export`, never claude\'s resolver', () => {
+    // Same pair grok pins below: opencode's sessions live in a database read by `opencode export`
+    // (core/opencode-chat.ts), so claude's resolver — whose cwd fallback returns a stranger's newest
+    // transcript — must never be asked for one.
+    expect(canChat('opencode')).toBe(true)
+    expect(readsClaudeShapedTranscript('opencode')).toBe(false)
   })
 })
 
@@ -281,6 +298,21 @@ describe('grok capabilities', () => {
  * exclusion below says which leaf is missing — measured facts (`agy` 1.2.3, Windows 11).
  */
 describe('antigravity capabilities', () => {
+  it('is offered ABOVE gemini wherever agents are listed (BUILTIN_AGENT_IDS is display order)', () => {
+    // Google moved personal accounts from Gemini CLI to Antigravity on 2026-06-18.
+    expect(BUILTIN_AGENT_IDS.indexOf('antigravity')).toBeLessThan(BUILTIN_AGENT_IDS.indexOf('gemini'))
+  })
+
+  it('reports status on THIS machine only — an SSH host has no agy hook installer yet', () => {
+    // `--after` asks this before accepting a dependency in an SSH project: a node that can never
+    // report "done" there would hold its dependant QUEUED forever.
+    expect(hasHooksOverSsh('antigravity')).toBe(false)
+    expect(LOCAL_ONLY_HOOK_AGENTS as readonly string[]).toEqual(['antigravity'])
+    for (const id of BUILTIN_AGENT_IDS.filter((a) => a !== 'antigravity')) {
+      expect(hasHooksOverSsh(id), id).toBe(hasHooks(id))
+    }
+  })
+
   it('is a builtin that launches `agy`, prompt through --prompt-interactive', () => {
     expect(BUILTIN_AGENT_IDS).toContain('antigravity')
     expect(AGENT_CONFIG.antigravity.launchCmd).toBe('agy')
@@ -309,14 +341,21 @@ describe('antigravity capabilities', () => {
     // thought block, not context use) — rule 6: no trustworthy denominator, no meter. Joining would
     // also switch on context.ensure and the find-bar index.
     expect(hasUsage('antigravity')).toBe(false)
-    // No transcript parser or locator yet (transcript_full.jsonl, not transcript.jsonl).
+    // No transcript parser or locator yet. The location is measured (the payload's transcriptPath,
+    // `brain/<conversationId>/…/transcript_full.jsonl`); the record shapes are only vendor prose,
+    // never captured. Joining CHAT_CAPABLE before that capture would render a guess on ⌘M and on
+    // the phone's Chat screen: docs/antigravity-agent.md §7.1 and §8.1.
     expect(canChat('antigravity')).toBe(false)
     expect(readsClaudeShapedTranscript('antigravity')).toBe(false)
     expect(canTransferFrom('antigravity')).toBe(false)
     expect(canContextLink('antigravity')).toBe(false)
-    // `agy --conversation <id>` resumes (measured), but it is a later slice: joining now makes cold
-    // restore type an unvalidated resume line.
-    expect(canResume('antigravity')).toBe(false)
+    // `agy --conversation=<id>` resumes; the id is validated at the interpolation site
+    // (SAFE_SESSION_ID) and a dead one is ignored by agy itself (it starts fresh). Not minted.
+    expect(canResume('antigravity')).toBe(true)
+    expect(resumeCommand('antigravity', '5f0c2f8e-9a51-4c41-9d2e-2b6f0f3e7a11')).toBe(
+      'agy --conversation=5f0c2f8e-9a51-4c41-9d2e-2b6f0f3e7a11'
+    )
+    expect(resumeCommand('antigravity', "x'; rm -rf ~")).toBeNull()
     expect(mintsSessionId('antigravity')).toBe(false)
     // No subagent/recurring/branch events are wired (invoke_subagent exists in the enum, unmeasured).
     expect(canSubagent('antigravity')).toBe(false)

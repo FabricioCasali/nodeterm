@@ -2,6 +2,8 @@
 // Design: an open AgentId string, a declarative config record, and
 // capabilities expressed as const membership lists (not a capability object).
 
+import { SAFE_SESSION_ID_UNBOUNDED } from '../session-id'
+
 export type BuiltinAgentId =
   | 'claude'
   | 'codex'
@@ -34,6 +36,15 @@ export interface AgentConfig {
    * `stdin-after-start` could deliver a prompt without producing a silently wrong command line.
    */
   promptFlag?: string
+  /**
+   * A one-sentence caveat shown as the tooltip where the agent is OFFERED (pane/sidebar menus, the
+   * Dock; not the ⌘K palette, whose right-aligned note does not wrap a sentence this long) — not
+   * a capability, and never read to decide behaviour. Exists for gemini: Google stopped serving
+   * Gemini CLI to personal accounts on 2026-06-18 (google-gemini/gemini-cli discussion #27274),
+   * and a user who picks it with a personal account otherwise meets a sign-in loop with no
+   * explanation. Absent = nothing to say.
+   */
+  notice?: string
   /**
    * Put this between the command and an `argv` prompt — in practice `'--'`, and only for a CLI
    * whose grammar has BOTH a positional prompt and subcommands.
@@ -68,14 +79,17 @@ export interface AgentConfig {
   vanillaEnvPattern?: string
 }
 
+// ORDER is display order everywhere agents are offered (menus, Dock, palette, Settings, the
+// canvas-control help). antigravity sits above gemini: since 2026-06-18 it is Google's agent for
+// personal accounts, and gemini remains for Code Assist / Vertex / API-key users.
 export const BUILTIN_AGENT_IDS: readonly BuiltinAgentId[] = [
   'claude',
   'codex',
+  'antigravity',
   'gemini',
   'opencode',
   'grok',
-  'copilot',
-  'antigravity'
+  'copilot'
 ]
 
 export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
@@ -108,7 +122,9 @@ export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
     color: '#4285f4',
     launchCmd: 'gemini',
     promptInjectionMode: 'stdin-after-start',
-    expectedProcess: 'gemini'
+    expectedProcess: 'gemini',
+    notice:
+      'Google stopped serving Gemini CLI to personal accounts (free, AI Pro, AI Ultra) on 2026-06-18 — use Antigravity instead. Code Assist Standard/Enterprise, Vertex AI and paid API keys still work.'
   },
   opencode: {
     label: 'opencode',
@@ -173,7 +189,22 @@ export const AGENT_HOOK_TARGETS = [
   'copilot',
   'antigravity'
 ] as const
-export const RESUMABLE_AGENTS = ['claude', 'codex', 'gemini', 'opencode', 'grok', 'copilot'] as const
+// antigravity: `agy --conversation=<id>` — the `=` spelling agy prints in its own exit hint
+// (`agy --conversation=%s`, 1.2.12 binary). The id is the hook payload's `conversationId`, recorded
+// as the node's session id. A dead id is the SAFE failure here: agy logs "Conversation %s not found,
+// ignoring --conversation flag" and starts a fresh conversation (1.2.12 binary) — so a wrong id costs
+// the history, never the launch. Without membership a cold restore (machine reboot) brought an agy
+// node back as a bare shell under an Antigravity badge (`canColdRestore` needs `canResume`).
+// UNVERIFIED on a device: that the hook's conversationId is the id `--conversation` accepts.
+export const RESUMABLE_AGENTS = [
+  'claude',
+  'codex',
+  'gemini',
+  'opencode',
+  'grok',
+  'copilot',
+  'antigravity'
+] as const
 // Agents whose session id we MINT at launch (`--session-id <uuid>`) instead of learning it only
 // from hook events. Each member must have a measured caller-chosen-id grammar below.
 //
@@ -265,7 +296,26 @@ export const USAGE_CAPABLE = ['claude', 'codex', 'gemini', 'grok'] as const
 // newest CLAUDE transcript for that cwd. A grok node in this list would therefore show a stranger's
 // conversation in its find bar and rehydrate its meter from it. That exact bug already happened once
 // with codex and gemini; transcriptGates.ts documents it.
-export const CHAT_CAPABLE = ['claude', 'grok'] as const
+//
+// gemini joined in 2026-09 with its own reader (`core/gemini-chat.ts`): its session file is an upsert
+// log, not claude's shape, and it is located strictly by the session id in the file's header.
+// codex joined 2026-09-28 with its own reader (core/codex-chat.ts: the rollout's UI stream for what
+// the user typed, the model stream for answers and tools), local and over SSH.
+// copilot joined 2026-09 with its own leaf, `core/copilot-chat.ts`: `<COPILOT_HOME>/session-state/
+// <id>/events.jsonl`, located strictly by session id and routed there before anything claude-shaped
+// (`readChatTranscript`). Like the others it is NOT in CLAUDE_TRANSCRIPT_READABLE below.
+// opencode joined 2026-09-28: it has no transcript file at all (SQLite since 1.18), so its chat is
+// read through `opencode export <id>` (core/opencode-chat.ts) and it stays out of the list below.
+export const CHAT_CAPABLE = ['claude', 'grok', 'gemini', 'codex', 'copilot', 'opencode'] as const
+// CHAT_CAPABLE agents whose reader has NO remote leg: a remote (SSH) node's session lives on its
+// host, so core answers `unreadable` before touching anything — and the local reader never sets that
+// flag (copilot maps a failed local read to not-found for exactly this reason). So an unreadable read
+// of one of these can only mean "remote, unsupported", and the ⌘M panel names it from the agent
+// alone rather than offering a Retry that can never succeed. grok and codex are NOT here: their
+// remote nodes are read on the host (`core/remote-grok-chat.ts`, `main/remote-codex-chat-page.ts`).
+// opencode has no remote leg either but is NOT here: its `unreadable` also means a failed LOCAL
+// `opencode export`, which Retry heals — the panel gives it its own copy (`exportError`) instead.
+export const CHAT_LOCAL_ONLY = ['gemini', 'copilot'] as const
 // Agents whose transcript CLAUDE's own resolver can locate and parse — the gate for everything that
 // goes through `resolveTranscript` (the find bar's index, the meter's mount-time rehydration).
 //
@@ -449,6 +499,15 @@ const includes = (list: readonly string[], id: AgentId): boolean =>
   list.includes(capabilityAgentId(id))
 
 export const hasHooks = (id: AgentId): boolean => includes(AGENT_HOOK_TARGETS, id)
+/**
+ * Hook-reporting agents whose hooks nodeterm installs on THIS machine only — `RemoteHooks.setup()`
+ * has no installer for them on an SSH host yet. On an SSH project such a node never reports a
+ * state, so nothing may WAIT on it (`--after`): the dependant would sit QUEUED forever.
+ */
+export const LOCAL_ONLY_HOOK_AGENTS = ['antigravity'] as const
+/** Does this agent report status when its node runs on an SSH project's host? */
+export const hasHooksOverSsh = (id: AgentId): boolean =>
+  hasHooks(id) && !includes(LOCAL_ONLY_HOOK_AGENTS, id)
 export const canResume = (id: AgentId): boolean => includes(RESUMABLE_AGENTS, id)
 export const mintsSessionId = (id: AgentId): boolean => includes(SESSION_ID_CAPABLE, id)
 /** Is the caller-chosen session-id flag available for this effective base harness? */
@@ -477,6 +536,7 @@ export const canBranch = (id: AgentId): boolean => includes(BRANCH_CAPABLE, id)
 export const canContextLink = (id: AgentId): boolean => includes(CONTEXT_LINK_CAPABLE, id)
 export const hasUsage = (id: AgentId): boolean => includes(USAGE_CAPABLE, id)
 export const canChat = (id: AgentId): boolean => includes(CHAT_CAPABLE, id)
+export const chatReadsLocalOnly = (id: AgentId): boolean => includes(CHAT_LOCAL_ONLY, id)
 /** Can CLAUDE's transcript resolver locate and parse this agent's conversation? Never widen this
  *  to mean "can we read this agent" — see CLAUDE_TRANSCRIPT_READABLE. */
 export const readsClaudeShapedTranscript = (id: AgentId): boolean =>
@@ -542,8 +602,10 @@ export function createdAgentId(
 
 // Session ids are interpolated into a shell command line (written into the live shell on a
 // cold restart), so accept only the safe charset agents actually use (UUIDs etc.) — never a
-// flag-like or metacharacter-bearing value.
-const SAFE_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+// flag-like or metacharacter-bearing value. The shared alphabet in its UNBOUNDED form: these
+// helpers never capped the length, and capping them now would stop resuming an id that works today
+// (see `@shared/session-id`).
+const SAFE_SESSION_ID = SAFE_SESSION_ID_UNBOUNDED
 
 /**
  * Appends the minted-session-id flag to a FIRST-LAUNCH command, for agents in
@@ -641,6 +703,8 @@ export function resumeCommandWith(
       return `${launchCmd} --session ${sid}`
     case 'copilot':
       return `${launchCmd} --resume=${sid}`
+    case 'antigravity':
+      return `${launchCmd} --conversation=${sid}`
     case 'claude':
     case 'gemini':
     case 'grok':
