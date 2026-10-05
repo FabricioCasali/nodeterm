@@ -21,6 +21,7 @@ import {
 } from '../lib/sessionList'
 import { sidebarEmptyState, sidebarFilterKeyAction } from '../lib/sidebarFilter'
 import { SessionRow } from './SessionRow'
+import { projectSessionSource } from './LiveLinkChip'
 import { ProjectGlyph } from './ProjectGlyph'
 import { ClosedHistorySection } from './ClosedHistorySection'
 import { IconBellFilled, IconCircleCheck, IconClose, IconPin } from './icons'
@@ -304,6 +305,7 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
       >
         <SessionRow
           row={row}
+          liveLinkSource={projectSessionSource(projectId)}
           onClick={() => props.onFocusNode(row.id)}
           onClose={() => props.onCloseSession(projectId, row.id)}
           onRename={(title) => props.onRenameSession(projectId, row.id, title)}
@@ -499,6 +501,7 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
     <div key={row.id} className="ss-rowdrop">
       <SessionRow
         row={row}
+        liveLinkSource={projectSessionSource(row.projectId!)}
         onClick={() => props.onFocusNode(row.id)}
         onClose={() => props.onCloseSession(row.projectId!, row.id)}
         onRename={(title) => props.onRenameSession(row.projectId!, row.id, title)}

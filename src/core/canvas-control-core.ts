@@ -596,6 +596,7 @@ import {
   SETTINGS_VERB_KEY_LIST,
   parseSettingsRequest
 } from '../shared/settings-verb'
+import { PROJECT_NAME_MAX } from '../shared/project-name'
 import {
   githubReadArgsRefusal,
   GITHUB_READ_LIMIT_DEFAULT,
@@ -940,7 +941,8 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     ...reportOutcomeDocLines(),
     '- `open-project --cwd </abs/path> [--name N] [--color C]` — register (or find) the project for a',
     '  local directory; the reply carries `{ projectId, name, cwd, created }`. Idempotent: the same',
-    '  cwd always returns the same project, never a duplicate. Creating/adding asks the user to',
+    `  cwd always returns the same project, never a duplicate. A \`--name\` over ${PROJECT_NAME_MAX} characters is`,
+    '  cut to that length when the project is created. Creating/adding asks the user to',
     '  confirm (your first open of an already-registered project asks once too) and may be denied —',
     '  a denial is final, do not retry it. Local only (refused from an SSH project), and it never',
     '  focuses the new project\'s tab. The returned id is what `--project` accepts.',
@@ -969,6 +971,8 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  on demand (nodeterm linked-context CLI). `--from` defaults to you; nothing is pushed into the',
     '  linked sessions. Agent sessions you open, and the stations you name in `--after`, are already',
     '  linked — nothing to `link`. Use `link` only for nodes you did not open, or to link two OTHER nodes.',
+    '  `--one-way` makes each new link one-way: `--from` (you, by default) reads the `--to` nodes, and',
+    '  they cannot read it back. The human can flip or reset a link\'s direction from its right-click menu.',
     `  Both endpoints must be in your project. A missing endpoint reports: ${LINK_ENDPOINT_NOT_FOUND}.`,
     '  This does not reveal whether the id exists in another project.',
     '  On Server Edition the ownership rule is stricter: every endpoint must be a node you opened',
@@ -1523,7 +1527,8 @@ ${reportOutcomeDocLines().join('\n')}
   local directory; the reply carries \`{ projectId, name, cwd, created }\`. Idempotent: the same
   cwd always returns the same project, never a duplicate — and \`--name\`/\`--color\` apply only
   when the project is created (an existing project's name is never changed; the reply tells you
-  its real name). Creating/adding asks the user to confirm (your first open of an
+  its real name). A \`--name\` over ${PROJECT_NAME_MAX} characters is cut to that length when the
+  project is created. Creating/adding asks the user to confirm (your first open of an
   already-registered project asks once too) and may be denied — a denial is final, do not retry
   it. Local only (refused from an SSH project), and it never focuses the new project's tab: use
   the returned id with \`--project\` to open sessions there.
@@ -1567,7 +1572,9 @@ ${arrangeGroupGuidanceLines().join('\n')}
   pushed into the linked sessions — reading is on demand, so linking never interrupts anyone.
   Agent sessions you open (\`open-claude\`/\`open-agent\`/\`spawn-team\`) and the stations you name in
   \`--after\` are already linked — nothing to \`link\`. Use \`link\` only for nodes you did not open,
-  or to link two OTHER nodes together.
+  or to link two OTHER nodes together. Add \`--one-way\` to make each new link one-way: \`--from\`
+  (you, by default) reads the \`--to\` nodes and they cannot read it back. The human can flip or
+  reset a link's direction from its right-click menu.
   Both endpoints must be in your project. A missing endpoint reports: ${LINK_ENDPOINT_NOT_FOUND}.
   This does not reveal whether the id exists in another project.
   On Server Edition the ownership rule is stricter: every endpoint must be a node you opened
