@@ -4209,9 +4209,9 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   gate checks. **Server Edition: refused by name** — `arrange` is not in `SERVER_V1_VERBS` in either
   form (headless control keeps no measured node sizes), so `--group` gets the same permanent
   `control-unsupported-on-this-edition` reply and is never dropped on the way to an `ok`
-  (`control-unsupported.test.ts` pins it). Off screen it is refused like the `--nodes` form
-  (`OFF_SCREEN_REFUSALS`); the dispatch branch is deliberately thin so moving `arrange` off-screen
-  touches only where the node array comes from.
+  (`control-unsupported.test.ts` pins it). Off screen it works like the `--nodes` form: the
+  stored nodes are laid out and written back through `commitCtlNodes`, and the lineage ropes are
+  the OWNING project's (`offCanvas.project.ropes`), never the live canvas's.
   **Fan-in (`link`, 2026-07):** a spawned fan-out was previously write-only — nodes an agent
   opened were joined to it by a **rope** (`project.ropes`, explicitly *"Display-only — never
   context links"*), so an orchestrator could not read back what its own team produced and the
