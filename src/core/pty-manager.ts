@@ -3537,19 +3537,6 @@ export class PtyManager {
       if (agy) env.PATH = pathWithAgyDir(env.PATH, path.dirname(agy))
     }
 
-    // Codex reads its hooks and their config.toml trust at SESSION START, and boot was the only
-    // place we installed them: a config.toml rewritten while the app ran left every Codex session
-    // started afterwards with no status hooks (badge dark, messages expiring as targetStatusStale).
-    // Re-check before a local Codex pane spawns; repairs only on drift and never throws. SSH
-    // sessions run the host's codex, whose files RemoteHooks owns.
-    if (
-      options.agentId &&
-      capabilityAgentId(options.agentId as AgentId) === 'codex' &&
-      !options.sshRemote
-    ) {
-      ensureCodexHooksCurrent()
-    }
-
     // Same GUI-launch gap for the locale: with no LANG/LC_* the shell's `locale` is "C" (non-UTF-8),
     // so Claude Code and other TUIs fall back to ASCII box-drawing (rounded borders render as `_`/`|`).
     // Force a UTF-8 locale when the inherited env doesn't already declare one.
@@ -3637,6 +3624,20 @@ export class PtyManager {
       env.CODEX_HOME = codexScope.CODEX_HOME
       env.NODETERM_CODEX_ACCOUNT_ID = codexScope.NODETERM_CODEX_ACCOUNT_ID
       for (const k of CODEX_AUTH_ENV_STRIP) delete env[k]
+      // Codex reads its hooks and their config.toml trust at SESSION START, from THIS session's
+      // CODEX_HOME (a managed account's private home, or the system one). Boot was the only place
+      // we installed them, so a config.toml rewritten while the app ran left every Codex session
+      // started afterwards with no status hooks (badge dark, messages expiring targetStatusStale).
+      // Re-check that home before the pane spawns; repairs only on drift and never throws. An id
+      // that is not a known Codex account gets no repair (and never a fallback to ~/.codex). SSH
+      // sessions run the host's codex, whose files RemoteHooks owns.
+      if (
+        options.agentId &&
+        capabilityAgentId(options.agentId as AgentId) === 'codex' &&
+        (!options.accountId || this.isCodexAccount(options.accountId))
+      ) {
+        ensureCodexHooksCurrent(codexScope.CODEX_HOME)
+      }
     }
 
     // Shared model gateway: resolve through the node's BASE harness in one shared mapping, then

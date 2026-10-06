@@ -2803,19 +2803,27 @@ else, and its context links must keep classifying across restarts).
   (`codex.sh` AND `codex-hook.cmd`) on every platform — matching only the local one would leave a
   pre-fix entry unrecognized, so the fresh one is appended beside it, which is #558 on a second
   file. Matching both is what REPAIRS an existing Windows install at the next launch.
-  **Codex hook trust is re-checked at every LOCAL Codex spawn, not only at boot**
-  (`ensureCodexHooksCurrent` in `core/agents/hooks/codex.ts`, called from `PtyManager.spawnSession`
-  for `capabilityAgentId === 'codex'` and no `sshRemote`). Codex reads hooks.json and the
-  config.toml `trusted_hash` blocks at SESSION START and silently skips an untrusted hook; boot was
-  the only install, so a config.toml rewritten while the app ran (codex's own /hooks flow, another
-  tool, a test run on the real home) left every Codex session started afterwards dark — measured on
-  a Windows desktop: every message to those nodes queued as `targetStatusStale` and expired.
-  `codexHookDrift` is read-only (script + Windows wrapper bytes, our hooks.json entries via the same
-  `buildCodexHooksAndTrust`, and each trust key's hash); only drift re-runs the installer, with a
-  warning naming what was repaired, so a current install never rewrites config.toml (codex writes
-  it too). It never throws into the spawn. Not covered: managed Codex accounts (their sessions read
-  `CODEX_HOME=<account home>`, not `~/.codex`), SSH hosts (RemoteHooks owns those files), and an
-  in-pane restart/resume that types `codex` without a new spawn. **Both
+  **Codex hook trust is re-checked at every LOCAL Codex spawn, not only at boot, in the HOME that
+  session runs under** (`ensureCodexHooksCurrent(home)` in `core/agents/hooks/codex.ts`, called
+  from `PtyManager.spawnSession` inside the local codex-scope block with the same
+  `codexScope.CODEX_HOME` it puts in the pane's env — a managed account's private home or the
+  system one). Codex reads hooks.json and the config.toml `trusted_hash` blocks from its
+  CODEX_HOME at SESSION START and silently skips an untrusted hook; boot was the only install, so a
+  config.toml rewritten while the app ran (codex's own /hooks flow, another tool, a test run on the
+  real home) left every Codex session started afterwards dark — measured on a Windows desktop:
+  every message to those nodes queued as `targetStatusStale` and expired. `codexHookDrift(home)`
+  is read-only (script + Windows wrapper bytes, our hooks.json entries via the same
+  `buildCodexHooksAndTrust`, and each trust key's hash); only drift re-runs
+  `installCodexHooks(home)`, with a warning naming the home and what was repaired, so a current
+  install never rewrites config.toml (codex writes it too). It never throws into the spawn, never
+  creates a missing home, and an `accountId` that is not a known Codex account gets no repair
+  (never a fallback to `~/.codex`). **Managed account homes symlink hooks.json + config.toml to
+  `~/.codex`** (`initializeAccountHome`), so every write goes through the link (`writeTarget`,
+  realpath) — a temp+rename onto the link would replace it with a private copy no later system
+  install reaches. A home whose links were never made or were replaced by real files is repaired in
+  place; boot now covers those homes too (`ensureCodexHooksForAccounts`, both shells), where before
+  it installed only `~/.codex` and relied on the links. Not covered: SSH hosts (RemoteHooks owns
+  those files) and an in-pane restart/resume that types `codex` without a new spawn. **Both
   sides of the managed-entry match go through `normalizeHookCommand`** — the marker used to be
   folded to `/` while the stored command was compared raw, so on Windows nodeterm never recognized
   its OWN entry and appended a fresh set every launch (#558: nine copies of nine events, nine
