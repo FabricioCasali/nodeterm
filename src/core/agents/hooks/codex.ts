@@ -31,6 +31,7 @@ import { normalizeHookCommand } from './install-helper'
 import { buildCodexWindowsWrapper, CODEX_WINDOWS_WRAPPER_FILE } from './codex-windows-wrapper'
 import {
   computeTrustedHash,
+  computeTrustKey,
   getCodexCanonicalTrustPath,
   parseTrustKey,
   readHookTrustEntries,
@@ -419,6 +420,63 @@ export function installCodexHooks(): void {
     upsertHookTrustEntries(configTomlPath(), built.trustEntries)
   } catch (e) {
     console.warn('[agent-hooks] codex install failed', e)
+  }
+}
+
+/**
+ * What is missing from this machine's codex hook install, read-only. Empty = current.
+ *
+ * Codex runs a hook only when config.toml holds a `trusted_hash` for it, and reads both files at
+ * SESSION START. Boot used to be the only repair, so anything that rewrote config.toml while the
+ * app ran (codex's own /hooks flow racing us, another tool, a test run on the real home) left every
+ * Codex session started afterwards with no status hooks at all — measured on a Windows desktop:
+ * every agent message to those nodes queued as `targetStatusStale` and expired.
+ */
+export function codexHookDrift(): string[] {
+  const drift: string[] = []
+  const script = scriptPath()
+  try {
+    if (readFileSync(script, 'utf8') !== buildManagedScript('codex')) drift.push('hook script')
+  } catch {
+    drift.push('hook script')
+  }
+  if (process.platform === 'win32') {
+    try {
+      const wrapper = path.join(path.dirname(script), CODEX_WINDOWS_WRAPPER_FILE)
+      if (readFileSync(wrapper, 'utf8') !== buildCodexWindowsWrapper()) drift.push('windows wrapper')
+    } catch {
+      drift.push('windows wrapper')
+    }
+  }
+  const hooksFile = hooksJsonPath()
+  const config = readHooksJson(hooksFile)
+  // Unparseable hooks.json: the installer would leave it alone too, so it is not drift we can fix.
+  const built = config ? buildCodexHooksAndTrust(config, buildManagedCommand(script), hooksFile) : null
+  if (!built) return drift
+  if (!existsSync(hooksFile) || JSON.stringify(built.config) !== JSON.stringify(config)) {
+    drift.push('hooks.json entries')
+  }
+  const trust = readHookTrustEntries(configTomlPath())
+  const missing = built.trustEntries.filter(
+    (e) => trust.get(computeTrustKey(e))?.trustedHash !== computeTrustedHash(e)
+  )
+  if (missing.length) drift.push(`config.toml trust (${missing.length}/${built.trustEntries.length})`)
+  return drift
+}
+
+/**
+ * Called right before a LOCAL Codex session spawns: re-install only when something drifted, so a
+ * current install costs a few small reads and config.toml (which codex also writes) is never
+ * rewritten for nothing. Never throws — a launch must not depend on it.
+ */
+export function ensureCodexHooksCurrent(): void {
+  try {
+    const drift = codexHookDrift()
+    if (!drift.length) return
+    console.warn(`[agent-hooks] codex hook install drifted (${drift.join(', ')}); repairing`)
+    installCodexHooks()
+  } catch (e) {
+    console.warn('[agent-hooks] codex hook check failed', e)
   }
 }
 

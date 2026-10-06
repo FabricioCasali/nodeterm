@@ -22,6 +22,7 @@ import {
 import { bundledTmuxPath, findCommand, findFixedTmux, tmuxInstall } from './tmux-hint'
 import { hookServer, PERM_WAIT_SECS_DEFAULT } from './agents/hook-server'
 import { findAgy, pathWithAgyDir } from './agents/hooks/antigravity'
+import { ensureCodexHooksCurrent } from './agents/hooks/codex'
 import {
   probeSaysAbsent,
   remoteHookEnvArgs,
@@ -3534,6 +3535,19 @@ export class PtyManager {
     ) {
       const agy = findAgy()
       if (agy) env.PATH = pathWithAgyDir(env.PATH, path.dirname(agy))
+    }
+
+    // Codex reads its hooks and their config.toml trust at SESSION START, and boot was the only
+    // place we installed them: a config.toml rewritten while the app ran left every Codex session
+    // started afterwards with no status hooks (badge dark, messages expiring as targetStatusStale).
+    // Re-check before a local Codex pane spawns; repairs only on drift and never throws. SSH
+    // sessions run the host's codex, whose files RemoteHooks owns.
+    if (
+      options.agentId &&
+      capabilityAgentId(options.agentId as AgentId) === 'codex' &&
+      !options.sshRemote
+    ) {
+      ensureCodexHooksCurrent()
     }
 
     // Same GUI-launch gap for the locale: with no LANG/LC_* the shell's `locale` is "C" (non-UTF-8),
