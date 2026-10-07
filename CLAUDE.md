@@ -2823,7 +2823,24 @@ else, and its context links must keep classifying across restarts).
   install reaches. A home whose links were never made or were replaced by real files is repaired in
   place; boot now covers those homes too (`ensureCodexHooksForAccounts`, both shells), where before
   it installed only `~/.codex` and relied on the links. Not covered: SSH hosts (RemoteHooks owns
-  those files) and an in-pane restart/resume that types `codex` without a new spawn. **Both
+  those files) and an in-pane restart/resume that types `codex` without a new spawn.
+  **A trust table is found by its DECODED key, never by spelling** (`tableHeaderPath`,
+  `codex-trust.ts`): bare, `"basic"` (escapes, `\u`) and `'literal'` segments name the same TOML
+  key. Measured live on a Windows desktop (2026-10-07): config.toml held our tables as
+  `[hooks.state.'C:\…']`, the matcher only knew our `"C:\\…"` spelling, the repair APPENDED a second
+  table per key, and Codex refused to start ("duplicate key") — every Codex node dead. The boot
+  install had the same flaw before the launch repair existed; the launch repair just ran it more
+  often. A repair now REWRITES the existing table whatever its quoting (keeping `enabled = false`),
+  and **an edit that would leave any `[table]` defined twice is refused** (`assertTomlTablesUnique`,
+  run inside `upsertHookTrustEntriesInContent` whenever it changed the text): the local installer
+  computes the config.toml edit BEFORE writing hooks.json, so a refusal writes nothing and warns; the
+  SSH installer throws inside its update and writes no config.toml. No TOML parser is in our deps, so
+  the guard is the duplicate-table check, not full validation. **A managed hook command is matched
+  only under our own directories** (`OWN_HOOK_DIRS`: `/.nodeterm`, `/node-terminal`,
+  `/.nodeterm-server` + `/agent-hooks/<leaf>`), never a bare `agent-hooks/<leaf>` tail: Orca keeps
+  `~/.orca/agent-hooks/codex-hook.cmd` and the tail match stripped it on every repair (and Orca did
+  the same to ours). A stale entry from a Server Edition run with a custom `--data-dir` is no longer
+  swept. install-helper's matcher for the other agents still matches by tail (not changed here). **Both
   sides of the managed-entry match go through `normalizeHookCommand`** — the marker used to be
   folded to `/` while the stored command was compared raw, so on Windows nodeterm never recognized
   its OWN entry and appended a fresh set every launch (#558: nine copies of nine events, nine
