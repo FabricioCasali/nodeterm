@@ -22,6 +22,7 @@ import {
   installCodexHooks
 } from './codex'
 import { codexAccountHome } from '../../codex-accounts-core'
+import { assertTomlTablesUnique } from './codex-trust'
 
 const toml = (): string => path.join(home, '.codex', 'config.toml')
 const hooks = (): string => path.join(home, '.codex', 'hooks.json')
@@ -86,6 +87,58 @@ describe('ensureCodexHooksCurrent', () => {
   it('never throws when the install cannot be read', () => {
     fs.mkdirSync(toml(), { recursive: true }) // config.toml is a DIRECTORY: every read fails
     expect(() => ensureCodexHooksCurrent()).not.toThrow()
+  })
+})
+
+// The live failure on a Windows desktop (2026-10-07): config.toml held our trust tables spelled
+// with LITERAL-string keys (`[hooks.state.'C:\…']`), the repair appended basic-string copies of the
+// same keys, and Codex refused to start ("duplicate key").
+describe('trust tables in another TOML spelling', () => {
+  const headers = (): string[] =>
+    fs.readFileSync(toml(), 'utf8').split('\n').filter((l) => l.startsWith('[hooks.state.'))
+  /** Rewrite `which` of our basic-string headers as literal-string ones (the key is unchanged). */
+  const toLiteral = (which: (i: number) => boolean): void => {
+    let i = 0
+    const text = fs.readFileSync(toml(), 'utf8').replace(/^\[hooks\.state\."(.*)"\]$/gm, (line, key: string) =>
+      which(i++) ? `[hooks.state.'${key.replace(/\\\\/g, '\\').replace(/\\"/g, '"')}']` : line
+    )
+    fs.writeFileSync(toml(), text)
+  }
+  const drift = (): void =>
+    fs.writeFileSync(toml(), fs.readFileSync(toml(), 'utf8').replace(/sha256:[0-9a-f]+/g, 'sha256:00'))
+
+  it('a current config spelled with literal keys is current — nothing is written', () => {
+    installCodexHooks()
+    toLiteral(() => true)
+    const past = new Date(Date.now() - 60_000)
+    fs.utimesSync(toml(), past, past)
+    const before = fs.statSync(toml()).mtimeMs
+    expect(codexHookDrift()).toEqual([])
+    ensureCodexHooksCurrent()
+    expect(fs.statSync(toml()).mtimeMs).toBe(before)
+  })
+
+  it.each([
+    ['all literal', (): boolean => true],
+    ['mixed', (i: number): boolean => i % 2 === 0]
+  ])('drifted hashes under %s keys are repaired in place, one table per key', (_label, which) => {
+    installCodexHooks()
+    toLiteral(which)
+    drift()
+    expect(codexHookDrift()).toEqual(['config.toml trust (8/8)'])
+    ensureCodexHooksCurrent()
+    expect(codexHookDrift()).toEqual([])
+    expect(headers()).toHaveLength(8)
+    expect(() => assertTomlTablesUnique(fs.readFileSync(toml(), 'utf8'))).not.toThrow()
+  })
+
+  it('writes NOTHING when the result would still define a table twice, and does not throw', () => {
+    fs.mkdirSync(path.dirname(toml()), { recursive: true })
+    const broken = '[profiles.a]\nmodel = "x"\n\n[profiles.a]\nmodel = "y"\n'
+    fs.writeFileSync(toml(), broken)
+    expect(() => ensureCodexHooksCurrent()).not.toThrow()
+    expect(fs.readFileSync(toml(), 'utf8')).toBe(broken)
+    expect(fs.existsSync(hooks())).toBe(false) // hooks.json is not written ahead of a refused trust edit
   })
 })
 
