@@ -39,8 +39,10 @@ import {
   getCodexCanonicalTrustPath,
   parseTrustKey,
   readHookTrustEntries,
+  readTomlFile,
   removeHookTrustEntries,
-  upsertHookTrustEntries,
+  upsertHookTrustEntriesInContent,
+  writeConfigAtomically,
   type CodexEventLabel,
   type CodexTrustEntry
 } from './codex-trust'
@@ -133,12 +135,23 @@ function isManagedCommand(command: string | undefined): boolean {
   // logic here would keep it and append a second one, which is #558 all over again. Matching both is
   // also what REPAIRS a Windows hooks.json that already carries the unrunnable POSIX command: it is
   // stripped before the fresh one is pushed, so the next app launch heals the file.
+  //
+  // ANCHORED to our own hook directories, never a bare `agent-hooks/<leaf>` tail. Other tools ship
+  // the same layout under the same leaf names (measured: Orca's `~/.orca/agent-hooks/codex-hook.cmd`
+  // on a Windows desktop) and the tail match treated their entry as ours, stripping it from
+  // hooks.json on every repair. The anchors are the directories we have ever written to:
+  // `~/.nodeterm` (current, local and SSH), the desktop's old userData dir (`node-terminal`) and the
+  // Server Edition's default data dir (`.nodeterm-server`). A script left in a Server Edition run with
+  // a custom `--data-dir` is no longer swept; that entry is inert once its directory is gone.
   const c = normalizeHookCommand(command)
-  return (
-    c.includes(`agent-hooks/${SCRIPT_FILE_NAME}`) ||
-    c.includes(`agent-hooks/${CODEX_WINDOWS_WRAPPER_FILE}`)
+  return OWN_HOOK_DIRS.some(
+    (dir) =>
+      c.includes(`${dir}/agent-hooks/${SCRIPT_FILE_NAME}`) ||
+      c.includes(`${dir}/agent-hooks/${CODEX_WINDOWS_WRAPPER_FILE}`)
   )
 }
+
+const OWN_HOOK_DIRS = ['/.nodeterm', '/node-terminal', '/.nodeterm-server'] as const
 
 function definitionHasManagedCommand(def: HookDefinition): boolean {
   return Array.isArray(def.hooks) && def.hooks.some((h) => isManagedCommand(h.command))
@@ -432,12 +445,17 @@ export function installCodexHooks(home: string = defaultCodexHome()): void {
     // realpath's it to match how codex keys it).
     const built = buildCodexHooksAndTrust(config, command, hooksFile)
     if (!built) return
+    // Compute the config.toml edit BEFORE writing anything: it throws rather than produce a file
+    // Codex refuses to load (a table defined twice), and then nothing at all is written.
+    const tomlFile = writeTarget(configTomlPath(home))
+    const currentToml = existsSync(tomlFile) ? readTomlFile(tomlFile) : ''
+    const nextToml = upsertHookTrustEntriesInContent(currentToml, built.trustEntries)
     writeHooksJson(hooksFile, built.config)
 
     // Why: write trust LAST so a half-write can't leave a hash pointing at a
     // hook that doesn't exist. upsert does a line-level merge that preserves
     // all other config.toml content.
-    upsertHookTrustEntries(writeTarget(configTomlPath(home)), built.trustEntries)
+    if (nextToml !== currentToml) writeConfigAtomically(tomlFile, nextToml)
   } catch (e) {
     console.warn('[agent-hooks] codex install failed', e)
   }
