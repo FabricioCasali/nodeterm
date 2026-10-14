@@ -82,6 +82,11 @@ interface ApprovalDialect {
   flag: string
   modes: Partial<Record<AgentPermissionMode, string>>
   /**
+   * Optional boolean switch emitted instead of `[flag, value]` for modes that use a standalone flag
+   * (antigravity's `--dangerously-skip-permissions` alongside `--mode accept-edits|auto|plan`).
+   */
+  standaloneFlags?: Partial<Record<AgentPermissionMode, string>>
+  /**
    * Does this CLI's OWN default already prompt before every action?
    *
    * This is what decides whether `manual` ("Ask each time") is honoured by emitting NOTHING. For
@@ -117,6 +122,15 @@ const GEMINI_MODES: Partial<Record<AgentPermissionMode, string>> = {
   // always launched bare (= `default` = prompt for approval), and `modeSupported` would have
   // answered `true`, so the derived copy would not have admitted it either. No flag is the honest
   // answer and reproduces the pre-branch launch exactly. See `unsupportedModesNote`.
+}
+
+const ANTIGRAVITY_MODES: Partial<Record<AgentPermissionMode, string>> = {
+  plan: 'plan',
+  acceptEdits: 'accept-edits',
+  auto: 'auto'
+  // `manual` → agy's own default (no flag).
+  // `bypassPermissions` uses the standalone switch `--dangerously-skip-permissions`
+  // (`standaloneFlags` below), measured on `agy --help` (1.2.7).
 }
 
 const CODEX_MODES: Partial<Record<AgentPermissionMode, string>> = {
@@ -163,6 +177,12 @@ const CODEX_MODES: Partial<Record<AgentPermissionMode, string>> = {
  */
 const APPROVAL_DIALECTS: Partial<Record<AgentId, ApprovalDialect>> = {
   gemini: { flag: '--approval-mode', modes: GEMINI_MODES, manualIsDefault: true },
+  antigravity: {
+    flag: '--mode',
+    modes: ANTIGRAVITY_MODES,
+    standaloneFlags: { bypassPermissions: '--dangerously-skip-permissions' },
+    manualIsDefault: true
+  },
   codex: {
     flag: '--ask-for-approval',
     modes: CODEX_MODES,
@@ -195,6 +215,15 @@ function emittableValue(
   return dialect.vocabulary(caps).includes(value) ? value : undefined
 }
 
+function standaloneFlag(
+  dialect: ApprovalDialect,
+  mode: AgentPermissionMode
+): string | undefined {
+  return dialect.standaloneFlags && Object.hasOwn(dialect.standaloneFlags, mode)
+    ? dialect.standaloneFlags[mode]
+    : undefined
+}
+
 const dialectFor = (agentId: AgentId): ApprovalDialect | null =>
   Object.hasOwn(APPROVAL_DIALECTS, agentId) ? APPROVAL_DIALECTS[agentId] ?? null : null
 
@@ -211,12 +240,13 @@ export function modeSupported(
   if (!dialect) return hasPermissionMode(agentId)
   // `manual` — "ask each time" — is reached two different ways, which is why the table alone is
   // not its authority: by emitting NO flag on a CLI whose own default already prompts
-  // (`manualIsDefault`: claude, grok, gemini), or by emitting a value that means it (codex's
-  // `untrusted`). An agent that can do NEITHER cannot keep the promise, and this is where that is
-  // admitted — codex >= 0.149.0 is exactly that case, and it is why this early return stopped
-  // being an unconditional `true`.
+  // (`manualIsDefault`: claude, grok, gemini, antigravity), or by emitting a value that means it
+  // (codex's `untrusted`). An agent that can do NEITHER cannot keep the promise, and this is where
+  // that is admitted — codex >= 0.149.0 is exactly that case, and it is why this early return
+  // stopped being an unconditional `true`.
   if (mode === 'manual')
     return dialect.manualIsDefault || emittableValue(dialect, 'manual', caps) !== undefined
+  if (standaloneFlag(dialect, mode) !== undefined) return true
   return emittableValue(dialect, mode, caps) !== undefined
 }
 
@@ -237,6 +267,8 @@ export function approvalFlags(
   if (!isPermissionMode(mode)) return []
   const dialect = dialectFor(agentId)
   if (dialect) {
+    const sw = standaloneFlag(dialect, mode)
+    if (sw) return [sw]
     const value = emittableValue(dialect, mode, caps)
     return value ? [dialect.flag, value] : []
   }
@@ -249,8 +281,8 @@ export function approvalFlags(
  * CLI launch path (new node, cold-restore resume, branch, handoff, canvas control).
  *
  * WHERE the flag lands is decided one layer up, by `createAgentNode`: with no `argvPromptSeparator`
- * (claude, gemini, codex) it goes LAST, keeping those command lines byte-identical; with one
- * (grok's `--`) it must go BEFORE the separator, because `--` is end-of-options.
+ * (claude, gemini, codex, antigravity) it goes LAST, keeping those command lines byte-identical;
+ * with one (grok's `--`) it must go BEFORE the separator, because `--` is end-of-options.
  *
  * **A flag the command already carries is left alone (issue #601).** `cmd` is not always ours:
  * `settings.agentLaunchCommands` lets the user replace the program part with a wrapper, and a
@@ -281,7 +313,13 @@ export function withPermissionMode(
 ): string {
   const flags = approvalFlags(id, mode, caps)
   if (!flags.length) return cmd
-  if (argvHasFlag(cmd, flags[0])) return cmd
+  const dialect = dialectFor(id)
+  if (dialect) {
+    const knownFlags = [dialect.flag, ...Object.values(dialect.standaloneFlags ?? {})]
+    if (knownFlags.some((f) => f && argvHasFlag(cmd, f))) return cmd
+  } else if (argvHasFlag(cmd, flags[0])) {
+    return cmd
+  }
   return `${cmd} ${flags.join(' ')}`
 }
 

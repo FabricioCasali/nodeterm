@@ -270,6 +270,7 @@ import { grokContextParse, GROK_SIGNALS_FILE } from '../core/grok-signals'
 import { GROK_CHAT_HISTORY_FILE } from '../core/agents/grok-paths'
 import { createGrokSubagentFormatter } from '../core/grok-subagent-format'
 import { geminiContextParse } from '../core/gemini-session'
+import { antigravityContextParse, rememberAntigravityModel } from '../core/antigravity-session'
 import { codexContextParse, codexContextModel } from '../core/codex-session'
 import { createCodexSubagentFormatter } from '../core/codex-subagent-format'
 import { codexHome } from '../core/usage/codex-usage'
@@ -2724,6 +2725,10 @@ app.whenReady().then(async () => {
     parse: grokContextParse,
     wholeFile: true
   })
+  const antigravityContextTail = createContextTail(pushContextUpdate, {
+    parse: antigravityContextParse,
+    wholeFile: true
+  })
   // Remote (SSH-project) counterparts: a node whose pty runs on a remote host has its Claude
   // transcript on that host, so its meter / subagent transcript / search must read over the
   // project's ControlMaster. One RemoteFile bound to the SSH-project manager's own ssh runner
@@ -3031,6 +3036,8 @@ app.whenReady().then(async () => {
           return codexContextTail
         case 'gemini':
           return geminiContextTail
+        case 'antigravity':
+          return antigravityContextTail
         default:
           return undefined
       }
@@ -3596,6 +3603,23 @@ app.whenReady().then(async () => {
       if (p.hook_event_name === 'SessionEnd' && p.session_id) tail.untrack(p.session_id)
       return
     }
+    if (agentId === 'antigravity') {
+      const p = payload as {
+        conversationId?: string
+        transcriptPath?: string
+        modelName?: string
+      }
+      rememberAntigravityModel(p.modelName)
+      const transcriptPath = safeTranscriptPath(p.transcriptPath)
+      if (p.conversationId && transcriptPath) {
+        antigravityContextTail.track(p.conversationId, transcriptPath)
+      }
+      if (nodeId && p.conversationId) nodeContextSession.set(nodeId, p.conversationId)
+      if (nodeId && p.conversationId && transcriptPath) {
+        setNodeTranscript(nodeId, p.conversationId, transcriptPath)
+      }
+      return
+    }
     if (agentId !== 'claude') return
     // Mirror the per-node "what it's doing now" activity line for the phone (mobile-usage-inbox).
     // Runs BEFORE the local/remote split so it covers remote (SSH) nodes too — it needs only
@@ -3767,6 +3791,7 @@ app.whenReady().then(async () => {
       geminiContextTail.untrack(sessionId)
       codexContextTail.untrack(sessionId)
       grokContextTail.untrack(sessionId)
+      antigravityContextTail.untrack(sessionId)
       remoteContextTail.untrack(sessionId)
       remoteTranscriptBySession.delete(sessionId)
       locatedTranscriptSessions.delete(sessionId)

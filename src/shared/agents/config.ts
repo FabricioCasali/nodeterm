@@ -255,7 +255,14 @@ export const BRANCH_CAPABLE = ['claude'] as const
 // `~/.grok/config.toml`, and `GROK_CLAUDE_SKILLS_ENABLED=false`. Then the skill is undiscoverable
 // however this list reads, and the same `inspect` cell is what says so (`enabled:false`, a
 // non-default `source`) rather than leaving support to guess.
-export const CONTEXT_LINK_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 'grok'] as const
+export const CONTEXT_LINK_CAPABLE = [
+  'claude',
+  'codex',
+  'gemini',
+  'opencode',
+  'grok',
+  'antigravity'
+] as const
 // Agents whose per-node context meter we can fill. Each needs BOTH numbers: a used count and a
 // TRUSTWORTHY window.
 //  - claude: used from its transcript's assistant usage, window INFERRED from the model family
@@ -270,6 +277,11 @@ export const CONTEXT_LINK_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 'g
 //    grok has already computed. MEASURED on 22 real sessions (1.0.13, 2026-09-02): all three present
 //    in all 22, and the stated percentage agrees with used/window in all 22. So the window is read,
 //    never inferred from the model id, which puts grok with codex rather than with gemini.
+//  - antigravity: states `input_tokens` and `cache_read_tokens` on every `PLANNER_RESPONSE` in
+//    `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl` (core/
+//    antigravity-session.ts), and `antigravityWindowFor` (core/model-window.ts) maps its model
+//    family (`gemini-4-argon-*`, `gemini-3.8-flash-*`, `claude-*`, `gpt-oss-120b-*`) to the known
+//    context window, returning null for unknown models.
 //
 // Until 2026-09 this comment explained grok's absence by pointing at a missing parser for the wrong
 // file, and concluding there was no used count to divide. Both halves were false, and the first is
@@ -283,7 +295,7 @@ export const CONTEXT_LINK_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 'g
 // `core/grok-signals.ts` reads exactly three of them and nothing else. If a future grok drops
 // `contextWindowTokens`, that reader returns null and the meter disappears — no inferred
 // denominator, because a percentage over a guessed window is a wrong number presented as a fact.
-export const USAGE_CAPABLE = ['claude', 'codex', 'gemini', 'grok'] as const
+export const USAGE_CAPABLE = ['claude', 'codex', 'gemini', 'grok', 'antigravity'] as const
 // Agents whose structured transcript we can render as a chat panel (Cmd+M chat mode).
 //
 // SPLIT from CLAUDE_TRANSCRIPT_READABLE below on 2026-09-02, when grok joined. Until then this one
@@ -306,7 +318,18 @@ export const USAGE_CAPABLE = ['claude', 'codex', 'gemini', 'grok'] as const
 // (`readChatTranscript`). Like the others it is NOT in CLAUDE_TRANSCRIPT_READABLE below.
 // opencode joined 2026-09-28: it has no transcript file at all (SQLite since 1.18), so its chat is
 // read through `opencode export <id>` (core/opencode-chat.ts) and it stays out of the list below.
-export const CHAT_CAPABLE = ['claude', 'grok', 'gemini', 'codex', 'copilot', 'opencode'] as const
+// antigravity joined 2026-10 with its own reader (`core/antigravity-chat.ts`), reading
+// `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl` strictly by
+// conversation id (`locateAntigravity`).
+export const CHAT_CAPABLE = [
+  'claude',
+  'grok',
+  'gemini',
+  'codex',
+  'copilot',
+  'opencode',
+  'antigravity'
+] as const
 // CHAT_CAPABLE agents whose reader has NO remote leg: a remote (SSH) node's session lives on its
 // host, so core answers `unreadable` before touching anything — and the local reader never sets that
 // flag (copilot maps a failed local read to not-found for exactly this reason). So an unreadable read
@@ -315,7 +338,7 @@ export const CHAT_CAPABLE = ['claude', 'grok', 'gemini', 'codex', 'copilot', 'op
 // remote nodes are read on the host (`core/remote-grok-chat.ts`, `main/remote-codex-chat-page.ts`).
 // opencode has no remote leg either but is NOT here: its `unreadable` also means a failed LOCAL
 // `opencode export`, which Retry heals — the panel gives it its own copy (`exportError`) instead.
-export const CHAT_LOCAL_ONLY = ['gemini', 'copilot'] as const
+export const CHAT_LOCAL_ONLY = ['gemini', 'copilot', 'antigravity'] as const
 // Agents whose transcript CLAUDE's own resolver can locate and parse — the gate for everything that
 // goes through `resolveTranscript` (the find bar's index, the meter's mount-time rehydration).
 //
@@ -340,7 +363,7 @@ export const SCREEN_DIALOG_READABLE = ['claude'] as const
 // a new user turn). Every other chat-capable agent is unmeasured and keeps "wait for the reply".
 export const INPUT_QUEUE_CAPABLE = ['claude'] as const
 // Agents whose native transcript we can read + render for cross-agent transfer.
-export const TRANSFER_SOURCE_CAPABLE = ['claude', 'codex', 'gemini', 'grok'] as const
+export const TRANSFER_SOURCE_CAPABLE = ['claude', 'codex', 'gemini', 'grok', 'antigravity'] as const
 // Agents whose hooks announce that a session ENDED — i.e. whose orderly `/exit` we will hear about.
 //
 // Derived by reading `normalize.ts`, not by intent: exactly four normalizers map an event to
@@ -393,8 +416,9 @@ export const TITLE_READ_CAPABLE = ['claude', 'codex', 'grok', 'gemini'] as const
 export const SHARED_IDENTITY_CAPABLE = ['codex'] as const
 // Agents allowed to drive the canvas via the `nodeterm` CLI (open/show/write/close).
 // Discovery differs per agent: claude gets the manage-nodeterm-canvas skill; codex/gemini/
-// opencode a marker block in ~/.codex/AGENTS.md / ~/.gemini/GEMINI.md /
-// ~/.config/opencode/AGENTS.md (see canvas-control.ts).
+// antigravity/opencode a marker block in ~/.codex/AGENTS.md / ~/.gemini/GEMINI.md /
+// ~/.config/opencode/AGENTS.md (see canvas-control.ts — agy loads ~/.gemini/GEMINI.md as
+// <RULE[user_global]>).
 //
 // grok needs NO new installer: it scans `~/.claude/skills` by default for Claude Code
 // compatibility (its shipped docs, user-guide/08-skills.md; switched off only by
@@ -403,13 +427,22 @@ export const SHARED_IDENTITY_CAPABLE = ['codex'] as const
 // RemoteHooks.installCanvasControl. Membership here is what sets NODETERM_CANVAS_CONTROL in the
 // session env (hook-server's buildPtyEnv, remoteHookEnvArgs), i.e. what makes the shim anything
 // other than a no-op.
-export const CANVAS_CONTROL_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 'grok', 'copilot'] as const
+export const CANVAS_CONTROL_CAPABLE = [
+  'claude',
+  'codex',
+  'gemini',
+  'opencode',
+  'grok',
+  'copilot',
+  'antigravity'
+] as const
 // Agents whose session start-up permission mode we can set (see AgentPermissionMode below).
 // claude and grok share the flag SPELLING and the value vocabulary
 // (`--permission-mode auto|plan|acceptEdits|bypassPermissions`; our `manual` = no flag = grok's own
-// `default`). gemini (`--approval-mode default|auto_edit|yolo|plan`) and codex
-// (`--ask-for-approval untrusted|on-request|never`) each spell it their own way, so membership here
-// is only half the story — the translation lives in ./approval-mode.ts.
+// `default`). gemini (`--approval-mode default|auto_edit|yolo|plan`), codex
+// (`--ask-for-approval untrusted|on-request|never`), and antigravity
+// (`--mode accept-edits|auto|plan` plus `--dangerously-skip-permissions`) each spell it their own
+// way, so membership here is only half the story — the translation lives in ./approval-mode.ts.
 //
 // Membership does NOT mean every mode applies: BOTH new vocabularies are narrower than ours — codex
 // has no plan and no edit-specific mode, and gemini has nothing meaning "approve most things but not
@@ -421,13 +454,25 @@ export const CANVAS_CONTROL_CAPABLE = ['claude', 'codex', 'gemini', 'opencode', 
 //
 // NOTE: the `auto` VERSION GATE is claude's alone — see activePermissionMode in
 // renderer/state/permissionMode.ts. grok has accepted every mode we emit since 1.0.0, its first
-// release, and gemini/codex accept theirs on the versions we measured, so none of them may inherit
-// a gate fed by a `claude --version` probe.
-export const PERMISSION_MODE_CAPABLE = ['claude', 'grok', 'gemini', 'codex'] as const
+// release, and gemini/codex/antigravity accept theirs on the versions we measured, so none of them
+// may inherit a gate fed by a `claude --version` probe.
+export const PERMISSION_MODE_CAPABLE = [
+  'claude',
+  'grok',
+  'gemini',
+  'codex',
+  'antigravity'
+] as const
 // Agents whose harness accepts a per-launch model override and whose gateway protocol we know how
 // to configure. Custom agents inherit this through `capabilityAgentId`, like every other harness
 // capability — the renderer never maintains its own Claude/Codex/Copilot allowlist.
-export const MODEL_SWITCH_CAPABLE = ['claude', 'codex', 'copilot', 'grok'] as const
+export const MODEL_SWITCH_CAPABLE = [
+  'claude',
+  'codex',
+  'copilot',
+  'grok',
+  'antigravity'
+] as const
 // Agents whose own CLI already tells the user when it copies, so nodeterm must not say it again.
 // Claude Code captures the mouse itself and prints its own line — "copied N chars to tmux buffer ·
 // paste with prefix + ]" — which makes our copy pill a second message for one gesture. Membership
