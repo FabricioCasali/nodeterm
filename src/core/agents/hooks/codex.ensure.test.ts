@@ -240,14 +240,35 @@ describe('PtyManager wiring', () => {
     const text = fs
       .readFileSync(path.join(__dirname, '..', '..', 'pty-manager.ts'), 'utf8')
       .replace(/\r\n/g, '\n')
-    const at = text.indexOf('ensureCodexHooksCurrent(codexScope.CODEX_HOME)')
+    // Through the consent-gated lifecycle (issue #744), never the raw installer.
+    const at = text.indexOf('currentIntegrationLifecycle()?.ensureCodexHooksForLaunch(codexScope.CODEX_HOME)')
     expect(at).toBeGreaterThan(0)
-    expect(text.split('ensureCodexHooksCurrent(').length - 1).toBe(1)
+    expect(text.split('ensureCodexHooksForLaunch(').length - 1).toBe(1)
+    expect(text).not.toContain('ensureCodexHooksCurrent')
     // Inside the LOCAL codex-scope block, which sets CODEX_HOME from the same codexScope.
     const scope = text.slice(text.lastIndexOf('if (needsCodexAccountScope(', at), at)
     expect(scope).toContain('!options.sshRemote')
     expect(scope).toContain('env.CODEX_HOME = codexScope.CODEX_HOME')
     expect(scope).toContain("capabilityAgentId(options.agentId as AgentId) === 'codex'")
     expect(scope).toContain('!options.accountId || this.isCodexAccount(options.accountId)')
+  })
+
+  // The repairs write the user's real ~/.codex, so only the consent lifecycle may call them: a
+  // direct call from a shell or the spawn path re-installs hooks for a user who declined codex.
+  it('only core/agent-integrations.ts reaches the codex repair functions', () => {
+    const src = path.join(__dirname, '..', '..', '..')
+    const callers: string[] = []
+    const walk = (d: string): void => {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const p = path.join(d, e.name)
+        if (e.isDirectory()) walk(p)
+        else if (/\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name)) {
+          const t = fs.readFileSync(p, 'utf8')
+          if (/\bensureCodexHooks(Current|ForAccounts)\b/.test(t)) callers.push(path.relative(src, p).split(path.sep).join('/'))
+        }
+      }
+    }
+    walk(src)
+    expect(callers.sort()).toEqual(['core/agent-integrations.ts', 'core/agents/hooks/codex.ts'])
   })
 })

@@ -3029,11 +3029,16 @@ else, and its context links must keep classifying across restarts).
   `installCodexHooks(home)`, with a warning naming the home and what was repaired, so a current
   install never rewrites config.toml (codex writes it too). It never throws into the spawn, never
   creates a missing home, and an `accountId` that is not a known Codex account gets no repair
-  (never a fallback to `~/.codex`). **Managed account homes symlink hooks.json + config.toml to
+  (never a fallback to `~/.codex`). **Both repairs are consent-gated (issue #744):** the spawn
+  check is reached only through `currentIntegrationLifecycle()?.ensureCodexHooksForLaunch(home)`
+  and the account-home pass only inside `reconcile()` — both in `core/agent-integrations.ts`, both
+  a no-op unless codex is `enabled` (declined, undecided, the Server Edition veto, or no lifecycle
+  registered ⇒ nothing is written). Calling `ensureCodexHooksCurrent` from anywhere else would
+  re-install hooks for a user who declined them. **Managed account homes symlink hooks.json + config.toml to
   `~/.codex`** (`initializeAccountHome`), so every write goes through the link (`writeTarget`,
   realpath) — a temp+rename onto the link would replace it with a private copy no later system
   install reaches. A home whose links were never made or were replaced by real files is repaired in
-  place; boot now covers those homes too (`ensureCodexHooksForAccounts`, both shells), where before
+  place; boot now covers those homes too (`ensureCodexHooksForAccounts`, from the lifecycle's reconcile in both shells), where before
   it installed only `~/.codex` and relied on the links. Not covered: SSH hosts (RemoteHooks owns
   those files) and an in-pane restart/resume that types `codex` without a new spawn.
   **A trust table is found by its DECODED key, never by spelling** (`tableHeaderPath`,
@@ -3049,10 +3054,12 @@ else, and its context links must keep classifying across restarts).
   SSH installer throws inside its update and writes no config.toml. No TOML parser is in our deps, so
   the guard is the duplicate-table check, not full validation. **A managed hook command is matched
   only under our own directories** (`OWN_HOOK_DIRS`: `/.nodeterm`, `/node-terminal`,
-  `/.nodeterm-server` + `/agent-hooks/<leaf>`), never a bare `agent-hooks/<leaf>` tail: Orca keeps
-  `~/.orca/agent-hooks/codex-hook.cmd` and the tail match stripped it on every repair (and Orca did
-  the same to ours). A stale entry from a Server Edition run with a custom `--data-dir` is no longer
-  swept. install-helper's matcher for the other agents still matches by tail (not changed here). **Both
+  `/.nodeterm-server` + `/agent-hooks/<leaf>`), never a bare `agent-hooks/<leaf>` tail: another tool keeps
+  `~/.other/agent-hooks/codex-hook.cmd` and the tail match stripped it on every repair (and that tool
+  did the same to ours). A stale entry from a Server Edition run with a custom `--data-dir` is no
+  longer swept — **by repair OR by a declined codex's cleanup** (`removeCodexHooks` shares the
+  matcher). Decided, not overlooked: a decline removes exactly what we wrote, and a tail match cannot
+  tell our legacy entry from another tool's live one, so the inert legacy entry is left. install-helper's matcher for the other agents still matches by tail (not changed here). **Both
   sides of the managed-entry match go through `normalizeHookCommand`** — the marker used to be
   folded to `/` while the stored command was compared raw, so on Windows nodeterm never recognized
   its OWN entry and appended a fresh set every launch (#558: nine copies of nine events, nine

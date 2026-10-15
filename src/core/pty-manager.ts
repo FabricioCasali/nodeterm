@@ -24,7 +24,7 @@ import {
 import { bundledTmuxPath, findCommand, findFixedTmux, tmuxInstall } from './tmux-hint'
 import { hookServer, PERM_WAIT_SECS_DEFAULT } from './agents/hook-server'
 import { findAgy, pathWithAgyDir } from './agents/hooks/antigravity'
-import { ensureCodexHooksCurrent } from './agents/hooks/codex'
+import { currentIntegrationLifecycle } from './agent-integrations'
 import {
   probeSaysAbsent,
   remoteHookEnvArgs,
@@ -4326,13 +4326,15 @@ export class PtyManager {
       // started afterwards with no status hooks (badge dark, messages expiring targetStatusStale).
       // Re-check that home before the pane spawns; repairs only on drift and never throws. An id
       // that is not a known Codex account gets no repair (and never a fallback to ~/.codex). SSH
-      // sessions run the host's codex, whose files RemoteHooks owns.
+      // sessions run the host's codex, whose files RemoteHooks owns. Routed through the
+      // agent-integration lifecycle (issue #744): only an ENABLED codex is repaired, and with no
+      // lifecycle registered nothing is written.
       if (
         options.agentId &&
         capabilityAgentId(options.agentId as AgentId) === 'codex' &&
         (!options.accountId || this.isCodexAccount(options.accountId))
       ) {
-        ensureCodexHooksCurrent(codexScope.CODEX_HOME)
+        currentIntegrationLifecycle()?.ensureCodexHooksForLaunch(codexScope.CODEX_HOME)
       }
     }
 

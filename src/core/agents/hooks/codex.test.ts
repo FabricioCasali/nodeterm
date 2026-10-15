@@ -303,19 +303,19 @@ describe('buildCodexHooksAndTrust', () => {
     expect(built.config.hooks!.Stop).toEqual([{ hooks: [{ type: 'command', command }] }])
   })
 
-  // Another tool with the same layout is not us. Measured on a Windows desktop: Orca's own
-  // `~/.orca/agent-hooks/codex-hook.cmd` entry was stripped by every repair because the matcher
+  // Another tool with the same layout is not us. Measured on a Windows desktop: another tool's own
+  // `~/.other/agent-hooks/codex-hook.cmd` entry was stripped by every repair because the matcher
   // keyed off the bare `agent-hooks/<leaf>` tail.
   it("keeps another tool's agent-hooks entry with the same leaf name", () => {
-    const orca = { hooks: [{ type: 'command' as const, command: 'C:/Users/u/.orca/agent-hooks/codex-hook.cmd' }] }
-    const orcaPosix = { hooks: [{ type: 'command' as const, command: "sh '/home/u/.orca/agent-hooks/codex.sh'" }] }
+    const other = { hooks: [{ type: 'command' as const, command: 'C:/Users/u/.other/agent-hooks/codex-hook.cmd' }] }
+    const otherPosix = { hooks: [{ type: 'command' as const, command: "sh '/home/u/.other/agent-hooks/codex.sh'" }] }
     const command = buildManagedCommand('C:\\Users\\u\\.nodeterm\\agent-hooks\\codex.sh', 'win32')
     const built = buildCodexHooksAndTrust(
-      { hooks: { Stop: [orca, orcaPosix] } },
+      { hooks: { Stop: [other, otherPosix] } },
       command,
       'C:\\Users\\u\\.codex\\hooks.json'
     )!
-    expect(built.config.hooks!.Stop).toEqual([orca, orcaPosix, { hooks: [{ type: 'command', command }] }])
+    expect(built.config.hooks!.Stop).toEqual([other, otherPosix, { hooks: [{ type: 'command', command }] }])
     expect(built.trustEntries.find((e) => e.eventLabel === 'stop')).toMatchObject({ groupIndex: 2 })
   })
 

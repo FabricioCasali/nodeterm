@@ -138,12 +138,17 @@ function isManagedCommand(command: string | undefined): boolean {
   // stripped before the fresh one is pushed, so the next app launch heals the file.
   //
   // ANCHORED to our own hook directories, never a bare `agent-hooks/<leaf>` tail. Other tools ship
-  // the same layout under the same leaf names (measured: Orca's `~/.orca/agent-hooks/codex-hook.cmd`
-  // on a Windows desktop) and the tail match treated their entry as ours, stripping it from
+  // the same layout under the same leaf names (measured: another tool's
+  // `~/.other/agent-hooks/codex-hook.cmd` on a Windows desktop) and the tail match treated their entry as ours, stripping it from
   // hooks.json on every repair. The anchors are the directories we have ever written to:
   // `~/.nodeterm` (current, local and SSH), the desktop's old userData dir (`node-terminal`) and the
   // Server Edition's default data dir (`.nodeterm-server`). A script left in a Server Edition run with
   // a custom `--data-dir` is no longer swept; that entry is inert once its directory is gone.
+  // DECIDED (issue #744 decline cleanup): `removeCodexHooks` — what a DECLINED codex runs — shares
+  // this matcher, so it does not remove such a legacy entry either. That is deliberate: a decline
+  // must remove exactly what we wrote, and a bare-tail match cannot tell our legacy entry from
+  // another tool's live one. Removing someone else's hook is the worse error than leaving an inert
+  // command of ours behind; the user can delete it from hooks.json by hand.
   const c = normalizeHookCommand(command)
   return OWN_HOOK_DIRS.some(
     (dir) =>
