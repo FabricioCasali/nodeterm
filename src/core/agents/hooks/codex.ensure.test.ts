@@ -100,7 +100,8 @@ describe('trust tables in another TOML spelling', () => {
   const toLiteral = (which: (i: number) => boolean): void => {
     let i = 0
     const text = fs.readFileSync(toml(), 'utf8').replace(/^\[hooks\.state\."(.*)"\]$/gm, (line, key: string) =>
-      which(i++) ? `[hooks.state.'${key.replace(/\\\\/g, '\\').replace(/\\"/g, '"')}']` : line
+      // A TOML basic string's escapes (`\\`, `\"`, `\uXXXX`) are JSON's: decode it in one pass.
+      which(i++) ? `[hooks.state.'${JSON.parse(`"${key}"`) as string}']` : line
     )
     fs.writeFileSync(toml(), text)
   }
