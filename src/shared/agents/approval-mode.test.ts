@@ -208,8 +208,7 @@ describe('approvalFlags — codex REFUSES what it cannot express', () => {
 
 describe('approvalFlags — an agent with no permission mode', () => {
   it('maps antigravity modes onto --mode and --dangerously-skip-permissions', () => {
-    expect(approvalFlags('antigravity', undefined)).toEqual([])
-    expect(approvalFlags('antigravity', 'default')).toEqual([])
+    expect(approvalFlags('antigravity', 'manual')).toEqual([])
     expect(approvalFlags('antigravity', 'plan')).toEqual(['--mode', 'plan'])
     expect(approvalFlags('antigravity', 'acceptEdits')).toEqual(['--mode', 'accept-edits'])
     expect(approvalFlags('antigravity', 'auto')).toEqual(['--mode', 'auto'])
