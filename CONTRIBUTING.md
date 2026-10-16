@@ -493,6 +493,12 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   sockets that listed it (the `geometry` push of issue #914 is the worked example), and pin that
   against the real bundled host as `session-host/geometry-host.test.ts` does.
 
+- **Every xterm sizes characters through `activateTerminalWidths` (`src/shared/terminal-width.ts`).**
+  The renderer's terminals and the session host's emulator must agree with each other, with tmux and
+  with the agent CLIs about how many cells a character takes, or a repaint by cursor position leaves
+  stale text behind (an emoji + VS16 did exactly that). Change widths there, never in one emulator,
+  and test them on a real `@xterm/headless` terminal rather than on the provider's return values.
+
 - **Finding a Windows executable is not the same as being able to spawn it.** A PATH lookup may
   correctly resolve an npm CLI to `<name>.cmd`, but Node's `execFile`/`spawn` cannot execute that
   shim directly. For short-lived app-owned subprocesses, pass the resolved path and argv through
