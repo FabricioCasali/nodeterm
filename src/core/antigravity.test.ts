@@ -16,7 +16,6 @@ import {
   rememberAntigravityModel
 } from './antigravity-session'
 import { chatFromAntigravity, readAntigravityChatTranscript } from './antigravity-chat'
-import { renderAntigravityTranscript } from '../main/handoff/render-antigravity'
 import { locateAntigravity } from './handoff/locate'
 import { listRecentConversations, resetRecentConversationsCacheForTests, type RecentRoots } from './recent-conversations'
 
@@ -135,7 +134,7 @@ describe('Antigravity context window & token usage', () => {
   })
 })
 
-describe('Antigravity chat view, handoff renderer, locator, and recent conversations', () => {
+describe('Antigravity chat view, locator, and recent conversations', () => {
   let home: string
 
   beforeEach(() => {
@@ -149,7 +148,7 @@ describe('Antigravity chat view, handoff renderer, locator, and recent conversat
     fs.rmSync(home, { recursive: true, force: true })
   })
 
-  it('converts an Antigravity transcript into ChatMessages for ⌘M and markdown for handoff', () => {
+  it('converts an Antigravity transcript into ChatMessages for ⌘M', () => {
     const chat = chatFromAntigravity(SAMPLE_TRANSCRIPT)
     expect(chat.skipped).toBe(0)
     expect(chat.messages).toHaveLength(3)
@@ -166,10 +165,6 @@ describe('Antigravity chat view, handoff renderer, locator, and recent conversat
         arg: 'C:/Desenv/particular/nodeterm/src/shared/agents/config.ts'
       }
     ])
-
-    const md = renderAntigravityTranscript(SAMPLE_TRANSCRIPT)
-    expect(md).toContain('## User\n\nFix the context link bug in NodeTerm')
-    expect(md).toContain('## Assistant\n\nI will inspect `config.ts` now.')
   })
 
   it('locates transcript_full.jsonl on disk, reads paged chat transcripts, and lists recent conversations with cwd from history.jsonl', async () => {
