@@ -899,6 +899,7 @@ import {
   alignNodes,
   arrangeByLineage,
   arrangeGroupChildren,
+  autoArrangeLineage,
   tidyCanvas,
   arrangeNodes,
   fitAncestorChain,
@@ -14021,6 +14022,11 @@ export function Canvas() {
             const coldExistingInGroup = coldGroup.groupId
               ? coldGroupChildCount(coldNodes, coldGroup.groupId)
               : 0
+            const coldMaxBottom = coldGroup.groupId
+              ? coldNodes
+                  .filter((n) => n.parentId === coldGroup.groupId)
+                  .reduce((max, n) => Math.max(max, n.position.y + (n.size?.height ?? 400)), 0)
+              : 0
             const coldMade: CanvasNode[] = []
             for (let i = 0; i < coldCount; i++) {
               const built = coldTerminal
@@ -14069,7 +14075,11 @@ export function Canvas() {
               if (coldGroup.groupId) {
                 const w = (node.width as number) ?? 600
                 const h = (node.height as number) ?? 400
-                node.position = groupSlot(coldExistingInGroup + i, w, h)
+                const slot = groupSlot(coldExistingInGroup + i, w, h)
+                node.position =
+                  coldMaxBottom > 0
+                    ? { x: slot.x, y: Math.max(slot.y, coldMaxBottom + 40 + Math.floor(i / 2) * (h + 40)) }
+                    : slot
                 node.parentId = coldGroup.groupId
                 node.extent = 'parent'
                 coldMade.push(node)
@@ -14143,6 +14153,29 @@ export function Canvas() {
                 )
             const coldBridges = [...coldPlan.edges, ...coldDepPlans.flatMap((p) => p.edges)]
             coldStore.appendCanvasLinks(owner.id, { bridges: coldBridges, ropes: coldRopes })
+            const coldUpdated = coldStore.getProject(owner.id)
+            if (coldUpdated) {
+              const coldWaitRopes = coldIds.flatMap((nid) =>
+                coldAfterIds
+                  .filter((dep) => dep !== sourceNodeId)
+                  .map((dep) => ({ id: waitRopeId(dep, nid), source: dep, target: nid }))
+              )
+              const coldEdges = [
+                ...markLegacyWaitRopes(coldUpdated.ropes ?? []),
+                ...coldWaitRopes
+              ].map((e) => ({ id: e.id, source: e.source, target: e.target }))
+              const coldHydrated = nodeStatesToFlow(coldUpdated.nodes) as CanvasNode[]
+              const coldArranged = autoArrangeLineage(coldHydrated, coldEdges, {
+                groupId: coldGroup.groupId ?? coldSrc.parentId,
+                grid: snapGridNow()
+              })
+              if (coldArranged !== coldHydrated) {
+                coldStore.applyOwnNodeMutations(
+                  owner.id,
+                  geometryMutations(coldUpdated.nodes, coldArranged)
+                )
+              }
+            }
             void writeDisk()
             logRunsStarted(owner.id, coldMade, coldIssueRef)
             const coldWhat = coldTerminal ? 'terminal' : coldAgentId
@@ -14355,9 +14388,12 @@ export function Canvas() {
       // The opener's rope, and — in the same breath — the opener's name on the node. The two are
       // what the station-failure notice asks before it tells anyone anything (lib/stationOpener).
       // Every live open path (addAndConnect, verify, spawn-team) funnels through here.
+      const addedRopes: Edge[] = []
       const connect = (newId: string) => {
+        const edge = ropeEdge(`ctrl-${sourceNodeId}-${newId}`, sourceNodeId, newId)
+        addedRopes.push(edge)
         setNodes((ns) => stampOpenedBy(ns, newId, sourceNodeId))
-        setControlEdges((es) => [...es, ropeEdge(`ctrl-${sourceNodeId}-${newId}`, sourceNodeId, newId)])
+        setControlEdges((es) => [...es, edge])
       }
       // `--after` is a rope too: dep → armed node, drawn dashed while the node waits and solid once
       // it has launched (displayEdges derives that from pendingLaunch). The opener's own rope is
@@ -14369,7 +14405,10 @@ export function Canvas() {
         const ropes = ids.flatMap((nid) =>
           after.filter((dep) => dep !== sourceNodeId).map((dep) => ropeEdge(waitRopeId(dep, nid), dep, nid))
         )
-        if (ropes.length) setControlEdges((es) => [...es, ...ropes])
+        if (ropes.length) {
+          addedRopes.push(...ropes)
+          setControlEdges((es) => [...es, ...ropes])
+        }
       }
       // Draw real CONTEXT links (persisted `bridges`), not the display-only ropes `connect`
       // draws — a rope is lineage decoration, a bridge is what get-linked-context reads. This
@@ -14436,13 +14475,15 @@ export function Canvas() {
           // would put the node in front of the wrong person and dirty the wrong file.
           // `applyNodeMutation` + `appendCanvasLinks` are the store paths a peer mutation and the
           // cold open already take, and `writeDisk` is what persists them.
+          const edge = ropeEdge(`ctrl-${sourceNodeId}-${placed.id}`, sourceNodeId, placed.id)
+          addedRopes.push(edge)
           const ocStore = useProjects.getState()
           ocStore.applyOwnNodeMutation(offCanvas.project.id, {
             op: 'upsert',
             node: flowToNodeStates([withOpenedBy(placed, sourceNodeId)])[0]
           })
           ocStore.appendCanvasLinks(offCanvas.project.id, {
-            ropes: [ropeEdge(`ctrl-${sourceNodeId}-${placed.id}`, sourceNodeId, placed.id)]
+            ropes: [edge]
           })
           void writeDisk()
           offCanvas.created.push(placed.id)
@@ -14544,7 +14585,12 @@ export function Canvas() {
       // clamp children landing outside it), then drop each node into the next grid slot
       // after the existing children. Shared by the terminal and agent open verbs.
       const addGrouped = (groupId: string, count: number, make: (i: number) => CanvasNode): string[] => {
-        const existing = nodesRef.current.filter((nd) => nd.parentId === groupId).length
+        const existingChildren = nodesRef.current.filter((nd) => nd.parentId === groupId)
+        const existing = existingChildren.length
+        const maxExistingBottom = existingChildren.reduce(
+          (max, nd) => Math.max(max, nd.position.y + (nd.measured?.height ?? (nd.height as number) ?? 400)),
+          0
+        )
         const ids: string[] = []
         for (let i = 0; i < count; i++) {
           const node = make(i)
@@ -14569,12 +14615,32 @@ export function Canvas() {
               )
             )
           }
-          node.position = groupSlot(existing + i, w, h)
+          const slot = groupSlot(existing + i, w, h)
+          node.position =
+            maxExistingBottom > 0
+              ? { x: slot.x, y: Math.max(slot.y, maxExistingBottom + 40 + Math.floor(i / 2) * (h + 40)) }
+              : slot
           node.parentId = groupId
           node.extent = 'parent'
           ids.push(addAndConnect(node))
         }
         return ids
+      }
+      const ctlLineageEdges = () => {
+        const base = offCanvas ? markLegacyWaitRopes(offCanvas.project.ropes ?? []) : controlEdgesRef.current
+        return [...base, ...addedRopes].map((e) => ({ id: e.id, source: e.source, target: e.target }))
+      }
+      const autoLayoutAfterCliAdd = (groupId?: string | null) => {
+        const edges = ctlLineageEdges()
+        const grid = snapGridNow()
+        if (offCanvas) {
+          const cur = ctlNodes()
+          const next = autoArrangeLineage(cur, edges, { groupId, grid })
+          if (next !== cur) commitCtlNodes(next)
+          return
+        }
+        setNodes((ns) => autoArrangeLineage(ns as CanvasNode[], edges, { groupId, grid }))
+        markDirty()
       }
 
       try {
@@ -14648,6 +14714,7 @@ export function Canvas() {
               ? addGrouped(intoGroupId, count, make)
               : Array.from({ length: count }, (_, i) => addAndConnect(make(i)))
             ropeDeps(ids, after)
+            autoLayoutAfterCliAdd(intoGroupId ?? src.parentId)
             const openResult = openBatch.result(after ?? [])
             const { queuedIds } = openResult
             reply({
@@ -14802,6 +14869,7 @@ export function Canvas() {
               ? addGrouped(intoGroupId, count, make)
               : Array.from({ length: count }, (_, i) => addAndConnect(make(i)))
             ropeDeps(ids, after)
+            autoLayoutAfterCliAdd(intoGroupId ?? src.parentId)
             logRunsStarted(ctlProject?.id, issueNodes, issueRef)
             const openResult = openBatch.result(after ?? [])
             const { queuedIds } = openResult
@@ -14859,6 +14927,7 @@ export function Canvas() {
             const id = addAndConnect(
               createEditorNode(nodeCount(), args.path, placeBelow(), !!ctlSsh)
             )
+            autoLayoutAfterCliAdd(src.parentId)
             reply({ ok: true, message: `showing image ${id}`, result: { id } })
             return
           }
@@ -14875,6 +14944,7 @@ export function Canvas() {
             const id = addAndConnect(
               createVideoNode(nodeCount(), args.path, placeBelow(), !!ctlSsh)
             )
+            autoLayoutAfterCliAdd(src.parentId)
             reply({ ok: true, message: `showing video ${id}`, result: { id } })
             return
           }
@@ -14901,6 +14971,7 @@ export function Canvas() {
             // For an agent-provided --file (not html we just wrote), allowlist it first.
             if (webSrc.filePath && args.file) await window.nodeTerminal.media.allow(webSrc.filePath)
             const id = addAndConnect(createWebNode(nodeCount(), webSrc, placeBelow()))
+            autoLayoutAfterCliAdd(src.parentId)
             reply({ ok: true, message: `showing web ${id}`, result: { id } })
             return
           }
@@ -14925,6 +14996,7 @@ export function Canvas() {
               return
             }
             const id = addAndConnect(createBrowserNode(nodeCount(), browserUrl, placeBelow(), partition))
+            autoLayoutAfterCliAdd(src.parentId)
             // Return the project id + partition so main can record ownership in its in-memory
             // ledger (browser-control-ledger.ts). Main gates the claim on its OWN `verified` verdict
             // and keys it to the verified caller — these fields are descriptive (release-by-project,
@@ -14975,6 +15047,7 @@ export function Canvas() {
                   : nd
               )
             }
+            grouped = autoArrangeLineage(grouped, ctlLineageEdges(), { groupId: groupNode.id, grid: snapGridNow() })
             commitCtlNodes(grouped)
             const skippedGrouped = ids.length - resolvable.length
             const groupNote = skippedGrouped > 0 ? ` (${skippedGrouped} unknown id(s) skipped)` : ''
@@ -15036,6 +15109,7 @@ export function Canvas() {
             for (const g of affected) {
               if (next.some((n) => n.parentId === g)) next = fitGroupToChildren(next, g, snapGridNow())
             }
+            next = autoArrangeLineage(next, ctlLineageEdges(), { groupId: targetGroup, grid: snapGridNow() })
             commitCtlNodes(next)
             const where = targetGroup ? `into ${targetGroup}` : 'to the top level'
             reply({ ok: true, message: `moved ${moved.length} node(s) ${where}`, result: { moved, group: targetGroup } })
@@ -15338,6 +15412,7 @@ export function Canvas() {
             // it is: every reviewer waits on the target, the verdict waits on every reviewer.
             for (const rid of reviewerIds) ropeDeps([rid], [targetId])
             if (judge) ropeDeps([judge.id], reviewerIds)
+            autoLayoutAfterCliAdd(vGroup.id)
             // Same-tick lookup: the panel is not on the canvas yet (setNodes is async).
             const panelEndpoint = (id: string): LinkEndpoint | null =>
               panelIds.includes(id)
@@ -15476,6 +15551,7 @@ export function Canvas() {
             )
             setNodes(next)
             memberIds.forEach((mid) => connect(mid))
+            autoLayoutAfterCliAdd(teamGroup.id)
             // …and CONTEXT-link each member back to the conductor, so the fan-out has a fan-in:
             // once a member is done, the conductor reads what it produced via get-linked-context
             // instead of asking the user to relay it. Members whose agent isn't context-capable
@@ -15643,6 +15719,7 @@ export function Canvas() {
               return
             }
             const groupId = created.groupId
+            autoLayoutAfterCliAdd(groupId)
             reply({
               ok: true,
               message: `opened worktree ${branch} (off ${baseRef || 'the repo default branch'}${baseNote}) at ${wtPath} in group ${groupId}`,
@@ -15887,6 +15964,7 @@ export function Canvas() {
             node.data.textUpdatedAt = Date.now()
             node.data.textUpdatedBy = srcTitle
             const newId = addAndConnect(node)
+            autoLayoutAfterCliAdd(src.parentId)
             reply({ ok: true, message: `created note "${node.data.title}" (${newId})` })
             return
           }

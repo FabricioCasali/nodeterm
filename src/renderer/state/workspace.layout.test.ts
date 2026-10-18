@@ -4,6 +4,7 @@ import {
   alignNodes,
   arrangeByLineage,
   arrangeGroupChildren,
+  autoArrangeLineage,
   fitGroupToChildren,
   groupArrangeRefusal,
   lineageLayers,
@@ -653,5 +654,68 @@ describe('lineageLayers slots siblings under their OPENER first', () => {
     const nodes = [n('o', 0, 0), n('a', 0, 200), n('b', 300, 200), n('c', 0, 400), n('d', 300, 400)]
     const { layers } = lineageLayers(nodes, [opens('o', 'a'), opens('o', 'b'), opens('a', 'd'), opens('b', 'c'), waits('a', 'c')])
     expect(layers).toEqual([['o'], ['a', 'b'], ['d', 'c']])
+  })
+})
+
+describe('autoArrangeLineage', () => {
+  it('organizes group children by lineage, resizes the group (clearing stale measured), and arranges the top-level canvas by lineage', () => {
+    // Top-level orchestrator `orch` opens `lead` in worktree group `wt1`, which opens `w1` and `w2` inside `wt1`.
+    // Another top-level node `afterWt` waits on `w1`, so its top-level layer sits below `wt1` using `wt1`'s newly resized height.
+    const wt1 = {
+      ...frame('wt1', 500, 800, 300, 200),
+      measured: { width: 300, height: 200 }
+    } as CanvasNode
+    const nodes: CanvasNode[] = [
+      n('orch', 200, 100, 100, 50),
+      wt1,
+      child('lead', 'wt1', 200, 200, 100, 50),
+      child('w1', 'wt1', 10, 80, 100, 50),
+      child('w2', 'wt1', 150, 80, 100, 50),
+      n('afterWt', 0, 0, 100, 50)
+    ]
+    const edges = [
+      opens('orch', 'lead'),
+      opens('lead', 'w1'),
+      opens('lead', 'w2'),
+      waits('w1', 'afterWt')
+    ]
+    const out = autoArrangeLineage(nodes, edges, { groupId: 'wt1' })
+
+    // 1. Inside `wt1`: `lead` is row 0, `w1` and `w2` are row 1, and `wt1` is resized to fit 2 rows.
+    const leadOut = at(out, 'lead')
+    const w1Out = at(out, 'w1')
+    const w2Out = at(out, 'w2')
+    const wt1Out = at(out, 'wt1')
+    expect(leadOut.position.y).toBe(GROUP_HEADER + GROUP_PAD)
+    expect(w1Out.position.y).toBeGreaterThan(leadOut.position.y)
+    expect(w2Out.position.y).toBe(w1Out.position.y)
+    expect(wt1Out.measured).toBeUndefined()
+    expect(wt1Out.width).toBe(GROUP_PAD * 2 + 100 + 40 + 100)
+    expect(wt1Out.height).toBe(GROUP_HEADER + GROUP_PAD * 2 + 50 + 40 + 50)
+
+    // 2. Top-level canvas: `orch` is layer 0, `wt1` is layer 1, `afterWt` is layer 2 (positioned using `wt1`'s new height, not stale 200).
+    const orchOut = at(out, 'orch')
+    const afterWtOut = at(out, 'afterWt')
+    expect(orchOut.position.y).toBe(0)
+    expect(wt1Out.position.y).toBe(50 + 40)
+    expect(afterWtOut.position.y).toBe(wt1Out.position.y + (wt1Out.height as number) + 40)
+  })
+
+  it('packs a single child or unlinked children in the group and still arranges top-level by lineage', () => {
+    const nodes: CanvasNode[] = [
+      n('orch', 400, 400, 100, 50),
+      frame('wt1', 100, 100, 800, 800),
+      child('c1', 'wt1', 300, 300, 100, 50)
+    ]
+    const edges = [opens('orch', 'c1')]
+    const out = autoArrangeLineage(nodes, edges, { groupId: 'wt1' })
+    const wt1Out = at(out, 'wt1')
+    const c1Out = at(out, 'c1')
+    const orchOut = at(out, 'orch')
+    expect(c1Out.position).toEqual({ x: GROUP_PAD, y: GROUP_HEADER + GROUP_PAD })
+    expect(wt1Out.width).toBe(GROUP_PAD * 2 + 100)
+    expect(wt1Out.height).toBe(GROUP_HEADER + GROUP_PAD * 2 + 50)
+    expect(orchOut.position.y).toBe(100)
+    expect(wt1Out.position.y).toBe(100 + 50 + 40)
   })
 })

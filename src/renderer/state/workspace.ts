@@ -1986,6 +1986,33 @@ export function arrangeGroupChildren(
   return unchanged ? nodes : next
 }
 
+/**
+ * Auto-arranges a group frame's children by lineage (falling back to grid when no internal
+ * rope connects two of the frame's children yet so the frame still packs and resizes to fit),
+ * then adjusts the top-level canvas by lineage. Pure; returns the input array unchanged when
+ * nothing moves or resizes.
+ */
+export function autoArrangeLineage(
+  nodes: CanvasNode[],
+  edges: readonly LineageEdge[],
+  opts?: { groupId?: string | null; grid?: number }
+): CanvasNode[] {
+  let next = nodes
+  const grid = opts?.grid ?? 0
+  const seen = new Set<string>()
+  let curGroupId: string | null | undefined = opts?.groupId ?? null
+  while (curGroupId && !seen.has(curGroupId)) {
+    seen.add(curGroupId)
+    const byLineage = arrangeGroupChildren(next, curGroupId, { layout: 'lineage', edges, grid })
+    next =
+      byLineage !== next || lineageLayers(next, edges, curGroupId).layers.length > 0
+        ? byLineage
+        : arrangeGroupChildren(next, curGroupId, { layout: 'grid', edges, grid })
+    curGroupId = next.find((nd) => nd.id === curGroupId)?.parentId
+  }
+  return arrangeByLineage(next, edges)
+}
+
 export type AlignEdge = 'left' | 'right' | 'top' | 'bottom' | 'hcenter' | 'vcenter'
 
 /**
@@ -2436,7 +2463,14 @@ export function fitGroupToChildren(
   const { x: gx, y: gy, width, height } = box
   return nodes.map((n) => {
     if (n.id === groupId) {
-      return { ...n, position: { x: gx, y: gy }, width, height, style: { ...n.style, width, height } }
+      return {
+        ...n,
+        position: { x: gx, y: gy },
+        width,
+        height,
+        style: { ...n.style, width, height },
+        ...(n.measured ? { measured: undefined } : {})
+      }
     }
     if (n.parentId === groupId) {
       return { ...n, position: { x: absX(n) - gx, y: absY(n) - gy } }
