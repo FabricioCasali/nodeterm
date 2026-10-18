@@ -1,5 +1,5 @@
 import { Unicode11Addon } from '@xterm/addon-unicode11'
-import type { IUnicodeVersionProvider, Terminal } from '@xterm/xterm'
+import type { Terminal } from '@xterm/xterm'
 
 /**
  * Put xterm on the SAME character-width table as everything else in the stack.
@@ -46,71 +46,11 @@ import type { IUnicodeVersionProvider, Terminal } from '@xterm/xterm'
  * glyphgrid. Failure is non-fatal by design: a terminal on the old table renders as it did
  * yesterday, which is far better than a terminal that does not open.
  */
-/**
- * The version name of the Unicode 11 table plus one rule: an emoji VARIATION SELECTOR (U+FE0F)
- * widens a one-cell character to two. `➡️` `⚠️` `❤️` are a width-1 base + VS16; Unicode 11 keeps
- * them at 1, while the agent CLIs (`string-width` measures `'➡️'` as 2) and Windows ConPTY put them
- * at 2. MEASURED on Windows 11 (build 26300, node-pty's system ConPTY): `➡️ABC` then `CSI 3 G` `Z`
- * comes back as `➡️ZBC`, i.e. ConPTY holds the emoji in columns 1–2.
- *
- * On a Windows pane the bytes reach us as ConPTY's repaint, positioned on ConPTY's columns, so on
- * the old table every cell after such an emoji was one column left of where the app and ConPTY
- * believe it is. A full repaint is written sequentially and looks right; the partial repaints a TUI
- * makes when it scrolls write at absolute columns and left the line garbled ("u a nenhum
- * dosodois") until a resize forced a full repaint.
- *
- * Only for panes behind ConPTY (`wantsVs16WideWidths`): tmux's handling of VS16 depends on its version
- * and was not measured, and the rule above (agreement, not a number) applies.
- */
-export const VS16_WIDE_VERSION = '11-vs16'
-
-const VS16 = 0xfe0f
-// xterm's packed char-properties value: (state << 3) | (width << 1) | shouldJoin.
-const widthOf = (props: number): number => (props >> 1) & 3
-
-function vs16WideProvider(base: IUnicodeVersionProvider): IUnicodeVersionProvider {
-  return {
-    version: VS16_WIDE_VERSION,
-    wcwidth: (cp) => base.wcwidth(cp),
-    charProperties: (cp, preceding) =>
-      cp === VS16 && preceding !== 0 && widthOf(preceding) === 1
-        ? (2 << 1) | 1 // join the preceding cell and widen it to two
-        : base.charProperties(cp, preceding)
-  }
-}
-
 export function activateUnicode11(term: Terminal): void {
-  try {
-    // The addon registers its provider and keeps no handle to it, so capture one through a stand-in.
-    let base: IUnicodeVersionProvider | null = null
-    new Unicode11Addon().activate({
-      unicode: { register: (p: IUnicodeVersionProvider) => (base = p) }
-    } as unknown as Terminal)
-    if (base) term.unicode.register(vs16WideProvider(base))
-  } catch (err) {
-    console.warn('[terminal] could not register the VS16-wide width table', err)
-  }
   try {
     term.loadAddon(new Unicode11Addon())
     term.unicode.activeVersion = '11'
   } catch (err) {
     console.warn('[terminal] could not activate Unicode 11 widths; staying on xterm’s default', err)
-  }
-}
-
-/** True for a pane whose output is ConPTY's repaint: a Windows core, and not a remote tmux. */
-export function wantsVs16WideWidths(corePlatform: string | null, remoteTmux: boolean): boolean {
-  return corePlatform === 'win32' && !remoteTmux
-}
-
-/** Switch a terminal between the plain Unicode 11 table and the VS16-wide one. Never throws. */
-export function applyVs16Widths(term: Terminal, on: boolean): void {
-  try {
-    const want = on && term.unicode.versions.includes(VS16_WIDE_VERSION) ? VS16_WIDE_VERSION : '11'
-    if (term.unicode.activeVersion !== want && term.unicode.versions.includes(want)) {
-      term.unicode.activeVersion = want
-    }
-  } catch {
-    // A terminal on the plain table renders as it did before.
   }
 }

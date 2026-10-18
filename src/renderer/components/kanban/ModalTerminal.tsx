@@ -57,7 +57,7 @@ import { urlLinkMenuItems } from '../../terminal/link-menu'
 import { ContextMenu } from '../ContextMenu'
 import { parseOsc52 } from '../../terminal/osc52'
 import { createOsc52Notice, dispatchOsc52Toast, handleOsc52Write } from '../../terminal/osc52-policy'
-import { activateUnicode11, applyVs16Widths, wantsVs16WideWidths } from '../../terminal/unicode-width'
+import { activateUnicode11 } from '../../terminal/unicode-width'
 import { useCopyFeedback } from '../../terminal/useCopyFeedback'
 import { pasteWithImageReceipt } from '../../terminal/image-paste-confirm'
 import { usePasteReceipt } from '../../terminal/usePasteReceipt'
@@ -164,9 +164,6 @@ export function ModalTerminal({
     corePlatformRef.current = null
     void hostPlatformFor(api).then((platform) => {
       if (live) corePlatformRef.current = platform
-      if (live && termRef.current) {
-        applyVs16Widths(termRef.current, wantsVs16WideWidths(platform, !!spawn.sshRemoteTmux))
-      }
     })
     return () => {
       live = false
@@ -292,7 +289,6 @@ export function ModalTerminal({
     // the canvas node does. Two views on two width tables would disagree about where the columns
     // are — and the pty runs at the SMALLEST subscriber's grid, so the disagreement would be live.
     activateUnicode11(term)
-    applyVs16Widths(term, wantsVs16WideWidths(corePlatformRef.current, !!spawn.sshRemoteTmux))
     const fit = new FitAddon()
     term.loadAddon(fit)
     const searchAddon = new SearchAddon()

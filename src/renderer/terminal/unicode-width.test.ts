@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Terminal } from '@xterm/xterm'
-import { activateUnicode11, applyVs16Widths, wantsVs16WideWidths } from './unicode-width'
+import { activateUnicode11 } from './unicode-width'
 
 /**
  * These tests pin the FACT the 2026-08-05 emoji fix rests on, not the plumbing.
@@ -98,39 +98,5 @@ describe('activateUnicode11', () => {
     expect(() => activateUnicode11(broken)).not.toThrow()
     expect(warn).toHaveBeenCalled()
     warn.mockRestore()
-  })
-})
-
-describe('VS16-wide widths (ConPTY panes)', () => {
-  // A real terminal: the rule lives in how xterm's parser joins U+FE0F onto the preceding cell.
-  async function cursorAfter(text: string, vs16: boolean): Promise<number> {
-    const { Terminal: Headless } = await import('@xterm/headless')
-    const t = new Headless({ allowProposedApi: true, cols: 40, rows: 3 })
-    activateUnicode11(t as unknown as Terminal)
-    applyVs16Widths(t as unknown as Terminal, vs16)
-    await new Promise<void>((r) => t.write(text, r))
-    const x = t.buffer.active.cursorX
-    t.dispose()
-    return x
-  }
-
-  it('widens an emoji + VS16 to two cells, the width ConPTY and the CLIs use', async () => {
-    expect(await cursorAfter('➡️X', true)).toBe(3) // ➡️
-    expect(await cursorAfter('⚠️X', true)).toBe(3) // ⚠️
-    // Already wide, plain text and a bare base stay as they were.
-    expect(await cursorAfter('❓X', true)).toBe(3) // ❓
-    expect(await cursorAfter('➡X', true)).toBe(2) // ➡ without VS16
-    expect(await cursorAfter('ab', true)).toBe(2)
-  })
-
-  it('leaves the plain Unicode 11 table alone when off (tmux panes)', async () => {
-    expect(await cursorAfter('➡️X', false)).toBe(2)
-  })
-
-  it('applies only to a Windows core outside a remote tmux', () => {
-    expect(wantsVs16WideWidths('win32', false)).toBe(true)
-    expect(wantsVs16WideWidths('win32', true)).toBe(false)
-    expect(wantsVs16WideWidths('linux', false)).toBe(false)
-    expect(wantsVs16WideWidths(null, false)).toBe(false)
   })
 })
