@@ -43,7 +43,7 @@ import { patchTerminalScale } from '../terminal/scale-fix'
 import { focusedNodeId, subscribeFocusedNode, focusSurfaceEl } from '../state/focusNode'
 import { parseOsc52 } from '../terminal/osc52'
 import { createOsc52Notice, dispatchOsc52Toast, handleOsc52Write } from '../terminal/osc52-policy'
-import { activateUnicode11 } from '../terminal/unicode-width'
+import { activateUnicode11, applyVs16Widths, wantsVs16WideWidths } from '../terminal/unicode-width'
 import {
   createFileLinkProvider,
   createOsc8LinkHandler,
@@ -1309,6 +1309,10 @@ export function TerminalNode({
       // A failed read is not evidence of Linux. fileLinkDialect fails closed for server/relay;
       // only the local desktop may use its viewer as the host because they are the same process.
       if (live) corePlatformRef.current = platform
+      // ConPTY panes measure emoji + VS16 as two cells; see `VS16_WIDE_VERSION`.
+      if (live && termRef.current) {
+        applyVs16Widths(termRef.current, wantsVs16WideWidths(platform, !!data.sshRemoteTmux))
+      }
     })
     return () => {
       live = false
@@ -2469,6 +2473,7 @@ export function TerminalNode({
     // Only on a FRESH instance: a parked terminal already carries the table, and the buffer it kept
     // alive was measured with it — re-registering under a live buffer buys nothing.
     if (!parked) activateUnicode11(term)
+    applyVs16Widths(term, wantsVs16WideWidths(corePlatformRef.current, !!data.sshRemoteTmux))
     const fit = parked ? parked.fit : new FitAddon()
     const searchAddon = parked ? parked.search : new SearchAddon()
     termRef.current = term
