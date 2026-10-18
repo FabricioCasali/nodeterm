@@ -50,8 +50,9 @@ import { installLogSink } from '../core/log-sink'
 import { registerLogHandlers } from '../core/log-handlers'
 import os from 'os'
 import { hookServer } from '../core/agents/hook-server'
+import { wireClaudePaneOrigin } from '../core/agents/claude-pane-origin'
 import { serverEditionControlHandler } from './control-unsupported'
-import { initServerCanvasControl, type ServerCanvasControl } from './canvas-control'
+import { initServerCanvasControl, serverCanvasShimPath, type ServerCanvasControl } from './canvas-control'
 import { registerStationNoticeIpc } from '../core/agents/station-notice'
 import { registerStationOutcomeIpc } from '../core/station-outcome-store'
 import { registerStationHandoverIpc } from '../core/station-handover'
@@ -66,9 +67,14 @@ import {
 } from '../core/agents/pending-approvals'
 import { answerHeldPermission } from '../core/agents/permission-decision'
 import type { AnswerPermissionPayload } from '../shared/agents/permission-answer'
-import { installManagedAgentHooks } from '../core/agents/hooks'
-import { installHooksIntoLocalAccounts } from '../core/claude-accounts-service'
-import { ensureCodexHooksForAccounts } from '../core/agents/hooks/codex'
+import {
+  createIntegrationLifecycle,
+  detectExistingIntegrations,
+  registerIntegrationLifecycle,
+  resolveIntegrationConsentAtBoot
+} from '../core/agent-integrations'
+import { registerIntegrationIpc } from '../core/agent-integrations-ipc'
+import { contextLinkShimPath } from '../core/context-link'
 import {
   initAgentStatusMirror,
   flush as flushAgentStatusMirror,
@@ -269,6 +275,20 @@ export async function startServer(
   } catch (error) {
     console.warn('[model-gateway] could not migrate the legacy API key to secret storage', error)
   }
+  // Agent-integration consent (issue #744): grandfather an install from before this feature (our own
+  // hook scripts are on disk) as enabled, before any browser can load settings. Decided once per
+  // install: a first boot without evidence is marked fresh and never grandfathered later (#1149).
+  if (config.installHooks !== false) {
+    try {
+      const grandfathered = resolveIntegrationConsentAtBoot(
+        settingsStore.get(),
+        detectExistingIntegrations(config.dataDir)
+      )
+      if (grandfathered) await settingsStore.save(grandfathered)
+    } catch (error) {
+      console.warn('[integrations] could not record the grandfathered consent', error)
+    }
+  }
   settingsStore.registerIpc()
   // Gateway discovery/credential IPC. NO env snapshot on the server: every registered handler
   // here is dispatchable by any authenticated WS client, and the server process environment is
@@ -395,6 +415,10 @@ export async function startServer(
   // on the desktop it would also reach relay peers. A headless server with nobody attached simply
   // gets no answer, the prompt expires, and the shared value stays unused: fail closed on the
   // grant, fail open on the spawn.
+  // A node owned by an SSH project is never spawned on THIS machine (issue #1186). This shell has
+  // no SSH-project manager, so such a node cannot run anywhere here — refusing is the honest answer,
+  // the same one the desktop gives while that project's ControlMaster is down.
+  ptyManager.setSshProjectCheck((projectId) => workspaceStore.sshProjectIds().includes(projectId))
   ptyManager.setProjectSpawnOverrides(
     makeProjectSpawnOverrides({
       readSettings: (projectId) => workspaceStore.readProjectSettings(projectId),
@@ -536,10 +560,28 @@ export async function startServer(
   // rather than an unknown channel when canvas control is off.
   registerStationOutcomeIpc(platform, () => canvasControl?.stationOutcomes ?? null)
   registerStationHandoverIpc(platform, () => canvasControl?.stationHandovers ?? null)
-  const { contextTail, geminiContextTail, codexContextTail, antigravityContextTail } =
-    wireAgentStatus(platform, {
-      onEvent: (event) => canvasControl?.onAgentEvent(event)
-    })
+  const {
+    contextTail,
+    geminiContextTail,
+    codexContextTail,
+    cursorContextTail,
+    antigravityContextTail
+  } = wireAgentStatus(platform, {
+    onEvent: (event) => canvasControl?.onAgentEvent(event)
+  })
+  // Cursor NEEDS YOU, same seam as the desktop (core/agents/cursor-approval.ts).
+  hookServer.setPaneReader((nodeId) => ptyManager.captureSession(nodeId))
+  // Which claude may speak for a node (#1112, #1153): the pane tty from THIS shell's PtyManager.
+  // Same call as the desktop's (hook-verified-parity.test.ts).
+  wireClaudePaneOrigin({
+    hooks: hookServer,
+    paneOwner: (nodeId) => ptyManager.paneOwner(nodeId),
+    // No SSH-project manager here: such a node's pane is on another machine, never readable.
+    cannotRead: (nodeId) => !!workspaceStore.sshProjectIdForNode(nodeId),
+    on: (channel, cb) => platform.on(channel, cb),
+    destroyChannel: IPC.ptyDestroy,
+    recycleChannel: IPC.ptyRecycle
+  })
   // The ⌘M chat view + the find-bar's transcript index. Registered HERE rather than with the rest
   // of the handlers because the hook-fed path authority is the tail created just above. No remote
   // leg: the Server Edition runs ON the host whose transcripts it reads, so local resolution is
@@ -572,6 +614,8 @@ export async function startServer(
           return codexContextTail
         case 'gemini':
           return geminiContextTail
+        case 'cursor':
+          return cursorContextTail
         case 'antigravity':
           return antigravityContextTail
         default:
@@ -689,23 +733,23 @@ export async function startServer(
     mobilePushEnabled: () => settingsStore.get().mobilePushEnabled !== false,
     mobileLiveActivities: () => settingsStore.get().mobileLiveActivities !== false
   })
-  // `installHooks: false` (tests) skips the merge into the user's real ~/.claude et al —
-  // the hook it would write points into `dataDir`, which a test then deletes.
-  if (config.installHooks !== false) {
-    try {
-      // Fail-open: installManagedAgentHooks is itself best-effort, but a throw must never block boot.
-      installManagedAgentHooks()
-    } catch (e) {
-      console.warn('[nodeterm-server] managed hook install failed', e)
-    }
-    // Managed Claude accounts each carry their OWN settings.json (Claude Code resolves it relative
-    // to CLAUDE_CONFIG_DIR), so the hook has to be re-installed there as well or a managed account
-    // reports no agent status at all. Canvas-control adds its skill in its own opt-in initializer;
-    // this baseline hook pass stays unchanged when the feature flag is off.
-    installHooksIntoLocalAccounts(settingsStore.get().claudeAccounts ?? [])
-    // Same for managed Codex account homes (their own CODEX_HOME); see codex.ts.
-    ensureCodexHooksForAccounts(config.dataDir, settingsStore.get().codexAccounts ?? [])
-  }
+  // Agent-integration consent (issue #744) — the same lifecycle the desktop boots: hooks + skills
+  // only for the agents the user enabled, a declined one cleaned up, nothing for an undecided one.
+  // `installHooks: false` (tests) is a hard veto that outranks every choice: the hook it would write
+  // points into `dataDir`, which a test then deletes.
+  const integrations = createIntegrationLifecycle({
+    settings: () => settingsStore.get(),
+    userDataDir: () => config.dataDir,
+    shims: () => ({
+      canvas: config.canvasControl === true ? serverCanvasShimPath() : undefined,
+      context: contextLinkShimPath()
+    }),
+    veto: config.installHooks === false
+  })
+  registerIntegrationLifecycle(integrations)
+  integrations.reconcile()
+  settingsStore.onChange((s) => integrations.onSettingsChanged(s))
+  registerIntegrationIpc(integrations)
   const hookStartupWarning = await hookServer.startForApp()
   if (hookStartupWarning) console.error('[nodeterm-server]', hookStartupWarning)
   // Safe default and rollback path. The opt-in runtime replaces this handler only after its
@@ -750,8 +794,7 @@ export async function startServer(
   // src/server/context-link.ts.
   const contextLink = initServerContextLink({
     ptyManager,
-    canvases: () => workspaceStore.persistedCanvases(),
-    installAgentIntegrations: config.installHooks !== false
+    canvases: () => workspaceStore.persistedCanvases()
   })
   // A governed project's outside edit goes to the canvas authority, which publishes the difference
   // as canvas ops and then the persisted project on `workspace:server-change` (its non-content
@@ -800,7 +843,6 @@ export async function startServer(
           snapshot: (projectId) => github.service.controlSnapshot(projectId),
           dispatch: (projectId) => boardDispatchReports.forProject(projectId)
         },
-        installAgentIntegrations: config.installHooks !== false,
         // The durable orchestration facts follow hook-endpoint ownership, like the request ledger.
         ownsDurableState: hookStartupWarning === null
       })
@@ -843,7 +885,9 @@ export async function startServer(
   // hostMemReader). Kept identical to the desktop shell so the two cannot drift.
   const sessionReaper = createSessionReaper({
     tmuxBin: () => ptyManager.getTmuxBin(),
-    shadowed: (socket) => ptyManager.shadowedTmuxSessions(socket)
+    shadowed: (socket) => ptyManager.shadowedTmuxSessions(socket),
+    // No tmux (Windows): the session host's sessions are reaped under the same budget rules.
+    sessionHost: () => ptyManager.sessionHostReaperBackend()
   })
   sessionReaper.start()
   // Memory pressure (core/memory-pressure.ts): only the reaper leg on this shell. A CRITICAL
@@ -911,6 +955,8 @@ export async function startServer(
     tmuxBin: () => ptyManager.getTmuxBin(),
     // Zellij-backed sessions are not in the tmux sweep; the panel says how many it did not measure.
     unmeasuredSessions: () => ptyManager.zellijSessionCount(),
+    // Windows (no tmux): the session host's sessions; undefined where it is not the backend.
+    sessionHost: () => ptyManager.sessionHostListing(),
     remote: {
       isRemoteProject: sshScopePredicate({ sshProjectIds: () => workspaceStore.sshProjectIds() })
     }

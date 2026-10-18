@@ -163,7 +163,8 @@ describe('initServerCanvasControl', () => {
       paneOwner,
       sendEnvelope,
       hasLiveSession: () => true,
-      sessionExists: async () => true
+      sessionExists: async () => true,
+      paneProbeTimeoutMs: () => 2000
     } as unknown as PtyManager
     const settings = (): Settings => ({ ...DEFAULT_SETTINGS })
 
@@ -181,8 +182,7 @@ describe('initServerCanvasControl', () => {
       codexSharedIdentity: async () => true,
       // Pinned, never this machine's codex: the line depends on what the CLI advertises. `true`
       // also proves the Server Edition's opens carry `--no-daemon` (shared/agents/codex-daemon.ts).
-      codexCaps: async () => ({ approvalValues: null, noDaemon: true }),
-      installAgentIntegrations: false
+      codexCaps: async () => ({ approvalValues: null, noDaemon: true })
     })
 
     const shim = path.join(dataDir, 'canvas-control', 'nodeterm.sh')
@@ -191,11 +191,6 @@ describe('initServerCanvasControl', () => {
     expect(shimBody).toContain('CODEX_THREAD_ID')
     expect(shimBody).toContain(path.join(dataDir, 'codex-thread-nodes'))
     expect(fs.statSync(shim).mode & 0o111).not.toBe(0)
-    const accountDir = path.join(dataDir, 'test-account')
-    runtime.installSkillInto(accountDir)
-    expect(
-      fs.readFileSync(path.join(accountDir, 'skills', 'manage-nodeterm-canvas', 'SKILL.md'), 'utf8')
-    ).toContain(shim)
 
     const opened = await runtime.handler({
       verb: 'open-agent',
@@ -290,6 +285,8 @@ describe('initServerCanvasControl', () => {
     const writes: Array<{ text: string; enter: boolean | undefined }> = []
     let pasted = ''
     const legacySendEnvelope = vi.fn(async () => true)
+    // The Server shell must hand messaging the pane's own read budget (ptyPaneProbeDeps).
+    const paneProbeTimeoutMs = vi.fn((_nodeId: string) => 2000)
     const pty = {
       ...headlessShell(),
       createHeadless: vi.fn(async () => ({ sessionId: 'unused', fresh: true })),
@@ -321,15 +318,15 @@ describe('initServerCanvasControl', () => {
       })),
       sendEnvelope: legacySendEnvelope,
       hasLiveSession: () => true,
-      sessionExists: async () => true
+      sessionExists: async () => true,
+      paneProbeTimeoutMs
     } as unknown as PtyManager
 
     runtime = await initServerCanvasControl({
       workspaceStore: store,
       ptyManager: pty,
       settings: () => ({ ...DEFAULT_SETTINGS }),
-      boardLog: { append: async () => false },
-      installAgentIntegrations: false
+      boardLog: { append: async () => false }
     })
 
     const opened = await runtime.handler({
@@ -364,6 +361,7 @@ describe('initServerCanvasControl', () => {
     expect(writes[0]).toMatchObject({ enter: false })
     expect(writes[1]).toEqual({ text: '', enter: true })
     expect(legacySendEnvelope).not.toHaveBeenCalled()
+    expect(paneProbeTimeoutMs).toHaveBeenCalledWith(targetId)
   })
 
   it('publishes its own writes on server-change, never on the outside-edit channel', async () => {
@@ -414,15 +412,15 @@ describe('initServerCanvasControl', () => {
       paneOwner: vi.fn(async () => null),
       sendEnvelope: vi.fn(async () => true),
       hasLiveSession: () => true,
-      sessionExists: async () => true
+      sessionExists: async () => true,
+      paneProbeTimeoutMs: () => 2000
     } as unknown as PtyManager
 
     runtime = await initServerCanvasControl({
       workspaceStore: store,
       ptyManager: pty,
       settings: () => ({ ...DEFAULT_SETTINGS }),
-      boardLog: { append: async () => false },
-      installAgentIntegrations: false
+      boardLog: { append: async () => false }
     })
     fake.sent.length = 0
 

@@ -33,6 +33,7 @@ import { isSafeAccountId } from '../../../shared/codex-account'
 import { buildManagedScript } from './managed-script'
 import { normalizeHookCommand } from './install-helper'
 import { buildCodexWindowsWrapper, CODEX_WINDOWS_WRAPPER_FILE } from './codex-windows-wrapper'
+import { buildWindowsHookInvocation, defaultWindowsCmdExe } from './windows-hook-wrapper'
 import {
   computeTrustedHash,
   computeTrustKey,
@@ -137,12 +138,17 @@ function isManagedCommand(command: string | undefined): boolean {
   // stripped before the fresh one is pushed, so the next app launch heals the file.
   //
   // ANCHORED to our own hook directories, never a bare `agent-hooks/<leaf>` tail. Other tools ship
-  // the same layout under the same leaf names (measured: Orca's `~/.orca/agent-hooks/codex-hook.cmd`
-  // on a Windows desktop) and the tail match treated their entry as ours, stripping it from
+  // the same layout under the same leaf names (measured: another tool's
+  // `~/.other/agent-hooks/codex-hook.cmd` on a Windows desktop) and the tail match treated their entry as ours, stripping it from
   // hooks.json on every repair. The anchors are the directories we have ever written to:
   // `~/.nodeterm` (current, local and SSH), the desktop's old userData dir (`node-terminal`) and the
   // Server Edition's default data dir (`.nodeterm-server`). A script left in a Server Edition run with
   // a custom `--data-dir` is no longer swept; that entry is inert once its directory is gone.
+  // DECIDED (issue #744 decline cleanup): `removeCodexHooks` — what a DECLINED codex runs — shares
+  // this matcher, so it does not remove such a legacy entry either. That is deliberate: a decline
+  // must remove exactly what we wrote, and a bare-tail match cannot tell our legacy entry from
+  // another tool's live one. Removing someone else's hook is the worse error than leaving an inert
+  // command of ours behind; the user can delete it from hooks.json by hand.
   const c = normalizeHookCommand(command)
   return OWN_HOOK_DIRS.some(
     (dir) =>
@@ -173,23 +179,25 @@ function removeManagedFromDefinitions(defs: HookDefinition[]): HookDefinition[] 
   })
 }
 
-/**
- * `%SystemRoot%\System32\cmd.exe`, or bare `cmd` when that cannot be spelled unquoted.
- *
- * Unquoted is the whole constraint: quoting the program name is exactly what breaks under
- * PowerShell (a quoted leading token is a string literal, which is #685), so a resolved path
- * carrying a space or a shell metacharacter is unusable and the PATH lookup is the lesser evil.
- * `windir` is the fallback name for the same value on older installs.
- */
-export function defaultWindowsCmdExe(): string {
-  const root = process.env.SystemRoot || process.env.windir || ''
-  if (!root) return 'cmd'
-  const abs = `${root}\\System32\\cmd.exe`
-  // Deliberately a strict allow-list, not a metacharacter deny-list: anything outside a plain
-  // drive-letter path is not worth guessing at. The fallback then attempts a PATH lookup, which is
-  // what this function exists to avoid — but an unusable absolute path would run nothing at all.
-  return /^[A-Za-z]:\\[A-Za-z0-9\\._-]*$/.test(abs) ? abs : 'cmd'
+/** Pure: hooks.json without our managed handlers, or null when there was nothing of ours. */
+export function stripCodexManagedHooks(config: HooksConfig): HooksConfig | null {
+  if (!config || typeof config !== 'object' || !config.hooks || typeof config.hooks !== 'object') return null
+  const next: Record<string, HookDefinition[]> = { ...config.hooks }
+  let removed = false
+  for (const [ev, defs] of Object.entries(next)) {
+    if (!Array.isArray(defs)) continue
+    const cleaned = removeManagedFromDefinitions(defs)
+    if (cleaned.length === defs.length && cleaned.every((d, i) => d === defs[i])) continue
+    removed = true
+    if (cleaned.length === 0) delete next[ev]
+    else next[ev] = cleaned
+  }
+  return removed ? { ...config, hooks: next } : null
 }
+
+// `defaultWindowsCmdExe` moved to windows-hook-wrapper.ts (shared by every wrapped agent); re-exported
+// here because callers and tests import it from codex.
+export { defaultWindowsCmdExe }
 
 /**
  * The hook command, formed the SAME way for hooks.json AND the trust entry — the trust hash is
@@ -264,7 +272,7 @@ export function buildManagedCommand(
     // exit-2 "block the prompt" convention does not survive this path. The managed script exits 0
     // on every branch, including its bails, so no behaviour in this repo relies on the distinction.
     const dir = script.slice(0, Math.max(script.lastIndexOf('\\'), script.lastIndexOf('/')) + 1)
-    return `${cmdExe} /d /c call "${dir}${CODEX_WINDOWS_WRAPPER_FILE} "`
+    return buildWindowsHookInvocation(`${dir}${CODEX_WINDOWS_WRAPPER_FILE}`, cmdExe)
   }
   // POSIX single-quote escape so $, `, ", \ in the path are taken literally.
   const quoted = `'${script.replaceAll("'", "'\\''")}'`
