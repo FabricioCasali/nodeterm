@@ -146,8 +146,9 @@ describe('the off-canvas dispatch block (source pins)', () => {
       )
     )
     expect(off).toContain(
-      'ropes: [ropeEdge(`ctrl-${sourceNodeId}-${placed.id}`, sourceNodeId, placed.id)]'
+      'const edge = ropeEdge(`ctrl-${sourceNodeId}-${placed.id}`, sourceNodeId, placed.id)'
     )
+    expect(off).toContain('ropes: [edge]')
     expect(off).not.toContain('bridges:')
   })
 

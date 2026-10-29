@@ -98,8 +98,8 @@ describe('alignNodes', () => {
 // top-level object a layer layout has to place.
 const frame = (id: string, x: number, y: number, w = 300, h = 200): CanvasNode =>
   ({ id, type: 'group', position: { x, y }, width: w, height: h, data: { title: id, color: '#fff', group: null } }) as CanvasNode
-const child = (id: string, parentId: string, x = 10, y = 10): CanvasNode =>
-  ({ id, type: 'terminal', position: { x, y }, width: 100, height: 50, parentId, data: { title: id, color: '#fff', group: null } }) as CanvasNode
+const child = (id: string, parentId: string, x = 10, y = 10, w = 100, h = 50): CanvasNode =>
+  ({ id, type: 'terminal', position: { x, y }, width: w, height: h, parentId, data: { title: id, color: '#fff', group: null } }) as CanvasNode
 
 describe('lineageLayers', () => {
   it('layers by who opened whom, roots first', () => {
