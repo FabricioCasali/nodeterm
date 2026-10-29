@@ -9,7 +9,7 @@ import { AerialWallpaper } from '../AerialWallpaper'
 import {
   addColumn, assignNode, assignedTo, boardLabels, cardMatchesLabelFilter, cardMeta, columnForNode,
   deleteColumn, labelsForCard, moveColumn,
-  nextColumnColor, pruneAssignments, recolorColumn, renameColumn, unassigned, defaultKanban, AT_COLUMN_END
+  nextColumnColor, pruneAssignments, recolorColumn, renameColumn, swimlanePriorityTier, unassigned, defaultKanban, AT_COLUMN_END
 } from '../../lib/kanban'
 import { KanbanColumn, type KanbanLane } from './KanbanColumn'
 import { SessionCard } from './SessionCard'
@@ -101,6 +101,8 @@ interface SwimlaneProps {
   onRunQueued?: (projectId: string, nodeId: string) => void
 }
 
+const EMPTY_SWIMLANE_COLLAPSE_MS = 2 * 60 * 1000
+
 const Swimlane = memo(function Swimlane({
   projectId, projectName, projectIndex, projectColor, board, sessions, ropes, nodes, onChangeBoard, onOpenNode, onCreateNode, onDeleteNode, onRenameNode, onEditSticky, onBrowserNav, onSetIcon, modalNodeId, modalView, onModalChange, liveTeams, highlight, nodeActionItems, sessionActionItems, onAiName, onSetColor, onRunQueued
 }: SwimlaneProps) {
@@ -111,7 +113,22 @@ const Swimlane = memo(function Swimlane({
   )
   const [cardMenu, setCardMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null)
   const [labelFilter, setLabelFilter] = useState<string[]>([])
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState(() => sessions.length === 0)
+  const prevSessionCountRef = useRef(sessions.length)
+  useEffect(() => {
+    const prev = prevSessionCountRef.current
+    prevSessionCountRef.current = sessions.length
+    if (sessions.length === 0 && prev > 0) {
+      setCollapsed(true)
+    } else if (sessions.length > 0 && prev === 0) {
+      setCollapsed(false)
+    }
+  }, [sessions.length])
+  useEffect(() => {
+    if (sessions.length > 0 || collapsed) return
+    const timer = setTimeout(() => setCollapsed(true), EMPTY_SWIMLANE_COLLAPSE_MS)
+    return () => clearTimeout(timer)
+  }, [sessions.length, collapsed])
   const activePortsProjectId = useProjects((s) => s.activeProjectId)
   // The card face's Ports chip, for the active project's lane only: the dev-port scanner covers the
   // project on the canvas and nothing else, so a background lane would show a stale or empty list.
@@ -423,7 +440,37 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
   useEffect(() => markCanvasCovered(document.documentElement), [])
   const boardStyle = useBoardWallpaperStyle()
   const allProjects = useProjects(s => s.projects)
-  const projects = useMemo(() => allProjects.filter(p => !p.closed), [allProjects])
+  const openProjects = useMemo(() => allProjects.filter(p => !p.closed), [allProjects])
+  const [autoSort, setAutoSort] = useState(true)
+  const statusSig = useAgentStatus((s) => {
+    const parts: string[] = []
+    for (const [id, st] of Object.entries(s.byId)) {
+      if (!st) continue
+      if (st.dropped) parts.push(`${id}:d`)
+      else if (st.state === 'waiting' || st.state === 'blocked') parts.push(`${id}:n`)
+      else if (st.state === 'working') parts.push(`${id}:r`)
+    }
+    return parts.join(',')
+  })
+  const laneEntries = useMemo(() => {
+    const statusById = useAgentStatus.getState().byId
+    const entries = openProjects.map((p, originalIdx) => {
+      const board = p.kanban ?? defaultKanban(p.id)
+      const isLive = live !== null && live.projectId === p.id
+      const sessions = isLive
+        ? live.sessions
+        : p.nodes.map(n => toKanbanSessionState(n as never)).filter((s): s is KanbanSession => s !== null)
+      const priority = swimlanePriorityTier(board, sessions, statusById)
+      return { project: p, board, isLive, sessions, priority, originalIdx }
+    })
+    if (!autoSort) return entries
+    return [...entries].sort((a, b) => {
+      if (a.priority.tier !== b.priority.tier) return a.priority.tier - b.priority.tier
+      if (a.priority.comigoCount !== b.priority.comigoCount) return b.priority.comigoCount - a.priority.comigoCount
+      if (a.priority.workingCount !== b.priority.workingCount) return b.priority.workingCount - a.priority.workingCount
+      return a.originalIdx - b.originalIdx
+    })
+  }, [openProjects, live, autoSort, statusSig])
   const liveRef = useRef(live)
   liveRef.current = live
   const [modal, setModal] = useState<{ projectId: string; nodeId: string; view?: 'md' } | null>(null)
@@ -527,7 +574,7 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
     setTimeout(() => window.dispatchEvent(new CustomEvent('nodeterm:focus-node', { detail: { nodeId } })), 50)
   }, [])
 
-  if (projects.length === 0) {
+  if (openProjects.length === 0) {
     return (
       <div className="kanban-overlay global-kanban" style={boardStyle}>
         {boardStyle && <AerialWallpaper board />}
@@ -543,15 +590,18 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
       <div className="kanban-header">
         <span className="kanban-header__name">All Projects</span>
         <KanbanScopeSwitch scope="all" />
-        <span className="kanban-swimlane__hint">{projects.length} projects — {mod}+1..{Math.min(9, projects.length)} to jump</span>
+        <button
+          type="button"
+          className={`kanban-status-chip${autoSort ? ' kanban-status-chip--active' : ''}`}
+          onClick={() => setAutoSort((v) => !v)}
+          title="Sort projects by priority: Comigo / Needs you first, then running agents, then idle, then empty"
+        >
+          {autoSort ? 'Sort: Priority' : 'Sort: Tab order'}
+        </button>
+        <span className="kanban-swimlane__hint">{openProjects.length} projects — {mod}+1..{Math.min(9, openProjects.length)} to jump</span>
       </div>
       <div className="global-kanban__scroll">
-        {projects.map((p, idx) => {
-          const board = p.kanban ?? defaultKanban(p.id)
-          const isLive = live !== null && live.projectId === p.id
-          const sessions = isLive
-            ? live.sessions
-            : p.nodes.map(n => toKanbanSessionState(n as never)).filter((s): s is KanbanSession => s !== null)
+        {laneEntries.map(({ project: p, board, isLive, sessions }, idx) => {
           return (
             <Swimlane
               key={p.id}
@@ -574,7 +624,7 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
               modalNodeId={modal?.projectId === p.id ? modal.nodeId : null}
               modalView={modal?.projectId === p.id ? modal.view : undefined}
               onModalChange={onModalChange}
-              liveTeams={isLive ? live.teams : undefined}
+              liveTeams={isLive && live ? live.teams : undefined}
               highlight={highlightId === p.id}
               nodeActionItems={nodeActionItems}
               sessionActionItems={sessionActionItems}

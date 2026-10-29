@@ -134,13 +134,52 @@ export function assignedTo(k: ProjectKanban, columnId: string): string[] {
  * caller can distinguish "send to Ungrouped" (null) from "no such column" (undefined) and report
  * the available columns. Agents naturally pass a title ("In Progress"); ids come from `board`.
  */
+export function normColTitle(title: string | undefined): string {
+  if (!title) return ''
+  return title.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase()
+}
+
 export function resolveColumnRef(k: ProjectKanban, ref: string): string | null | undefined {
   const raw = ref.trim()
   if (!raw || raw.toLowerCase() === 'ungrouped') return null
   const byId = k.columns.find((c) => c.id === raw)
   if (byId) return byId.id
   const byTitle = k.columns.find((c) => c.title.toLowerCase() === raw.toLowerCase())
-  return byTitle ? byTitle.id : undefined
+  if (byTitle) return byTitle.id
+  const normRaw = normColTitle(raw)
+  const byNorm = k.columns.find((c) => normColTitle(c.title) === normRaw)
+  return byNorm ? byNorm.id : undefined
+}
+
+export function swimlanePriorityTier(
+  board: ProjectKanban,
+  sessions: ReadonlyArray<{ id: string; kind: string }>,
+  statusById: Readonly<Record<string, { state?: string; dropped?: boolean } | undefined>>
+): { tier: number; comigoCount: number; workingCount: number } {
+  if (sessions.length === 0) return { tier: 3, comigoCount: 0, workingCount: 0 }
+  let comigoCount = 0
+  let workingCount = 0
+  for (const s of sessions) {
+    const colTitle = normColTitle(columnForNode(board, s.id)?.title)
+    const st = s.kind === 'sticky' ? undefined : statusById[s.id]
+    const needsYou = !!st && (!!st.dropped || st.state === 'waiting' || st.state === 'blocked')
+    const isRunning = !!st && !st.dropped && st.state === 'working'
+    if (colTitle === 'comigo' || colTitle === 'esperando fabricio' || needsYou) {
+      comigoCount++
+    }
+    if (
+      isRunning ||
+      colTitle === 'planejamento' ||
+      colTitle === 'implementacao' ||
+      colTitle === 'testes e qa' ||
+      colTitle === 'in progress'
+    ) {
+      workingCount++
+    }
+  }
+  if (comigoCount > 0) return { tier: 0, comigoCount, workingCount }
+  if (workingCount > 0) return { tier: 1, comigoCount, workingCount }
+  return { tier: 2, comigoCount, workingCount }
 }
 
 /** Ids from `sessionIds` with no live assignment — never assigned, or assigned to a column
