@@ -153,6 +153,7 @@ const Swimlane = memo(function Swimlane({
   const disabledAgents = useSettings((s) => s.settings.disabledAgents)
 
   const requestedCardNodeId = useViewMode((s) => s.requestedCardNodeId)
+  const kanbanLayout = useViewMode((s) => s.kanbanLayout)
   useEffect(() => {
     if (!requestedCardNodeId) return
     if (sessions.some(s => s.id === requestedCardNodeId)) {
@@ -335,7 +336,7 @@ const Swimlane = memo(function Swimlane({
         <span className="kanban-swimlane__count">{sessions.length} sessions</span>
       </div>
       {!collapsed && (
-        <div className="kanban-board kanban-swimlane__board">
+        <div className={`kanban-board kanban-swimlane__board${kanbanLayout === 'vertical' ? ' kanban-board--vertical' : ''}`}>
           <div className="kanban-board__columns">
             <KanbanColumn
               column={null}
@@ -442,6 +443,7 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
   const allProjects = useProjects(s => s.projects)
   const openProjects = useMemo(() => allProjects.filter(p => !p.closed), [allProjects])
   const [autoSort, setAutoSort] = useState(true)
+  const kanbanLayout = useViewMode((s) => s.kanbanLayout)
   const statusSig = useAgentStatus((s) => {
     const parts: string[] = []
     for (const [id, st] of Object.entries(s.byId)) {
@@ -597,6 +599,14 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
           title="Sort projects by priority: Comigo / Needs you first, then running agents, then idle, then empty"
         >
           {autoSort ? 'Sort: Priority' : 'Sort: Tab order'}
+        </button>
+        <button
+          type="button"
+          className={`kanban-status-chip${kanbanLayout === 'vertical' ? ' kanban-status-chip--active' : ''}`}
+          onClick={() => useViewMode.getState().toggleKanbanLayout()}
+          title="Switch column layout between Vertical (fits window width, no horizontal scroll) and Horizontal"
+        >
+          {kanbanLayout === 'vertical' ? 'Layout: Vertical' : 'Layout: Horizontal'}
         </button>
         <span className="kanban-swimlane__hint">{openProjects.length} projects — {mod}+1..{Math.min(9, openProjects.length)} to jump</span>
       </div>
