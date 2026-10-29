@@ -8,9 +8,10 @@ import { useBoardWallpaperStyle } from '../../state/wallpaper'
 import { AerialWallpaper } from '../AerialWallpaper'
 import {
   addColumn, assignNode, assignedTo, boardLabels, cardMatchesLabelFilter, cardMeta, columnForNode,
-  deleteColumn, labelsForCard, moveColumn,
+  compareSwimlanePriority, deleteColumn, labelsForCard, moveColumn,
   nextColumnColor, pruneAssignments, recolorColumn, renameColumn, swimlanePriorityTier, unassigned, defaultKanban, AT_COLUMN_END
 } from '../../lib/kanban'
+import { readLocal, writeLocal } from '../../lib/localStore'
 import { KanbanColumn, type KanbanLane } from './KanbanColumn'
 import { SessionCard } from './SessionCard'
 import { projectSessionSource } from '../LiveLinkChip'
@@ -102,6 +103,50 @@ interface SwimlaneProps {
 }
 
 const EMPTY_SWIMLANE_COLLAPSE_MS = 2 * 60 * 1000
+const PROJECT_ACTIVITY_KEY = 'nodeterm.projectLastActivity'
+
+const projectActivityAt: Record<string, number> = (() => {
+  try {
+    const raw = readLocal(PROJECT_ACTIVITY_KEY)
+    const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const out: Record<string, number> = {}
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v === 'number' && Number.isFinite(v)) out[k] = v
+    }
+    return out
+  } catch {
+    return {}
+  }
+})()
+
+const prevProjectBoardSig = new Map<string, string>()
+
+function boardActivitySig(board: ProjectKanban | undefined, nodeIds: readonly string[]): string {
+  const assigns = board?.assignments.map((a) => `${a.nodeId}:${a.columnId}`).join('|') ?? ''
+  return `${assigns}#${nodeIds.join('|')}`
+}
+
+function touchProjectActivity(projectId: string, at = Date.now()): number {
+  projectActivityAt[projectId] = at
+  try {
+    writeLocal(PROJECT_ACTIVITY_KEY, JSON.stringify(projectActivityAt))
+  } catch { /* ignore */ }
+  return at
+}
+
+useProjects.subscribe((state) => {
+  for (const p of state.projects) {
+    const sig = boardActivitySig(p.kanban, p.nodes.map((n) => n.id))
+    const prev = prevProjectBoardSig.get(p.id)
+    if (prev === undefined) {
+      prevProjectBoardSig.set(p.id, sig)
+    } else if (prev !== sig) {
+      prevProjectBoardSig.set(p.id, sig)
+      touchProjectActivity(p.id)
+    }
+  }
+})
 
 const Swimlane = memo(function Swimlane({
   projectId, projectName, projectIndex, projectColor, board, sessions, ropes, nodes, onChangeBoard, onOpenNode, onCreateNode, onDeleteNode, onRenameNode, onEditSticky, onBrowserNav, onSetIcon, modalNodeId, modalView, onModalChange, liveTeams, highlight, nodeActionItems, sessionActionItems, onAiName, onSetColor, onRunQueued
@@ -448,30 +493,38 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
     const parts: string[] = []
     for (const [id, st] of Object.entries(s.byId)) {
       if (!st) continue
-      if (st.dropped) parts.push(`${id}:d`)
-      else if (st.state === 'waiting' || st.state === 'blocked') parts.push(`${id}:n`)
-      else if (st.state === 'working') parts.push(`${id}:r`)
+      const ev = Math.max(st.lastEventAt ?? 0, st.stateAt ?? 0, st.lastSeen?.at ?? 0)
+      if (st.dropped) parts.push(`${id}:d:${ev}`)
+      else if (st.state === 'waiting' || st.state === 'blocked') parts.push(`${id}:n:${ev}`)
+      else if (st.state === 'working') parts.push(`${id}:r:${ev}`)
+      else if (ev > 0) parts.push(`${id}:i:${ev}`)
     }
     return parts.join(',')
   })
   const laneEntries = useMemo(() => {
     const statusById = useAgentStatus.getState().byId
+    const boardLogs = useBoardLog.getState().entriesByProject
     const entries = openProjects.map((p, originalIdx) => {
       const board = p.kanban ?? defaultKanban(p.id)
       const isLive = live !== null && live.projectId === p.id
       const sessions = isLive
         ? live.sessions
         : p.nodes.map(n => toKanbanSessionState(n as never)).filter((s): s is KanbanSession => s !== null)
-      const priority = swimlanePriorityTier(board, sessions, statusById)
+      const sig = boardActivitySig(board, sessions.map((s) => s.id))
+      const prevSig = prevProjectBoardSig.get(p.id)
+      if (prevSig === undefined) {
+        prevProjectBoardSig.set(p.id, sig)
+      } else if (prevSig !== sig) {
+        prevProjectBoardSig.set(p.id, sig)
+        touchProjectActivity(p.id)
+      }
+      const logTs = boardLogs[p.id]?.[0]?.ts ?? 0
+      const lastActivity = Math.max(projectActivityAt[p.id] ?? 0, logTs)
+      const priority = swimlanePriorityTier(board, sessions, statusById, lastActivity)
       return { project: p, board, isLive, sessions, priority, originalIdx }
     })
     if (!autoSort) return entries
-    return [...entries].sort((a, b) => {
-      if (a.priority.tier !== b.priority.tier) return a.priority.tier - b.priority.tier
-      if (a.priority.comigoCount !== b.priority.comigoCount) return b.priority.comigoCount - a.priority.comigoCount
-      if (a.priority.workingCount !== b.priority.workingCount) return b.priority.workingCount - a.priority.workingCount
-      return a.originalIdx - b.originalIdx
-    })
+    return [...entries].sort(compareSwimlanePriority)
   }, [openProjects, live, autoSort, statusSig])
   const liveRef = useRef(live)
   liveRef.current = live
@@ -512,6 +565,7 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
     // host's to change, and a move here would only diverge.
     const session = sessionForProject(projectId)
     if (isHostedReadOnly(session.id)) return
+    touchProjectActivity(projectId)
     const prev = useProjects.getState().getProject(projectId)?.kanban ?? defaultKanban(projectId)
     useProjects.getState().setProjectKanban(projectId, next)
     markWorkspaceDirty()
@@ -535,6 +589,7 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
   }, [])
 
   const onCreateNode = useCallback((projectId: string, choice: KanbanCreateChoice, columnId: string | null) => {
+    touchProjectActivity(projectId)
     // Delegate to Canvas's createNodeInColumn which correctly mounts the TerminalNode
     // and starts the tmux session (via transport.create). Direct store manipulation
     // would leave the tmux session unstarted for non-active projects, causing the

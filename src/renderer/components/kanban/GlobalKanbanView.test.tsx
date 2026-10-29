@@ -1,7 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { describe, expect, it } from 'vitest'
-import { swimlanePriorityTier } from '../../lib/kanban'
+import { compareSwimlanePriority, swimlanePriorityTier } from '../../lib/kanban'
 import type { ProjectKanban } from '@shared/types'
 import type { KanbanSession } from './KanbanView'
 
@@ -72,6 +72,30 @@ describe('global kanban priority sorting', () => {
         { s1: { state: 'waiting' } }
       ).tier
     ).toBe(0)
+  })
+
+  it('within the same priority tier, places the project with the most recent event on top', () => {
+    const olderComigo = swimlanePriorityTier(
+      { ...board, assignments: [{ nodeId: 's1', columnId: 'c-comigo' }] },
+      [sess('s1')],
+      { s1: { state: 'waiting', lastEventAt: 1000 } }
+    )
+    const newerComigo = swimlanePriorityTier(
+      { ...board, assignments: [{ nodeId: 's2', columnId: 'c-comigo' }] },
+      [sess('s2')],
+      { s2: { state: 'waiting', lastEventAt: 5000 } }
+    )
+    const workingRecent = swimlanePriorityTier(
+      { ...board, assignments: [{ nodeId: 's3', columnId: 'c-impl' }] },
+      [sess('s3')],
+      { s3: { state: 'working', lastEventAt: 9000 } }
+    )
+    const sorted = [
+      { id: 'working-recent', priority: workingRecent, originalIdx: 0 },
+      { id: 'older-comigo', priority: olderComigo, originalIdx: 1 },
+      { id: 'newer-comigo', priority: newerComigo, originalIdx: 2 }
+    ].sort(compareSwimlanePriority)
+    expect(sorted.map((x) => x.id)).toEqual(['newer-comigo', 'older-comigo', 'working-recent'])
   })
 })
 

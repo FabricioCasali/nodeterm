@@ -151,21 +151,49 @@ export function resolveColumnRef(k: ProjectKanban, ref: string): string | null |
   return byNorm ? byNorm.id : undefined
 }
 
+export interface SwimlanePriorityStatus {
+  state?: string
+  dropped?: boolean
+  lastEventAt?: number
+  stateAt?: number
+  lastSeen?: { at: number; state?: string }
+}
+
+export interface SwimlanePriority {
+  tier: number
+  comigoCount: number
+  workingCount: number
+  lastEventAt: number
+}
+
 export function swimlanePriorityTier(
   board: ProjectKanban,
   sessions: ReadonlyArray<{ id: string; kind: string }>,
-  statusById: Readonly<Record<string, { state?: string; dropped?: boolean } | undefined>>
-): { tier: number; comigoCount: number; workingCount: number } {
-  if (sessions.length === 0) return { tier: 3, comigoCount: 0, workingCount: 0 }
+  statusById: Readonly<Record<string, SwimlanePriorityStatus | undefined>>,
+  projectLastActivityAt = 0
+): SwimlanePriority {
+  if (sessions.length === 0) {
+    return { tier: 3, comigoCount: 0, workingCount: 0, lastEventAt: projectLastActivityAt }
+  }
   let comigoCount = 0
   let workingCount = 0
+  let maxComigoEventAt = 0
+  let maxWorkingEventAt = 0
+  let maxAnyEventAt = projectLastActivityAt
   for (const s of sessions) {
     const colTitle = normColTitle(columnForNode(board, s.id)?.title)
     const st = s.kind === 'sticky' ? undefined : statusById[s.id]
+    const nodeEventAt = st
+      ? Math.max(st.lastEventAt ?? 0, st.stateAt ?? 0, st.lastSeen?.at ?? 0)
+      : 0
+    if (nodeEventAt > maxAnyEventAt) maxAnyEventAt = nodeEventAt
+
     const needsYou = !!st && (!!st.dropped || st.state === 'waiting' || st.state === 'blocked')
     const isRunning = !!st && !st.dropped && st.state === 'working'
     if (colTitle === 'comigo' || colTitle === 'esperando fabricio' || needsYou) {
       comigoCount++
+      const ev = Math.max(nodeEventAt, projectLastActivityAt)
+      if (ev > maxComigoEventAt) maxComigoEventAt = ev
     }
     if (
       isRunning ||
@@ -175,11 +203,28 @@ export function swimlanePriorityTier(
       colTitle === 'in progress'
     ) {
       workingCount++
+      const ev = Math.max(nodeEventAt, projectLastActivityAt)
+      if (ev > maxWorkingEventAt) maxWorkingEventAt = ev
     }
   }
-  if (comigoCount > 0) return { tier: 0, comigoCount, workingCount }
-  if (workingCount > 0) return { tier: 1, comigoCount, workingCount }
-  return { tier: 2, comigoCount, workingCount }
+  if (comigoCount > 0) {
+    return { tier: 0, comigoCount, workingCount, lastEventAt: Math.max(maxComigoEventAt, maxAnyEventAt) }
+  }
+  if (workingCount > 0) {
+    return { tier: 1, comigoCount, workingCount, lastEventAt: Math.max(maxWorkingEventAt, maxAnyEventAt) }
+  }
+  return { tier: 2, comigoCount, workingCount, lastEventAt: maxAnyEventAt }
+}
+
+export function compareSwimlanePriority(
+  a: { priority: SwimlanePriority; originalIdx: number },
+  b: { priority: SwimlanePriority; originalIdx: number }
+): number {
+  if (a.priority.tier !== b.priority.tier) return a.priority.tier - b.priority.tier
+  if (a.priority.lastEventAt !== b.priority.lastEventAt) return b.priority.lastEventAt - a.priority.lastEventAt
+  if (a.priority.comigoCount !== b.priority.comigoCount) return b.priority.comigoCount - a.priority.comigoCount
+  if (a.priority.workingCount !== b.priority.workingCount) return b.priority.workingCount - a.priority.workingCount
+  return a.originalIdx - b.originalIdx
 }
 
 /** Ids from `sessionIds` with no live assignment — never assigned, or assigned to a column
