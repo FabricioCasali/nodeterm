@@ -154,6 +154,7 @@ export function resolveColumnRef(k: ProjectKanban, ref: string): string | null |
 export interface SwimlanePriorityStatus {
   state?: string
   dropped?: boolean
+  unread?: boolean
   lastEventAt?: number
 }
 
@@ -171,13 +172,12 @@ export function swimlanePriorityTier(
   projectLastActivityAt = 0
 ): SwimlanePriority {
   if (sessions.length === 0) {
-    return { tier: 3, comigoCount: 0, workingCount: 0, lastEventAt: projectLastActivityAt }
+    return { tier: 3, comigoCount: 0, workingCount: 0, lastEventAt: 0 }
   }
   let comigoCount = 0
   let workingCount = 0
   let minComigoEventAt = 0
   let minWorkingEventAt = 0
-  let minAnyEventAt = 0
   for (const s of sessions) {
     const colTitle = normColTitle(columnForNode(board, s.id)?.title)
     const st = s.kind === 'sticky' ? undefined : statusById[s.id]
@@ -186,11 +186,14 @@ export function swimlanePriorityTier(
     const isStatusEndOrWait =
       !!st && (!!st.dropped || st.state === 'waiting' || st.state === 'blocked' || st.state === 'done')
     const nodeEventAt = isStatusEndOrWait ? (st.lastEventAt ?? 0) : 0
-    if (nodeEventAt > 0 && (minAnyEventAt === 0 || nodeEventAt < minAnyEventAt)) {
-      minAnyEventAt = nodeEventAt
-    }
 
-    const needsYou = !!st && (!!st.dropped || st.state === 'waiting' || st.state === 'blocked')
+    const isDoneColumn = colTitle === 'concluido' || colTitle === 'done'
+    const needsYou =
+      !!st &&
+      (!!st.dropped ||
+        st.state === 'waiting' ||
+        st.state === 'blocked' ||
+        (!!st.unread && st.state !== 'working' && !isDoneColumn))
     const isRunning = !!st && !st.dropped && st.state === 'working'
     if (colTitle === 'comigo' || colTitle === 'esperando fabricio' || needsYou) {
       comigoCount++
@@ -219,7 +222,8 @@ export function swimlanePriorityTier(
   if (workingCount > 0) {
     return { tier: 1, comigoCount, workingCount, lastEventAt: minWorkingEventAt || projectLastActivityAt }
   }
-  return { tier: 2, comigoCount, workingCount, lastEventAt: minAnyEventAt || projectLastActivityAt }
+  // Idle projects (nothing waiting/unread and nothing running) keep their natural tab order.
+  return { tier: 2, comigoCount: 0, workingCount: 0, lastEventAt: 0 }
 }
 
 export function compareSwimlanePriority(

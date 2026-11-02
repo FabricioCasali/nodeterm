@@ -72,6 +72,21 @@ describe('global kanban priority sorting', () => {
         { s1: { state: 'waiting' } }
       ).tier
     ).toBe(0)
+    expect(
+      swimlanePriorityTier(
+        { ...board, assignments: [{ nodeId: 's1', columnId: 'c-fixas' }] },
+        [sess('s1')],
+        { s1: { state: 'done', unread: true, lastEventAt: 2000 } }
+      ).tier
+    ).toBe(0)
+    expect(
+      swimlanePriorityTier(
+        { ...board, assignments: [{ nodeId: 's1', columnId: 'c-fixas' }] },
+        [sess('s1')],
+        { s1: { state: 'done', unread: false, lastEventAt: 2000 } },
+        9999
+      )
+    ).toEqual({ tier: 2, comigoCount: 0, workingCount: 0, lastEventAt: 0 })
   })
 
   it('within the same priority tier, orders chronologically from oldest to newest and ignores working timestamps', () => {

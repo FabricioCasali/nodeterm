@@ -11,7 +11,6 @@ import {
   compareSwimlanePriority, deleteColumn, labelsForCard, moveColumn,
   nextColumnColor, pruneAssignments, recolorColumn, renameColumn, swimlanePriorityTier, unassigned, defaultKanban, AT_COLUMN_END
 } from '../../lib/kanban'
-import { readLocal, writeLocal } from '../../lib/localStore'
 import { KanbanColumn, type KanbanLane } from './KanbanColumn'
 import { SessionCard } from './SessionCard'
 import { projectSessionSource } from '../LiveLinkChip'
@@ -103,23 +102,8 @@ interface SwimlaneProps {
 }
 
 const EMPTY_SWIMLANE_COLLAPSE_MS = 2 * 60 * 1000
-const PROJECT_ACTIVITY_KEY = 'nodeterm.projectLastActivity'
 
-const projectActivityAt: Record<string, number> = (() => {
-  try {
-    const raw = readLocal(PROJECT_ACTIVITY_KEY)
-    const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
-    const out: Record<string, number> = {}
-    for (const [k, v] of Object.entries(parsed)) {
-      if (typeof v === 'number' && Number.isFinite(v)) out[k] = v
-    }
-    return out
-  } catch {
-    return {}
-  }
-})()
-
+const projectActivityAt: Record<string, number> = {}
 const prevProjectBoardSig = new Map<string, string>()
 
 function boardActivitySig(board: ProjectKanban | undefined): string {
@@ -128,9 +112,6 @@ function boardActivitySig(board: ProjectKanban | undefined): string {
 
 function touchProjectActivity(projectId: string, at = Date.now()): number {
   projectActivityAt[projectId] = at
-  try {
-    writeLocal(PROJECT_ACTIVITY_KEY, JSON.stringify(projectActivityAt))
-  } catch { /* ignore */ }
   return at
 }
 
@@ -493,16 +474,16 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
     for (const [id, st] of Object.entries(s.byId)) {
       if (!st) continue
       const ev = st.lastEventAt ?? 0
-      if (st.dropped) parts.push(`${id}:d:${ev}`)
-      else if (st.state === 'waiting' || st.state === 'blocked') parts.push(`${id}:n:${ev}`)
+      const u = st.unread ? 1 : 0
+      if (st.dropped) parts.push(`${id}:d:${u}:${ev}`)
+      else if (st.state === 'waiting' || st.state === 'blocked') parts.push(`${id}:n:${u}:${ev}`)
       else if (st.state === 'working') parts.push(`${id}:r`)
-      else if (st.state === 'done') parts.push(`${id}:i:${ev}`)
+      else if (st.state === 'done' || st.unread) parts.push(`${id}:i:${u}:${ev}`)
     }
     return parts.join(',')
   })
   const laneEntries = useMemo(() => {
     const statusById = useAgentStatus.getState().byId
-    const boardLogs = useBoardLog.getState().entriesByProject
     const entries = openProjects.map((p, originalIdx) => {
       const board = p.kanban ?? defaultKanban(p.id)
       const isLive = live !== null && live.projectId === p.id
@@ -517,8 +498,7 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
         prevProjectBoardSig.set(p.id, sig)
         touchProjectActivity(p.id)
       }
-      const logTs = boardLogs[p.id]?.[0]?.ts ?? 0
-      const lastActivity = Math.max(projectActivityAt[p.id] ?? 0, logTs)
+      const lastActivity = projectActivityAt[p.id] ?? 0
       const priority = swimlanePriorityTier(board, sessions, statusById, lastActivity)
       return { project: p, board, isLive, sessions, priority, originalIdx }
     })
