@@ -122,9 +122,8 @@ const projectActivityAt: Record<string, number> = (() => {
 
 const prevProjectBoardSig = new Map<string, string>()
 
-function boardActivitySig(board: ProjectKanban | undefined, nodeIds: readonly string[]): string {
-  const assigns = board?.assignments.map((a) => `${a.nodeId}:${a.columnId}`).join('|') ?? ''
-  return `${assigns}#${nodeIds.join('|')}`
+function boardActivitySig(board: ProjectKanban | undefined): string {
+  return board?.assignments.map((a) => `${a.nodeId}:${a.columnId}`).join('|') ?? ''
 }
 
 function touchProjectActivity(projectId: string, at = Date.now()): number {
@@ -137,7 +136,7 @@ function touchProjectActivity(projectId: string, at = Date.now()): number {
 
 useProjects.subscribe((state) => {
   for (const p of state.projects) {
-    const sig = boardActivitySig(p.kanban, p.nodes.map((n) => n.id))
+    const sig = boardActivitySig(p.kanban)
     const prev = prevProjectBoardSig.get(p.id)
     if (prev === undefined) {
       prevProjectBoardSig.set(p.id, sig)
@@ -493,11 +492,11 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
     const parts: string[] = []
     for (const [id, st] of Object.entries(s.byId)) {
       if (!st) continue
-      const ev = Math.max(st.lastEventAt ?? 0, st.stateAt ?? 0, st.lastSeen?.at ?? 0)
+      const ev = st.lastEventAt ?? 0
       if (st.dropped) parts.push(`${id}:d:${ev}`)
       else if (st.state === 'waiting' || st.state === 'blocked') parts.push(`${id}:n:${ev}`)
-      else if (st.state === 'working') parts.push(`${id}:r:${ev}`)
-      else if (ev > 0) parts.push(`${id}:i:${ev}`)
+      else if (st.state === 'working') parts.push(`${id}:r`)
+      else if (st.state === 'done') parts.push(`${id}:i:${ev}`)
     }
     return parts.join(',')
   })
@@ -510,7 +509,7 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
       const sessions = isLive
         ? live.sessions
         : p.nodes.map(n => toKanbanSessionState(n as never)).filter((s): s is KanbanSession => s !== null)
-      const sig = boardActivitySig(board, sessions.map((s) => s.id))
+      const sig = boardActivitySig(board)
       const prevSig = prevProjectBoardSig.get(p.id)
       if (prevSig === undefined) {
         prevProjectBoardSig.set(p.id, sig)

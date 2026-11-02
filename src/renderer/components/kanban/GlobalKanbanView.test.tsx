@@ -74,7 +74,7 @@ describe('global kanban priority sorting', () => {
     ).toBe(0)
   })
 
-  it('within the same priority tier, places the project with the most recent event on top', () => {
+  it('within the same priority tier, orders chronologically from oldest to newest and ignores working timestamps', () => {
     const olderComigo = swimlanePriorityTier(
       { ...board, assignments: [{ nodeId: 's1', columnId: 'c-comigo' }] },
       [sess('s1')],
@@ -85,17 +85,24 @@ describe('global kanban priority sorting', () => {
       [sess('s2')],
       { s2: { state: 'waiting', lastEventAt: 5000 } }
     )
+    const noClockComigo = swimlanePriorityTier(
+      { ...board, assignments: [{ nodeId: 's4', columnId: 'c-comigo' }] },
+      [sess('s4')],
+      {}
+    )
     const workingRecent = swimlanePriorityTier(
       { ...board, assignments: [{ nodeId: 's3', columnId: 'c-impl' }] },
       [sess('s3')],
       { s3: { state: 'working', lastEventAt: 9000 } }
     )
+    expect(workingRecent.lastEventAt).toBe(0)
     const sorted = [
       { id: 'working-recent', priority: workingRecent, originalIdx: 0 },
-      { id: 'older-comigo', priority: olderComigo, originalIdx: 1 },
-      { id: 'newer-comigo', priority: newerComigo, originalIdx: 2 }
+      { id: 'no-clock-comigo', priority: noClockComigo, originalIdx: 1 },
+      { id: 'newer-comigo', priority: newerComigo, originalIdx: 2 },
+      { id: 'older-comigo', priority: olderComigo, originalIdx: 3 }
     ].sort(compareSwimlanePriority)
-    expect(sorted.map((x) => x.id)).toEqual(['newer-comigo', 'older-comigo', 'working-recent'])
+    expect(sorted.map((x) => x.id)).toEqual(['older-comigo', 'newer-comigo', 'no-clock-comigo', 'working-recent'])
   })
 })
 

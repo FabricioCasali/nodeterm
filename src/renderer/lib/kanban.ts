@@ -155,8 +155,6 @@ export interface SwimlanePriorityStatus {
   state?: string
   dropped?: boolean
   lastEventAt?: number
-  stateAt?: number
-  lastSeen?: { at: number; state?: string }
 }
 
 export interface SwimlanePriority {
@@ -177,23 +175,29 @@ export function swimlanePriorityTier(
   }
   let comigoCount = 0
   let workingCount = 0
-  let maxComigoEventAt = 0
-  let maxWorkingEventAt = 0
-  let maxAnyEventAt = projectLastActivityAt
+  let minComigoEventAt = 0
+  let minWorkingEventAt = 0
+  let minAnyEventAt = 0
   for (const s of sessions) {
     const colTitle = normColTitle(columnForNode(board, s.id)?.title)
     const st = s.kind === 'sticky' ? undefined : statusById[s.id]
-    const nodeEventAt = st
-      ? Math.max(st.lastEventAt ?? 0, st.stateAt ?? 0, st.lastSeen?.at ?? 0)
-      : 0
-    if (nodeEventAt > maxAnyEventAt) maxAnyEventAt = nodeEventAt
+    // Only count timestamps when a task finished or stopped to wait — never while `working`
+    // (CLI output / mid-turn tool events must not reorder swimlanes).
+    const isStatusEndOrWait =
+      !!st && (!!st.dropped || st.state === 'waiting' || st.state === 'blocked' || st.state === 'done')
+    const nodeEventAt = isStatusEndOrWait ? (st.lastEventAt ?? 0) : 0
+    if (nodeEventAt > 0 && (minAnyEventAt === 0 || nodeEventAt < minAnyEventAt)) {
+      minAnyEventAt = nodeEventAt
+    }
 
     const needsYou = !!st && (!!st.dropped || st.state === 'waiting' || st.state === 'blocked')
     const isRunning = !!st && !st.dropped && st.state === 'working'
     if (colTitle === 'comigo' || colTitle === 'esperando fabricio' || needsYou) {
       comigoCount++
-      const ev = Math.max(nodeEventAt, projectLastActivityAt)
-      if (ev > maxComigoEventAt) maxComigoEventAt = ev
+      const ev = nodeEventAt > 0 ? nodeEventAt : projectLastActivityAt
+      if (ev > 0 && (minComigoEventAt === 0 || ev < minComigoEventAt)) {
+        minComigoEventAt = ev
+      }
     }
     if (
       isRunning ||
@@ -203,17 +207,19 @@ export function swimlanePriorityTier(
       colTitle === 'in progress'
     ) {
       workingCount++
-      const ev = Math.max(nodeEventAt, projectLastActivityAt)
-      if (ev > maxWorkingEventAt) maxWorkingEventAt = ev
+      const ev = nodeEventAt > 0 ? nodeEventAt : projectLastActivityAt
+      if (ev > 0 && (minWorkingEventAt === 0 || ev < minWorkingEventAt)) {
+        minWorkingEventAt = ev
+      }
     }
   }
   if (comigoCount > 0) {
-    return { tier: 0, comigoCount, workingCount, lastEventAt: Math.max(maxComigoEventAt, maxAnyEventAt) }
+    return { tier: 0, comigoCount, workingCount, lastEventAt: minComigoEventAt || projectLastActivityAt }
   }
   if (workingCount > 0) {
-    return { tier: 1, comigoCount, workingCount, lastEventAt: Math.max(maxWorkingEventAt, maxAnyEventAt) }
+    return { tier: 1, comigoCount, workingCount, lastEventAt: minWorkingEventAt || projectLastActivityAt }
   }
-  return { tier: 2, comigoCount, workingCount, lastEventAt: maxAnyEventAt }
+  return { tier: 2, comigoCount, workingCount, lastEventAt: minAnyEventAt || projectLastActivityAt }
 }
 
 export function compareSwimlanePriority(
@@ -221,7 +227,11 @@ export function compareSwimlanePriority(
   b: { priority: SwimlanePriority; originalIdx: number }
 ): number {
   if (a.priority.tier !== b.priority.tier) return a.priority.tier - b.priority.tier
-  if (a.priority.lastEventAt !== b.priority.lastEventAt) return b.priority.lastEventAt - a.priority.lastEventAt
+  if (a.priority.lastEventAt !== b.priority.lastEventAt) {
+    if (a.priority.lastEventAt === 0) return 1
+    if (b.priority.lastEventAt === 0) return -1
+    return a.priority.lastEventAt - b.priority.lastEventAt
+  }
   if (a.priority.comigoCount !== b.priority.comigoCount) return b.priority.comigoCount - a.priority.comigoCount
   if (a.priority.workingCount !== b.priority.workingCount) return b.priority.workingCount - a.priority.workingCount
   return a.originalIdx - b.originalIdx
