@@ -134,7 +134,15 @@ export const KanbanColumn = memo(function KanbanColumn({
       className={`kanban-col${column ? '' : ' kanban-col--ungrouped'}${count === 0 ? ' kanban-col--empty' : ''}${dragOverCount > 0 ? ' kanban-col--drop' : ''}`}
       onDragOver={(e) => e.preventDefault()}
       onDragEnter={() => setDragOverCount((c) => c + 1)}
-      onDragLeave={() => setDragOverCount((c) => Math.max(0, c - 1))}
+      onDragLeave={(e) => {
+        if (e.relatedTarget instanceof Node && !e.currentTarget.contains(e.relatedTarget)) {
+          setDragOverCount(0)
+        } else {
+          setDragOverCount((c) => Math.max(0, c - 1))
+        }
+      }}
+      onDropCapture={() => setDragOverCount(0)}
+      onDragEndCapture={() => setDragOverCount(0)}
       onDrop={(e) => {
         e.preventDefault()
         setDragOverCount(0)

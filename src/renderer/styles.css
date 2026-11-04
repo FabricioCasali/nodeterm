@@ -13226,6 +13226,7 @@ button.pull-checks__name {
   overflow-y: auto;
 }
 .kanban-swimlane__board.kanban-board--vertical {
+  overflow-x: visible;
   overflow-y: visible;
 }
 .kanban-board--vertical > .kanban-board__columns {
@@ -13234,12 +13235,14 @@ button.pull-checks__name {
   gap: 8px;
   width: 100%;
   min-width: 0;
+  height: auto;
   max-height: none;
   align-items: start;
 }
 .kanban-board--vertical .kanban-col {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
   align-items: center;
   width: 100%;
   max-width: none;
@@ -13255,14 +13258,12 @@ button.pull-checks__name {
   min-height: 36px;
 }
 .kanban-board--vertical .kanban-col > .kanban-col__header {
-  grid-column: 1;
-  grid-row: 1;
+  flex: 1 1 0;
   min-width: 0;
   padding: 6px 10px;
 }
 .kanban-board--vertical .kanban-col > .kanban-col__footer {
-  grid-column: 2;
-  grid-row: 1;
+  flex: 0 0 auto;
   padding: 4px 8px 4px 0;
 }
 .kanban-board--vertical .kanban-col .kanban-col__new {
@@ -13272,11 +13273,15 @@ button.pull-checks__name {
   white-space: nowrap;
 }
 .kanban-board--vertical .kanban-col > .kanban-col__swatches {
-  grid-column: 1 / -1;
+  flex: 0 0 100%;
+  width: 100%;
+  box-sizing: border-box;
   padding: 0 10px 6px;
 }
 .kanban-board--vertical .kanban-col > .kanban-col__cards {
-  grid-column: 1 / -1;
+  flex: 0 0 100%;
+  width: 100%;
+  box-sizing: border-box;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 8px;
@@ -13376,8 +13381,10 @@ button.pull-checks__name {
 .kanban-badge--running {
   color: var(--success);
   background: color-mix(in srgb, var(--state-success) 12%, transparent);
-  /* reuse the terminal-header badge pulse (nt-pulse) rather than a bespoke keyframe */
-  animation: nt-pulse 1.1s ease-in-out infinite;
+  /* Bounded (4 cycles, ~4.4 s) like .term-node.working and .minimap .mm-working: pulsing forever
+     on every working card in Priority sort kept the compositor + glass backdrop-filter running at
+     display rate for the whole turn. nt-pulse starts and ends at opacity:1 / scale(1). */
+  animation: nt-pulse 1.1s ease-in-out 4;
   animation-play-state: var(--nt-anim-state);
 }
 .kanban-badge--needs {

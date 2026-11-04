@@ -1,7 +1,7 @@
 import type {
   CanvasNodeState, KanbanColumn, KanbanColumnCategory, Project, ProjectKanban
 } from '@shared/types'
-import { columnCategory } from '@shared/kanban-category'
+import { columnCategory, isCompletedCategory } from '@shared/kanban-category'
 import { columnOrder, placeAssignment, type CardAnchor } from '@shared/kanban-order'
 import { SYSTEM_NODE_COLORS } from '../state/workspace'
 import { defaultKanbanFor } from '@shared/kanban-default-board'
@@ -179,15 +179,11 @@ export function swimlanePriorityTier(
   let minComigoEventAt = 0
   let minWorkingEventAt = 0
   for (const s of sessions) {
-    const colTitle = normColTitle(columnForNode(board, s.id)?.title)
+    const col = columnForNode(board, s.id)
+    const cat = columnCategory(col)
+    const colTitle = normColTitle(col?.title)
     const st = s.kind === 'sticky' ? undefined : statusById[s.id]
-    // Only count timestamps when a task finished or stopped to wait — never while `working`
-    // (CLI output / mid-turn tool events must not reorder swimlanes).
-    const isStatusEndOrWait =
-      !!st && (!!st.dropped || st.state === 'waiting' || st.state === 'blocked' || st.state === 'done')
-    const nodeEventAt = isStatusEndOrWait ? (st.lastEventAt ?? 0) : 0
-
-    const isDoneColumn = colTitle === 'concluido' || colTitle === 'done'
+    const isDoneColumn = isCompletedCategory(cat) || colTitle === 'concluido' || colTitle === 'done'
     const needsYou =
       !!st &&
       (!!st.dropped ||
@@ -195,22 +191,31 @@ export function swimlanePriorityTier(
         st.state === 'blocked' ||
         (!!st.unread && st.state !== 'working' && !isDoneColumn))
     const isRunning = !!st && !st.dropped && st.state === 'working'
-    if (colTitle === 'comigo' || colTitle === 'esperando fabricio' || needsYou) {
+    // Only count timestamps when a task finished or stopped to wait — never while `working`
+    // (CLI output / mid-turn tool events must not reorder swimlanes).
+    const isStatusEndOrWait =
+      !!st && (!!st.dropped || st.state === 'waiting' || st.state === 'blocked' || st.state === 'done')
+    const nodeEventAt = isStatusEndOrWait ? (st.lastEventAt ?? 0) : 0
+    if (needsYou) {
       comigoCount++
       const ev = nodeEventAt > 0 ? nodeEventAt : projectLastActivityAt
       if (ev > 0 && (minComigoEventAt === 0 || ev < minComigoEventAt)) {
         minComigoEventAt = ev
       }
     }
-    if (
-      isRunning ||
+    const inStageColumn =
+      cat === 'started' ||
+      colTitle === 'refinamento' ||
+      colTitle === 'contrato e ux' ||
       colTitle === 'planejamento' ||
       colTitle === 'implementacao' ||
+      colTitle === 'conferencia e qa' ||
       colTitle === 'testes e qa' ||
+      colTitle === 'entrega' ||
       colTitle === 'in progress'
-    ) {
+    if (isRunning || (!st && inStageColumn)) {
       workingCount++
-      const ev = nodeEventAt > 0 ? nodeEventAt : projectLastActivityAt
+      const ev = projectLastActivityAt > 0 ? projectLastActivityAt : nodeEventAt
       if (ev > 0 && (minWorkingEventAt === 0 || ev < minWorkingEventAt)) {
         minWorkingEventAt = ev
       }
