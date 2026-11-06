@@ -210,7 +210,8 @@ describe('where the verbs sit in the routing tables', () => {
       'run',
       'send',
       'settings',
-      'sticky'
+      'sticky',
+      'wake'
     ])
   })
 

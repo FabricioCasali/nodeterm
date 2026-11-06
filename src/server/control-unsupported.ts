@@ -104,7 +104,7 @@ export interface ServerEditionControlActions {
    *  GitHub service's cache. The caller's own project only (this edition keeps no grant ledger). */
   githubRead(verb: 'issues' | 'prs', sourceNodeId: string, args: Record<string, string>): Promise<ServerControlReply>
   deliver(input: {
-    verb: 'send' | 'reply' | 'notify'
+    verb: 'send' | 'reply' | 'notify' | 'wake'
     sourceNodeId: string
     targetNodeId: string
     body: string
@@ -123,6 +123,7 @@ const SERVER_V1_VERBS: ReadonlySet<string> = new Set([
   'send',
   'reply',
   'notify',
+  'wake',
   'sticky',
   'settings',
   'run',
@@ -203,10 +204,11 @@ export function createServerEditionControlHandler(actions: ServerEditionControlA
       case 'send':
       case 'reply':
       case 'notify':
+      case 'wake':
         return actions.deliver({
           verb: command.verb,
           sourceNodeId: nodeId,
-          targetNodeId: command.args.node,
+          targetNodeId: command.verb === 'wake' ? (command.args.node ?? nodeId) : command.args.node,
           body: command.verb === 'notify' ? '' : command.args.text
         })
       default:

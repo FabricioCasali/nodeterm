@@ -180,6 +180,7 @@ import { requestRendererFlush } from './renderer-flush'
 import { fetchCheck } from '../core/check'
 import {
   hookServer,
+  MESSAGING_CONTROL_REFUSAL,
   OPEN_PROJECT_CONTROL_REFUSAL,
   REPORT_ISSUE_CONTROL_REFUSAL,
   GITHUB_READ_CONTROL_REFUSAL
@@ -4649,6 +4650,19 @@ app.whenReady().then(async () => {
           appendBoardLog: (projectId, entry) => appendBoardLogVia(boardLogRouter, projectId, entry)
         }
       )
+    }
+    if (verb === 'wake') {
+      if (!verified) return { ok: false, error: MESSAGING_CONTROL_REFUSAL, message: MESSAGING_CONTROL_REFUSAL }
+      const targetNodeId = (args.node ?? nodeId).trim()
+      if (!args.text) {
+        const msg = 'wake requires --text'
+        return { ok: false, error: msg, message: msg }
+      }
+      const { reply } = await deliverFromControl(
+        { verb: 'wake', sourceNodeId: nodeId, targetNodeId, body: args.text },
+        messagingDeps
+      )
+      return reply
     }
     // `browser` is answered in MAIN and never forwarded to the renderer's agent-control dispatch:
     // the debugger handle and the CDP allowlist are main-side, and the renderer is the more

@@ -506,6 +506,7 @@ export type ControlVerb =
   | 'send'
   | 'reply'
   | 'notify'
+  | 'wake'
   | 'sticky'
   | 'browser'
   | 'open-project'
@@ -557,6 +558,7 @@ const VERBS: ControlVerb[] = [
   'send',
   'reply',
   'notify',
+  'wake',
   'sticky',
   'browser',
   // Issue #338 PR 1: registered in the model (parse + gates + the grant ledger run in main), but
@@ -792,6 +794,7 @@ export function parseControlRequest(
   if ((v === 'send' || v === 'reply') && !args.text) return { error: `${v} requires --text` }
   if (v === 'notify' && !args.node) return { error: 'notify requires --node <id>' }
   if (v === 'notify' && args.text) return { error: 'notify does not accept --text' }
+  if (v === 'wake' && !args.text) return { error: 'wake requires --text' }
   if (v === 'sticky' && !args.node) return { error: 'sticky requires --node <id|title>' }
   // Presence, not truthiness: `--text=""` is how a note is cleared.
   if (v === 'sticky' && args.text === undefined && args.append === undefined) {

@@ -35,8 +35,15 @@ export interface AgentMessageDeliverRequest {
  */
 export const STATION_NOTICE_VERB = 'station-notice' as const
 
-/** Every verb the delivery service runs — the control verbs plus the app's own notice. */
-export type DeliveryVerb = AgentMessageVerb | typeof STATION_NOTICE_VERB
+/** Self-wake verb used by a verified local tool/bridge (e.g. FlowForge) running inside a node to
+ *  deliver or queue a prompt into its own terminal pane without requiring peer-to-peer messaging. */
+export const WAKE_VERB = 'wake' as const
+
+/** The `from:` line of a `wake` envelope. */
+export const WAKE_FROM = 'flowforge' as const
+
+/** Every verb the delivery service runs — the control verbs plus the app's own notice and wake. */
+export type DeliveryVerb = AgentMessageVerb | typeof STATION_NOTICE_VERB | typeof WAKE_VERB
 
 /** A delivery as the SERVICE sees it: the IPC request, or an app-composed notice. */
 export interface AgentMessageDeliveryInput extends Omit<AgentMessageDeliverRequest, 'verb'> {

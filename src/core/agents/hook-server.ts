@@ -296,6 +296,7 @@ export const requiresVerified: ReadonlySet<string> = new Set([
   'send',
   'reply',
   'notify',
+  'wake',
   'sticky',
   'open-project',
   'settings',

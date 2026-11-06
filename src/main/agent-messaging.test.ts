@@ -631,3 +631,49 @@ describe('deliverFromControl — the pane-read budget reaches both probes', () =
     expect(deps.rec.sent).toHaveLength(0)
   })
 })
+
+describe('deliverFromControl — wake verb (FlowForge self-wake)', () => {
+  it('delivers to the caller node itself without peer messagingEnabled or self-send refusal', async () => {
+    const deps = fakeDeps({ messagingEnabled: () => false })
+    const { outcome, reply } = await deliverFromControl(
+      { verb: 'wake', sourceNodeId: 'b1', targetNodeId: 'b1', body: 'FLOWFORGE: request 123' },
+      deps
+    )
+    expect(outcome.kind).toBe('delivered')
+    expect(reply.ok).toBe(true)
+    expect(deps.rec.sent).toHaveLength(1)
+    expect(deps.rec.sent[0].payload).toContain('from: flowforge')
+    expect(deps.rec.sent[0].payload).toContain('FLOWFORGE: request 123')
+  })
+
+  it('queues when the target is busy and flushes on next idle', async () => {
+    let state: 'working' | 'done' = 'working'
+    const deps = fakeDeps({
+      messagingEnabled: () => false,
+      mirrorEntry: () => ({ state, stateVerified: true, clientRevision: 2, agentId: 'claude', updatedAt: 1000 })
+    })
+    deps.queue = createDeliveryQueue(deps)
+    const first = await deliverFromControl(
+      { verb: 'wake', sourceNodeId: 'b1', targetNodeId: 'b1', body: 'FLOWFORGE: queued wake' },
+      deps
+    )
+    expect(first.outcome.kind).toBe('queued')
+    expect(deps.rec.sent).toHaveLength(0)
+
+    state = 'done'
+    onMessagingAgentEvent({ nodeId: 'b1', agentId: 'claude', state: 'done', verified: true, ts: 2000 }, deps.queue)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(deps.rec.sent).toHaveLength(1)
+    expect(deps.rec.sent[0].payload).toContain('FLOWFORGE: queued wake')
+  })
+
+  it('refuses waking a different node with caller-not-owner', async () => {
+    const deps = fakeDeps()
+    const { outcome } = await deliverFromControl(
+      { verb: 'wake', sourceNodeId: 'a1', targetNodeId: 'b1', body: 'FLOWFORGE: cross wake' },
+      deps
+    )
+    expect(outcome).toEqual({ kind: 'notPermitted', reason: 'caller-not-owner' })
+    expect(deps.rec.sent).toHaveLength(0)
+  })
+})

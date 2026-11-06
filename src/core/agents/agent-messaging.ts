@@ -29,8 +29,11 @@ import {
   AGENT_MESSAGE_VERBS,
   NOTIFY_BODY,
   STATION_NOTICE_FROM,
-  STATION_NOTICE_VERB
+  STATION_NOTICE_VERB,
+  WAKE_FROM,
+  WAKE_VERB
 } from '../../shared/agents/agent-messaging'
+import { isSafeNodeId } from '../../shared/safe-id'
 import {
   deliverAgentMessage,
   type DeliveryDeps,
@@ -106,6 +109,12 @@ function requestIdentity(
       sourceNodeId: boardCommentSourceId(req.commentId),
       sourceTitle: boardCommentFrom(req.author),
       body: req.text
+    }
+  if (req.verb === WAKE_VERB)
+    return {
+      sourceNodeId: `wake:${req.targetNodeId}`,
+      sourceTitle: WAKE_FROM,
+      body: req.body
     }
   return { sourceNodeId: req.sourceNodeId, sourceTitle: req.sourceNodeId, body: req.body }
 }
@@ -363,7 +372,7 @@ export function createDeliveryQueue(
                 // A queued station notice flushes as a station notice: the verb rides the queue, so
                 // its app-authored body and its reversed ownership check survive the wait.
                 verb: qreq.verb as AgentMessageDeliveryInput['verb'],
-                sourceNodeId: qreq.sourceNodeId,
+                sourceNodeId: qreq.verb === WAKE_VERB ? qreq.targetNodeId : qreq.sourceNodeId,
                 targetNodeId: qreq.targetNodeId,
                 body: qreq.body
               },
@@ -718,56 +727,83 @@ export async function runDelivery(
   // have opened the station, which is how the recipient was chosen; re-asked here so a queued
   // notice is re-validated at flush time like every other delivery).
   const stationNotice = req.verb === STATION_NOTICE_VERB
+  const wake = req.verb === WAKE_VERB
 
   const projects = deps.projects()
-  // WHO MAY BE ADDRESSED — the serialized store, never a live canvas (there is nothing to travel
-  // toward, by construction: see agent-message-scope.ts). This is also where `isSafeNodeId` runs,
-  // which the pair limiter's key and the tmux session namespace both depend on. A board comment has
-  // no sender node, so its scope is the comment's own board.
-  const scope = board
-    ? resolveBoardCommentScope(projects, board.projectId, req.targetNodeId)
-    : resolveDeliveryScope(projects, ident.sourceNodeId, req.targetNodeId)
-  let notPermitted = scopeRefusal(scope)
-  const projectId = scope.kind === 'same-project' ? scope.projectId : undefined
-  // A shell with a creator ledger (the Server Edition) authorizes control by which AGENT spawned
-  // the target. A person's board comment is no agent's, and that shell serves no board-comment
-  // delivery at all — refused by edition rather than squeezed through a ledger it was not built for.
-  // A station notice asks the ledger the other way round (see `stationNotice` above).
-  if (!notPermitted && deps.callerOwnsTarget) {
-    if (board) notPermitted = 'unsupported-edition'
-    else if (
-      !(stationNotice
-        ? deps.callerOwnsTarget(req.targetNodeId, ident.sourceNodeId)
-        : deps.callerOwnsTarget(ident.sourceNodeId, req.targetNodeId))
-    )
+  let notPermitted: NotPermittedReason | undefined
+  let projectId: string | undefined
+  if (wake) {
+    if (!isSafeNodeId(req.targetNodeId)) {
+      notPermitted = 'unaddressable-node-id'
+    } else if (req.sourceNodeId !== req.targetNodeId) {
       notPermitted = 'caller-not-owner'
-  }
-  if (!notPermitted) {
-    // OWNERSHIP IS PROVEN AT RUNTIME, NOT READ FROM THE STORE (PR #237 fix round 2). The scope
-    // above resolved `projectId` from the persisted node-set, which is attacker-writable — a
-    // hostile `project.json` can LIST a live pane's node id it never spawned, and when the real
-    // owner is absent from the store that hostile project is the sole claimant. The ledger records
-    // who actually SPAWNED the pane this run; the grant is evaluated against THAT owner, and the
-    // store's `projectId` is only a cross-check. Unprovable — no ledger entry (restart / never
-    // spawned here), or the ledger owner disagrees with the sole store claimant — fails closed.
-    const owner = projectId ? deps.paneOwnerProject(req.targetNodeId) : undefined
-    if (!projectId || !owner || owner !== projectId) {
-      // A target that has not been SPAWNED yet (its launch is held until its project is shown, or
-      // until `--run-now` / `run` starts it) has no ownership proof because the only thing that can
-      // record one is the spawn it is waiting for. That is a wait, not a refusal: answered
-      // `targetNotStarted`, which the queue holds, and the flush re-runs this whole chain against
-      // the pane the spawn will have proven. Only for NO owner and NO session — a live pane whose
-      // owner is unproven or disputed stays refused, which is the security property this gate is.
-      if (
-        projectId &&
-        !owner &&
-        deps.heldLaunch?.(projectId, req.targetNodeId) &&
-        !(await deps.hasLiveSession(req.targetNodeId))
-      ) {
-        if (!deps.messagingEnabled(projectId)) notPermitted = 'switch-off'
-        else return { kind: 'targetNotStarted' }
-      } else notPermitted = 'unproven-target-owner'
-    } else if (!deps.messagingEnabled(owner)) notPermitted = 'switch-off'
+    } else {
+      const matching = projects.filter((p) => p.nodes.some((n) => n.id === req.targetNodeId))
+      const runtimeOwner = deps.paneOwnerProject(req.targetNodeId)
+      if (!runtimeOwner && matching.length > 1) {
+        notPermitted = 'ambiguous-target-node-id'
+      } else {
+        projectId = runtimeOwner ?? (matching.length === 1 ? matching[0].id : undefined)
+        if (
+          !runtimeOwner &&
+          projectId &&
+          deps.heldLaunch?.(projectId, req.targetNodeId) &&
+          !(await deps.hasLiveSession(req.targetNodeId))
+        ) {
+          return { kind: 'targetNotStarted' }
+        }
+      }
+    }
+  } else {
+    // WHO MAY BE ADDRESSED — the serialized store, never a live canvas (there is nothing to travel
+    // toward, by construction: see agent-message-scope.ts). This is also where `isSafeNodeId` runs,
+    // which the pair limiter's key and the tmux session namespace both depend on. A board comment has
+    // no sender node, so its scope is the comment's own board.
+    const scope = board
+      ? resolveBoardCommentScope(projects, board.projectId, req.targetNodeId)
+      : resolveDeliveryScope(projects, ident.sourceNodeId, req.targetNodeId)
+    notPermitted = scopeRefusal(scope)
+    projectId = scope.kind === 'same-project' ? scope.projectId : undefined
+    // A shell with a creator ledger (the Server Edition) authorizes control by which AGENT spawned
+    // the target. A person's board comment is no agent's, and that shell serves no board-comment
+    // delivery at all — refused by edition rather than squeezed through a ledger it was not built for.
+    // A station notice asks the ledger the other way round (see `stationNotice` above).
+    if (!notPermitted && deps.callerOwnsTarget) {
+      if (board) notPermitted = 'unsupported-edition'
+      else if (
+        !(stationNotice
+          ? deps.callerOwnsTarget(req.targetNodeId, ident.sourceNodeId)
+          : deps.callerOwnsTarget(ident.sourceNodeId, req.targetNodeId))
+      )
+        notPermitted = 'caller-not-owner'
+    }
+    if (!notPermitted) {
+      // OWNERSHIP IS PROVEN AT RUNTIME, NOT READ FROM THE STORE (PR #237 fix round 2). The scope
+      // above resolved `projectId` from the persisted node-set, which is attacker-writable — a
+      // hostile `project.json` can LIST a live pane's node id it never spawned, and when the real
+      // owner is absent from the store that hostile project is the sole claimant. The ledger records
+      // who actually SPAWNED the pane this run; the grant is evaluated against THAT owner, and the
+      // store's `projectId` is only a cross-check. Unprovable — no ledger entry (restart / never
+      // spawned here), or the ledger owner disagrees with the sole store claimant — fails closed.
+      const owner = projectId ? deps.paneOwnerProject(req.targetNodeId) : undefined
+      if (!projectId || !owner || owner !== projectId) {
+        // A target that has not been SPAWNED yet (its launch is held until its project is shown, or
+        // until `--run-now` / `run` starts it) has no ownership proof because the only thing that can
+        // record one is the spawn it is waiting for. That is a wait, not a refusal: answered
+        // `targetNotStarted`, which the queue holds, and the flush re-runs this whole chain against
+        // the pane the spawn will have proven. Only for NO owner and NO session — a live pane whose
+        // owner is unproven or disputed stays refused, which is the security property this gate is.
+        if (
+          projectId &&
+          !owner &&
+          deps.heldLaunch?.(projectId, req.targetNodeId) &&
+          !(await deps.hasLiveSession(req.targetNodeId))
+        ) {
+          if (!deps.messagingEnabled(projectId)) notPermitted = 'switch-off'
+          else return { kind: 'targetNotStarted' }
+        } else notPermitted = 'unproven-target-owner'
+      } else if (!deps.messagingEnabled(owner)) notPermitted = 'switch-off'
+    }
   }
 
   // Flow control (PR #208), taken as a RESERVATION rather than a pure read: `checkFlowLimits`
@@ -784,7 +820,7 @@ export async function runDelivery(
   const fanOutKey = board ? `${flowSource}:${board.commentId}` : flowSource
   let retryAfterMs: number | undefined
   let reservation: { release(): void } | null = null
-  if (!notPermitted) {
+  if (!notPermitted && !wake) {
     const flow = reserveFlow(flowSource, req.targetNodeId, now(), fanOutKey)
     if (!flow.ok) retryAfterMs = flow.outcome.retryAfterMs
     else reservation = flow
@@ -859,7 +895,9 @@ export async function runDelivery(
           ? ident.sourceTitle
           : stationNotice
             ? STATION_NOTICE_FROM
-            : sourceNode?.title || ident.sourceNodeId,
+            : wake
+              ? WAKE_FROM
+              : sourceNode?.title || ident.sourceNodeId,
         body,
         targetAgentId,
         targetBinaries: binariesFor(targetAgentId, deps.customAgents()),
@@ -867,14 +905,14 @@ export async function runDelivery(
         notPermitted,
         retryAfterMs,
         targetLive: await deps.hasLiveSession(req.targetNodeId),
-        ...(board ? { origin: 'board-comment' as const } : {})
+        ...(board || wake ? { origin: 'board-comment' as const } : {})
       },
       delivery
     )
 
     // No await between the record and the release: the recorded send replaces the hold in the
     // same tick, so no concurrent reservation can slip through the seam between them.
-    if (WROTE.has(outcome.kind)) noteSent(flowSource, req.targetNodeId, now(), fanOutKey)
+    if (!wake && WROTE.has(outcome.kind)) noteSent(flowSource, req.targetNodeId, now(), fanOutKey)
     return outcome
   } finally {
     reservation?.release()
