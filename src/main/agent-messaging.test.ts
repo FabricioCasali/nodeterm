@@ -673,7 +673,7 @@ describe('deliverFromControl — wake verb (FlowForge self-wake)', () => {
     expect(deps.rec.sent).toHaveLength(0)
 
     state = 'done'
-    onMessagingAgentEvent({ nodeId: 'b1', agentId: 'claude', state: 'done', verified: true, ts: 2000 }, deps.queue)
+    onMessagingAgentEvent({ nodeId: 'b1', state: 'done', verified: true }, deps.queue)
     await new Promise((r) => setTimeout(r, 20))
     expect(deps.rec.sent).toHaveLength(1)
     expect(deps.rec.sent[0].payload).toContain('FLOWFORGE: queued wake')
