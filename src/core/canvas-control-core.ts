@@ -784,7 +784,7 @@ export function parseControlRequest(
   if (v === 'report-issue' && !args.kind) return { error: 'report-issue requires --kind <code>' }
   if (v === 'report-issue' && !args.title) return { error: 'report-issue requires --title <one line>' }
   if (v === 'report-issue' && !args.body) return { error: 'report-issue requires --body <text>' }
-  if (v === 'assign' && !args.node) return { error: 'assign requires --node <id>' }
+  if (v === 'assign' && !args.node && !args['delete-column']) return { error: 'assign requires --node <id>' }
   if (v === 'open-worktree' && !args.branch) return { error: 'open-worktree requires --branch <name>' }
   if (v === 'close-worktree' && !args.group) return { error: 'close-worktree requires --group <id>' }
   if (v === 'branch' && !args.node) return { error: 'branch requires --node <id>' }

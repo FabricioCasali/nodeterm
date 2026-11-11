@@ -3,7 +3,8 @@ import type {
 } from '@shared/types'
 import { columnCategory, isCompletedCategory } from '@shared/kanban-category'
 import { columnOrder, placeAssignment, type CardAnchor } from '@shared/kanban-order'
-import { SYSTEM_NODE_COLORS } from '../state/workspace'
+import { SYSTEM_NODE_COLORS, lineageLayers, type CanvasNode } from '../state/workspace'
+import { markLegacyWaitRopes } from './edgeModel'
 import { defaultKanbanFor } from '@shared/kanban-default-board'
 import { autoLabelColor, boardLabels, cardMeta, createLabel, metaList, setCardLabels } from '@shared/kanban-labels'
 import { prunePullLinks } from '@shared/kanban-pull-links'
@@ -148,7 +149,16 @@ export function resolveColumnRef(k: ProjectKanban, ref: string): string | null |
   if (byTitle) return byTitle.id
   const normRaw = normColTitle(raw)
   const byNorm = k.columns.find((c) => normColTitle(c.title) === normRaw)
-  return byNorm ? byNorm.id : undefined
+  if (byNorm) return byNorm.id
+  const issueKey = normRaw.match(/^([a-z0-9]+-[0-9]+)(?:[\s:·]|$)/)?.[1]
+  if (issueKey) {
+    const byIssue = k.columns.find((c) => {
+      const nc = normColTitle(c.title)
+      return nc === issueKey || nc.startsWith(`${issueKey} `) || nc.startsWith(`${issueKey}:`) || nc.startsWith(`${issueKey}·`)
+    })
+    if (byIssue) return byIssue.id
+  }
+  return undefined
 }
 
 export interface SwimlanePriorityStatus {
@@ -255,6 +265,120 @@ export function unassigned(k: ProjectKanban, sessionIds: string[]): string[] {
     k.assignments.filter((a) => cols.has(a.columnId)).map((a) => a.nodeId)
   )
   return sessionIds.filter((id) => !assigned.has(id))
+}
+
+export const NO_LINEAGE_ORDER: readonly string[] = Object.freeze([])
+
+function sanitizeLineageRopes(ropes: unknown): Array<{ id: string; source: string; target: string }> {
+  if (!Array.isArray(ropes) || ropes.length === 0) return []
+  const raw: Array<{ id: string; source: string; target: string }> = []
+  for (const r of ropes) {
+    if (!r || typeof r !== 'object') continue
+    const { id, source, target } = r as { id?: unknown; source?: unknown; target?: unknown }
+    if (typeof source !== 'string' || typeof target !== 'string' || !source || !target || source === target) continue
+    raw.push({ id: typeof id === 'string' && id ? id : `ctrl-${source}-${target}`, source, target })
+  }
+  return raw.length ? markLegacyWaitRopes(raw) : []
+}
+
+function sameIdList(a: readonly string[] | undefined, b: readonly string[]): boolean {
+  return !!a && a.length === b.length && a.every((v, i) => v === b[i])
+}
+
+/**
+ * Computes the project-wide node lineage order using `lineageLayers` — the same longest-path
+ * layering and opener-first sibling slotting the canvas uses (`arrangeByLineage`). Non-group nodes
+ * (live `CanvasNode[]` or stored `CanvasNodeState[]`) are flattened to absolute canvas coordinates
+ * so ropes across or inside worktree group frames order individual session cards directly.
+ */
+export function kanbanLineageOrder(
+  rawNodes: readonly unknown[],
+  ropes: unknown,
+  previous?: readonly string[]
+): readonly string[] {
+  const edges = sanitizeLineageRopes(ropes)
+  if (edges.length === 0 || !Array.isArray(rawNodes) || rawNodes.length < 2) {
+    return previous && previous.length === 0 ? previous : NO_LINEAGE_ORDER
+  }
+  type Entry = {
+    id: string
+    isGroup: boolean
+    parentId: string | null
+    x: number
+    y: number
+    openedBy: unknown
+  }
+  const byId = new Map<string, Entry>()
+  const entries: Entry[] = []
+  for (const raw of rawNodes) {
+    if (!raw || typeof raw !== 'object') continue
+    const n = raw as Record<string, unknown>
+    if (typeof n.id !== 'string' || !n.id) continue
+    const data = n.data && typeof n.data === 'object' ? (n.data as Record<string, unknown>) : undefined
+    const pos = n.position && typeof n.position === 'object' ? (n.position as Record<string, unknown>) : undefined
+    const kindOrType = typeof n.type === 'string' ? n.type : typeof n.kind === 'string' ? n.kind : 'terminal'
+    const parentRaw = typeof n.parentId === 'string' ? n.parentId : typeof n.group === 'string' ? n.group : null
+    const entry: Entry = {
+      id: n.id,
+      isGroup: kindOrType === 'group',
+      parentId: parentRaw || null,
+      x: typeof pos?.x === 'number' && Number.isFinite(pos.x) ? pos.x : 0,
+      y: typeof pos?.y === 'number' && Number.isFinite(pos.y) ? pos.y : 0,
+      openedBy: data ? data.openedBy : n.openedBy
+    }
+    byId.set(entry.id, entry)
+    entries.push(entry)
+  }
+  const absPos = (e: Entry, idx: number): { x: number; y: number } => {
+    let x = e.x
+    let y = e.y
+    const seen = new Set<string>([e.id])
+    let curParent = e.parentId ? byId.get(e.parentId) : undefined
+    while (curParent && !seen.has(curParent.id)) {
+      seen.add(curParent.id)
+      x += curParent.x
+      y += curParent.y
+      curParent = curParent.parentId ? byId.get(curParent.parentId) : undefined
+    }
+    return { x: x + idx * 1e-6, y }
+  }
+  const flatNodes: CanvasNode[] = entries
+    .filter((e) => !e.isGroup)
+    .map(
+      (e, idx) =>
+        ({
+          id: e.id,
+          type: 'terminal',
+          position: absPos(e, idx),
+          data: e.openedBy !== undefined ? { openedBy: e.openedBy } : {}
+        }) as unknown as CanvasNode
+    )
+  const { layers } = lineageLayers(flatNodes, edges, null)
+  const next = layers.flat()
+  if (next.length === 0) return previous && previous.length === 0 ? previous : NO_LINEAGE_ORDER
+  return sameIdList(previous, next) ? previous! : next
+}
+
+/**
+ * Orders a column's (or Ungrouped's) card ids by canvas lineage (`lineageOrder`), keeping cards
+ * untouched by any rope after the lineage chain in their existing column order.
+ */
+export function orderColumnByLineage(
+  ids: readonly string[],
+  lineageOrder?: readonly string[]
+): string[] {
+  if (!lineageOrder || lineageOrder.length === 0 || ids.length < 2) return ids as string[]
+  const rank = new Map<string, number>()
+  lineageOrder.forEach((id, i) => rank.set(id, i))
+  const inLineage: string[] = []
+  const loose: string[] = []
+  for (const id of ids) {
+    if (rank.has(id)) inLineage.push(id)
+    else loose.push(id)
+  }
+  if (inLineage.length === 0) return ids as string[]
+  inLineage.sort((a, b) => rank.get(a)! - rank.get(b)!)
+  return loose.length === 0 ? inLineage : [...inLineage, ...loose]
 }
 
 /** The explicit "bottom of the column" anchor for `assignNode` — a drop BELOW the last card, or on

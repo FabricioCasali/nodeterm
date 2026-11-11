@@ -825,7 +825,7 @@ import type {
   TranscriptHit
 } from '@shared/types'
 import type { KanbanCreateChoice, KanbanSession } from '../components/kanban/KanbanView'
-import { assignNode, defaultKanban, labelsForCard, migrateProjectTags, resolveColumnRef } from '../lib/kanban'
+import { NO_LINEAGE_ORDER, addColumn, assignNode, defaultKanban, deleteColumn, kanbanLineageOrder, labelsForCard, migrateProjectTags, nextColumnColor, resolveColumnRef, setColumnCategory } from '../lib/kanban'
 import { registerWorkspaceDirty } from '../state/workspaceDirty'
 import { snapNodeToGrid } from '../lib/nodeSizing'
 import { snapResizeChanges } from '../lib/resizeSnap'
@@ -12111,12 +12111,19 @@ export function Canvas() {
   useEffect(() => {
     useTeamStations.getState().set(teamStations)
   }, [teamStations])
+  const activeLineageOrderRef = useRef<readonly string[]>(NO_LINEAGE_ORDER)
+  const activeLineageOrder = useMemo(() => {
+    if (!kanbanOpen) return NO_LINEAGE_ORDER
+    const next = kanbanLineageOrder(nodes, controlEdges, activeLineageOrderRef.current)
+    activeLineageOrderRef.current = next
+    return next
+  }, [nodes, controlEdges, kanbanOpen])
   const globalKanbanLive = useMemo(
     () =>
       activeProjectId && renderedProjectId === activeProjectId
-        ? { projectId: activeProjectId, sessions: kanbanSessions, teams: teamStations }
+        ? { projectId: activeProjectId, sessions: kanbanSessions, teams: teamStations, lineageOrder: activeLineageOrder }
         : null,
-    [activeProjectId, renderedProjectId, kanbanSessions, teamStations]
+    [activeProjectId, renderedProjectId, kanbanSessions, teamStations, activeLineageOrder]
   )
 
   // Create a node from the board's per-column "+ New" menu: it lands on the canvas (view
@@ -16771,50 +16778,70 @@ export function Canvas() {
             return
           }
           case 'assign': {
-            // Move a session card between kanban columns — the "agent-driven card movement" the
-            // board's own scope note called out as missing. Board metadata ONLY: assignNode writes
-            // an assignment, it never touches the canvas node, its group, or the running session.
+            // Move a session card between kanban columns (auto-creating a missing column as
+            // `started`), or delete a column with `--delete-column <id|title>`. Board metadata
+            // ONLY: assignNode/deleteColumn never touch the canvas node, its group, or the session.
+            const store = useProjects.getState()
+            const pid = ctlProject?.id
+            if (!pid) {
+              reply({ ok: false, error: 'assign: no project owns this session' })
+              return
+            }
+            const prev = store.getProject(pid)?.kanban ?? defaultKanban(pid)
+            const cardTitle = (id: string): string => {
+              const n = ctlNodes().find((x) => x.id === id)
+              const card = n ? toKanbanSession(n) : null
+              return card ? card.title || 'Untitled' : ''
+            }
+            const rawDel = (args['delete-column'] ?? '').trim()
+            if (rawDel) {
+              const delColId = resolveColumnRef(prev, rawDel)
+              if (!delColId) {
+                reply({
+                  ok: true,
+                  message: `column "${rawDel}" already absent`,
+                  result: { deleted: false, column: null }
+                })
+                return
+              }
+              const removedTitle = prev.columns.find((c) => c.id === delColId)?.title ?? rawDel
+              const next = deleteColumn(prev, delColId)
+              store.setProjectKanban(pid, next)
+              markDirty()
+              for (const { nodeId: nid, event } of boardLogEvents(prev, next, cardTitle)) {
+                useBoardLog.getState().append(sessionForProject(pid).api, pid, { kind: 'event', nodeId: nid, event })
+              }
+              reply({
+                ok: true,
+                message: `removed column ${removedTitle}`,
+                result: { deleted: true, column: delColId }
+              })
+              return
+            }
             const nodeId = (args.node ?? '').trim()
             const target = ctlNodes().find((n) => n.id === nodeId)
             if (!target || toKanbanSession(target) === null) {
               reply({ ok: false, error: `assign: --node names no session card (${nodeId || 'missing'})` })
               return
             }
-            const store = useProjects.getState()
-            // The CALLER'S project, not the active one — see `board` above for why the two used to
-            // look interchangeable and are not.
-            const pid = ctlProject?.id
-            if (!pid) {
-              reply({ ok: false, error: 'assign: no project owns this session' })
-              return
-            }
-            // Read prev fresh so the board-log diff below has the SAME base the write mutates —
-            // a lazy-default board is materialized here (as the first UI edit would) so the
-            // resolved column ids are stable across the write and the diff.
-            const prev = store.getProject(pid)?.kanban ?? defaultKanban(pid)
-            // Resolve --column by id or (case-insensitive) title; empty / "ungrouped" → null
-            // (unassign). `undefined` = no such column, so report what IS available.
+            // Resolve --column by id, title, or issue-id prefix; empty / "ungrouped" → null
+            // (unassign). `undefined` = no such column yet → auto-create it as a `started` column.
             const rawCol = (args.column ?? '').trim()
-            const columnId = resolveColumnRef(prev, rawCol)
+            let boardBase = prev
+            let columnId = resolveColumnRef(boardBase, rawCol)
             if (columnId === undefined) {
-              reply({
-                ok: false,
-                error: `assign: no column "${rawCol}" — columns: ${prev.columns.map((c) => c.title).join(', ') || '(none)'}`
-              })
-              return
+              boardBase = addColumn(boardBase, rawCol, nextColumnColor(boardBase))
+              const created = boardBase.columns[boardBase.columns.length - 1]
+              boardBase = setColumnCategory(boardBase, created.id, 'started')
+              columnId = created.id
             }
             const before = (args.before ?? '').trim() || null
-            const next = assignNode(prev, nodeId, columnId, before)
+            const next = assignNode(boardBase, nodeId, columnId, before)
             store.setProjectKanban(pid, next)
             markDirty()
             // Board-log the move through the same diff funnel the UI uses (card-moved), so the
             // board feed reads identically whether a person or an agent moved the card. cardTitle
             // returns '' ONLY for a dead node; a live card with no title maps to 'Untitled'.
-            const cardTitle = (id: string): string => {
-              const n = ctlNodes().find((x) => x.id === id)
-              const card = n ? toKanbanSession(n) : null
-              return card ? card.title || 'Untitled' : ''
-            }
             for (const { nodeId: nid, event } of boardLogEvents(prev, next, cardTitle)) {
               useBoardLog.getState().append(sessionForProject(pid).api, pid, { kind: 'event', nodeId: nid, event })
             }
@@ -20063,6 +20090,7 @@ export function Canvas() {
           issueAgentMenu={issueAgentMenu}
           issueWorktreeMenu={issueWorktreeMenu}
           teams={teamStations}
+          lineageOrder={activeLineageOrder}
           onIssueMoved={dispatchOnUserMove}
         />
       )}

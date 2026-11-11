@@ -7,8 +7,9 @@ import {
   boardLabels, cardMatchesLabelFilter, createLabel, deleteLabel, labelColor, labelsForCard,
   recolorLabel, renameLabel, reorderLabels, toggleCardLabel,
   autoLabelColor, migrateProjectTags, migrateTagsToLabels, setCardLabels, resolveColumnRef,
-  setColumnCategory, AT_COLUMN_END
+  setColumnCategory, AT_COLUMN_END, NO_LINEAGE_ORDER, kanbanLineageOrder, orderColumnByLineage
 } from './kanban'
+import { waitRopeId } from './edgeModel'
 import type { Project } from '@shared/types'
 
 const board = (): ProjectKanban => ({
@@ -172,6 +173,16 @@ describe('assignments', () => {
     expect(resolveColumnRef(board(), '')).toBeNull()
     expect(resolveColumnRef(board(), 'Ungrouped')).toBeNull()
     expect(resolveColumnRef(board(), 'nope')).toBeUndefined()
+    const cardBoard: ProjectKanban = {
+      columns: [
+        { id: 'c8', title: 'ORQ-8 Refatorar fila', color: '#0a84ff' },
+        { id: 'c9', title: 'ORQ-9 Ajustar login', color: '#ffd60a' }
+      ],
+      assignments: []
+    }
+    expect(resolveColumnRef(cardBoard, 'ORQ-9')).toBe('c9')
+    expect(resolveColumnRef(cardBoard, 'orq-8')).toBe('c8')
+    expect(resolveColumnRef(cardBoard, 'ORQ-90')).toBeUndefined()
   })
 })
 
@@ -416,5 +427,74 @@ describe('tag → label migration', () => {
     const m2 = migrateProjectTags(proj([{ id: 'n1', tags: ['x'] }], existing))
     expect(boardLabels(m2.kanban!)).toHaveLength(1)
     expect(labelsForCard(m2.kanban!, 'n1')[0]).toMatchObject({ name: 'x', color: 'red' })
+  })
+})
+
+describe('kanban lineage ordering', () => {
+  const rope = (source: string, target: string) => ({ id: `ctrl-${source}-${target}`, source, target })
+  const wait = (dep: string, target: string) => ({ id: waitRopeId(dep, target), source: dep, target })
+
+  it('orders a task chain top-to-bottom by lineage even when assigned in reverse order', () => {
+    const nodes = [
+      { id: 'ent', kind: 'terminal', position: { x: 0, y: 0 } },
+      { id: 'ref', kind: 'terminal', position: { x: 0, y: 200 }, openedBy: 'ent' },
+      { id: 'arq', kind: 'terminal', position: { x: 0, y: 400 }, openedBy: 'ref' },
+      { id: 'tes', kind: 'terminal', position: { x: 0, y: 600 }, openedBy: 'arq' }
+    ]
+    const ropes = [rope('ent', 'ref'), rope('ref', 'arq'), rope('arq', 'tes')]
+    const lineage = kanbanLineageOrder(nodes, ropes)
+    expect(lineage).toEqual(['ent', 'ref', 'arq', 'tes'])
+    expect(orderColumnByLineage(['tes', 'ref', 'arq', 'ent'], lineage)).toEqual(['ent', 'ref', 'arq', 'tes'])
+  })
+
+  it('flattens worktree group frames and respects --after wait ropes and sibling canvas positions', () => {
+    const flowNodes = [
+      { id: 'ent', type: 'terminal', position: { x: 100, y: 0 }, data: {} },
+      { id: 'wt', type: 'group', position: { x: 100, y: 200 }, data: {} },
+      { id: 'ref', type: 'terminal', parentId: 'wt', position: { x: 24, y: 50 }, data: { openedBy: 'ent' } },
+      { id: 'arq', type: 'terminal', parentId: 'wt', position: { x: 24, y: 250 }, data: { openedBy: 'ref' } },
+      { id: 'dev2', type: 'terminal', parentId: 'wt', position: { x: 500, y: 450 }, data: { openedBy: 'arq' } },
+      { id: 'dev1', type: 'terminal', parentId: 'wt', position: { x: 24, y: 450 }, data: { openedBy: 'arq' } },
+      { id: 'tes', type: 'terminal', parentId: 'wt', position: { x: 24, y: 650 }, data: { openedBy: 'arq' } }
+    ]
+    const ropes = [
+      rope('ent', 'ref'),
+      rope('ref', 'arq'),
+      rope('arq', 'dev1'),
+      rope('arq', 'dev2'),
+      rope('arq', 'tes'),
+      wait('dev1', 'tes'),
+      wait('dev2', 'tes')
+    ]
+    const lineage = kanbanLineageOrder(flowNodes, ropes)
+    expect(lineage).toEqual(['ent', 'ref', 'arq', 'dev1', 'dev2', 'tes'])
+    expect(orderColumnByLineage(['tes', 'dev2', 'dev1', 'arq', 'ref', 'ent'], lineage)).toEqual([
+      'ent', 'ref', 'arq', 'dev1', 'dev2', 'tes'
+    ])
+  })
+
+  it('keeps loose (unroped) cards after lineage cards in their existing column rank order, and leaves non-lineage columns untouched', () => {
+    const nodes = [
+      { id: 'ent', kind: 'terminal', position: { x: 0, y: 0 } },
+      { id: 'ref', kind: 'terminal', position: { x: 0, y: 200 } },
+      { id: 'note1', kind: 'sticky', position: { x: 500, y: 0 } },
+      { id: 'note2', kind: 'sticky', position: { x: 500, y: 100 } }
+    ]
+    const lineage = kanbanLineageOrder(nodes, [rope('ent', 'ref')])
+    expect(orderColumnByLineage(['note2', 'ref', 'note1', 'ent'], lineage)).toEqual(['ent', 'ref', 'note2', 'note1'])
+    const manual = ['note2', 'note1']
+    expect(orderColumnByLineage(manual, lineage)).toBe(manual)
+    expect(orderColumnByLineage(manual, NO_LINEAGE_ORDER)).toBe(manual)
+  })
+
+  it('preserves array identity across drag frames when lineage order does not change', () => {
+    const nodes = [
+      { id: 'a', type: 'terminal', position: { x: 0, y: 0 }, data: {} },
+      { id: 'b', type: 'terminal', position: { x: 0, y: 200 }, data: {} }
+    ]
+    expect(kanbanLineageOrder(nodes, [])).toBe(NO_LINEAGE_ORDER)
+    const first = kanbanLineageOrder(nodes, [rope('a', 'b')])
+    const dragged = nodes.map((n) => ({ ...n, position: { x: n.position.x + 10, y: n.position.y + 10 } }))
+    expect(kanbanLineageOrder(dragged, [rope('a', 'b')], first)).toBe(first)
   })
 })

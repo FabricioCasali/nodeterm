@@ -415,6 +415,10 @@ describe('parseControlRequest', () => {
       verb: 'assign',
       args: { node: 'n1', column: 'In Progress' }
     })
+    expect(parseControlRequest('assign', { 'delete-column': 'ORQ-9' })).toEqual({
+      verb: 'assign',
+      args: { 'delete-column': 'ORQ-9' }
+    })
     // Moving a card is board metadata only — no session is touched, so no confirm dialog.
     expect(isDestructiveVerb('assign')).toBe(false)
   })

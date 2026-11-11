@@ -28,6 +28,7 @@ const BOARD_WRITERS: Record<string, string[]> = {
       'person moving the issue card into the dispatch column they switched on for this machine ' +
       '(lib/board-dispatch.guard.test pins that)',
     'the `assign` control verb — a session moving its OWN card (the issue-bound contract)',
+    'the `assign --delete-column` control verb — removing a finished task column',
     'autoMoveCardFromPulls — the merge-driven move: a person switched it on for this machine in ' +
       'Settings, and it fires only on a pull request MERGE this machine observed after that (never on ' +
       'agent status), after winning the host\'s one-time claim; session cards only'

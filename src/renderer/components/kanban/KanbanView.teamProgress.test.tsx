@@ -167,4 +167,29 @@ describe('the card does not repeat what its place already says', () => {
     expect(done.classList.contains('kanban-due--overdue')).toBe(false)
     expect(done.textContent).not.toBe('')
   })
+
+  it('renders cards inside a task column ordered by lineage instead of reverse assign order', () => {
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    root = createRoot(host)
+    const noop = (): void => {}
+    const taskBoard: ProjectKanban = {
+      columns: [{ id: 'upoa-49', title: 'UPOA-49', color: '#0a84ff', category: 'started' }],
+      assignments: [
+        { nodeId: 'tes', columnId: 'upoa-49', rank: 'a' },
+        { nodeId: 'ref', columnId: 'upoa-49', rank: 'b' },
+        { nodeId: 'arq', columnId: 'upoa-49', rank: 'c' },
+        { nodeId: 'ent', columnId: 'upoa-49', rank: 'd' }
+      ]
+    }
+    const sessions = [card('tes', 'TES UPOA-49'), card('ref', 'REF UPOA-49'), card('arq', 'ARQ UPOA-49'), card('ent', 'ENT UPOA-49')]
+    act(() => root!.render(
+      <KanbanView board={taskBoard} sessions={sessions} onChange={noop} onOpenNode={noop}
+        onCreateNode={noop} onRenameNode={noop} onEditSticky={noop} onDeleteNode={noop}
+        onModalNodeChange={noop} onBrowserNav={noop} onSetIcon={noop}
+        lineageOrder={['ent', 'ref', 'arq', 'tes']} />
+    ))
+    const renderedIds = [...document.querySelectorAll<HTMLElement>('[data-kanban-card]')].map((el) => el.dataset.kanbanCard)
+    expect(renderedIds).toEqual(['ent', 'ref', 'arq', 'tes'])
+  })
 })

@@ -6,9 +6,9 @@ import { useSettings } from '../../state/settings'
 import { useBoardWallpaperStyle } from '../../state/wallpaper'
 import { AerialWallpaper } from '../AerialWallpaper'
 import {
-  addColumn, assignNode, assignedTo, boardLabels, cardMatchesLabelFilter, cardMeta, columnForNode,
-  compareSwimlanePriority, deleteColumn, labelsForCard, moveColumn,
-  nextColumnColor, pruneAssignments, recolorColumn, renameColumn, swimlanePriorityTier, unassigned, defaultKanban, AT_COLUMN_END
+  NO_LINEAGE_ORDER, addColumn, assignNode, assignedTo, boardLabels, cardMatchesLabelFilter, cardMeta, columnForNode,
+  compareSwimlanePriority, deleteColumn, kanbanLineageOrder, labelsForCard, moveColumn,
+  nextColumnColor, orderColumnByLineage, pruneAssignments, recolorColumn, renameColumn, swimlanePriorityTier, unassigned, defaultKanban, AT_COLUMN_END
 } from '../../lib/kanban'
 import { KanbanColumn, type KanbanLane } from './KanbanColumn'
 import { SessionCard } from './SessionCard'
@@ -85,6 +85,8 @@ interface SwimlaneProps {
   /** Team progress computed by the caller from LIVE canvas ropes — set for the active project's
    *  lane only; other lanes derive it from their persisted ropes. */
   liveTeams?: ReadonlyMap<string, readonly TeamStation[]>
+  /** Lineage order computed from LIVE canvas ropes/nodes for the active project's lane; other lanes derive it from stored ropes/nodes. */
+  liveLineageOrder?: readonly string[]
   highlight?: boolean
   /** Canvas's node rows for a card (lib/nodeActionItems, BOARD_NODE_ACTION_IDS), asked for THIS
    *  lane's project: a background lane gets its stored nodes, its own session source and its own
@@ -156,7 +158,7 @@ useProjects.subscribe((state) => {
 })
 
 const Swimlane = memo(function Swimlane({
-  projectId, projectName, projectIndex, projectColor, board, sessions, ropes, nodes, onChangeBoard, onOpenNode, onCreateNode, onDeleteNode, onRenameNode, onEditSticky, onBrowserNav, onSetIcon, modalNodeId, modalView, onModalChange, liveTeams, highlight, nodeActionItems, sessionActionItems, onAiName, onSetColor, onRunQueued
+  projectId, projectName, projectIndex, projectColor, board, sessions, ropes, nodes, onChangeBoard, onOpenNode, onCreateNode, onDeleteNode, onRenameNode, onEditSticky, onBrowserNav, onSetIcon, modalNodeId, modalView, onModalChange, liveTeams, liveLineageOrder, highlight, nodeActionItems, sessionActionItems, onAiName, onSetColor, onRunQueued
 }: SwimlaneProps) {
   const dragRef = useRef<{ kind: 'column'; id: string } | { kind: 'card'; id: string } | null>(null)
   const setModalNodeId = useCallback(
@@ -223,6 +225,13 @@ const Swimlane = memo(function Swimlane({
     teamsRef.current = stationsByOpener(ropes, Array.isArray(nodes) ? nodes.map(stationNodeFromState) : [], teamsRef.current)
     return teamsRef.current
   }, [liveTeams, ropes, nodes])
+  const lineageOrderRef = useRef<readonly string[]>(NO_LINEAGE_ORDER)
+  const lineageOrder = useMemo(() => {
+    if (liveLineageOrder) return liveLineageOrder
+    const next = kanbanLineageOrder(Array.isArray(nodes) ? nodes : [], ropes, lineageOrderRef.current)
+    lineageOrderRef.current = next
+    return next
+  }, [liveLineageOrder, nodes, ropes])
   const travel = useCallback((nodeId: string) => onOpenNode(nodeId, projectId), [onOpenNode, projectId])
   // Which machine this lane's nodes run on: only a local lane shows this machine's LIVE chips (R57).
   const liveLinkSource = projectSessionSource(projectId)
@@ -277,10 +286,10 @@ const Swimlane = memo(function Swimlane({
       return cards.length ? cards : NO_CARDS
     }
     return {
-      ungrouped: toCards(vis(unassigned(board, sessionIds))),
-      byColumn: new Map(board.columns.map(c => [c.id, toCards(vis(assignedTo(board, c.id)))]))
+      ungrouped: toCards(vis(orderColumnByLineage(unassigned(board, sessionIds), lineageOrder))),
+      byColumn: new Map(board.columns.map(c => [c.id, toCards(vis(orderColumnByLineage(assignedTo(board, c.id), lineageOrder)))]))
     }
-  }, [board, byId, sessionIds, activeLocalFilter])
+  }, [board, byId, sessionIds, lineageOrder, activeLocalFilter])
 
   const handleCardDragStart = useCallback((id: string) => { dragRef.current = { kind: 'card', id } }, [])
   const handleColumnDragStart = useCallback((id: string) => { dragRef.current = { kind: 'column', id } }, [])
@@ -309,14 +318,17 @@ const Swimlane = memo(function Swimlane({
       if (columnId !== null) commit(moveColumn(board, drag.id, columnId))
       return
     }
-    const ids = columnId === null ? unassigned(board, sessionIds) : assignedTo(board, columnId)
+    const ids = orderColumnByLineage(
+      columnId === null ? unassigned(board, sessionIds) : assignedTo(board, columnId),
+      lineageOrder
+    )
     let beforeId: string | typeof AT_COLUMN_END = targetNodeId
     if (side === 'after') {
       const i = ids.indexOf(targetNodeId)
       beforeId = i >= 0 && i + 1 < ids.length ? ids[i+1] : AT_COLUMN_END
     }
     commit(assignNode(board, drag.id, columnId, beforeId))
-  }, [board, commit, sessionIds])
+  }, [board, commit, sessionIds, lineageOrder])
 
   const dropAtCardFor = useMemo(() => {
     const cache = new Map<string, (nodeId: string, side: 'before' | 'after') => void>()
@@ -509,6 +521,7 @@ export interface GlobalKanbanLive {
   projectId: string
   sessions: KanbanSession[]
   teams: ReadonlyMap<string, readonly TeamStation[]>
+  lineageOrder?: readonly string[]
 }
 
 export interface GlobalKanbanViewProps {
@@ -731,6 +744,7 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
               modalView={modal?.projectId === p.id ? modal.view : undefined}
               onModalChange={onModalChange}
               liveTeams={isLive && live ? live.teams : undefined}
+              liveLineageOrder={isLive && live ? live.lineageOrder : undefined}
               highlight={highlightId === p.id}
               nodeActionItems={nodeActionItems}
               sessionActionItems={sessionActionItems}

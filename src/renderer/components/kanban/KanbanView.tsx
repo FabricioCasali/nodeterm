@@ -21,7 +21,7 @@ import { AerialWallpaper } from '../AerialWallpaper'
 import {
   AT_COLUMN_END, addColumn, assignNode, assignedTo, boardLabels, cardAssignees, cardMatchesLabelFilter, cardMeta, columnForNode,
   deleteColumn, labelsForCard, moveColumn,
-  nextColumnColor, pruneAssignments, recolorColumn, renameColumn, setColumnCategory, unassigned
+  nextColumnColor, orderColumnByLineage, pruneAssignments, recolorColumn, renameColumn, setColumnCategory, unassigned
 } from '../../lib/kanban'
 import { markCanvasCovered } from '../../lib/canvasCovered'
 import { registerBoardKeys, type BoardKeyAction } from '../../lib/boardKeys'
@@ -179,6 +179,8 @@ export interface KanbanViewProps {
    * shows one.
    */
   teams?: ReadonlyMap<string, readonly TeamStation[]>
+  /** Project-wide canvas lineage order (`kanbanLineageOrder`), used to order roped cards within each column. */
+  lineageOrder?: readonly string[]
   /**
    * A GitHub issue card this PERSON moved (drag, the card's Move control, the summary modal), with
    * GitHub's answer. Board dispatch's one trigger (lib/boardDispatch): nothing a refresh or a pull
@@ -255,7 +257,7 @@ function useCanvasCovered(): void {
 export const KanbanView = memo(function KanbanView({
   board, sessions, onChange, onOpenNode, onCreateNode, onRenameNode, onEditSticky, onDeleteNode,
   onModalNodeChange, onBrowserNav, onSetIcon, nodeActionItems, sessionActionItems, onAiName, onSetColor, onRunQueued, onAutoMoveFromPulls, issueAgentMenu,
-  issueWorktreeMenu, teams, onIssueMoved
+  issueWorktreeMenu, teams, lineageOrder, onIssueMoved
 }: KanbanViewProps) {
   useCanvasCovered()
   const { api } = useSession()
@@ -674,7 +676,10 @@ export const KanbanView = memo(function KanbanView({
         return
       }
       // "after this card" = "before the NEXT card in the column" (after the last = the bottom).
-      const ids = columnId === null ? unassigned(board, sessionIds) : assignedTo(board, columnId)
+      const ids = orderColumnByLineage(
+        columnId === null ? unassigned(board, sessionIds) : assignedTo(board, columnId),
+        lineageOrder
+      )
       let beforeId: string | typeof AT_COLUMN_END = targetNodeId
       if (side === 'after') {
         const i = ids.indexOf(targetNodeId)
@@ -682,7 +687,7 @@ export const KanbanView = memo(function KanbanView({
       }
       commit(assignNode(board, drag.id, columnId, beforeId))
     },
-    [board, commit, requestGitHubMove, sessionIds]
+    [board, commit, requestGitHubMove, sessionIds, lineageOrder]
   )
 
   // Per-column card lists in one pass, so a board render doesn't re-derive (and re-allocate)
@@ -706,10 +711,12 @@ export const KanbanView = memo(function KanbanView({
       return cards.length ? cards : NO_CARDS
     }
     return {
-      ungrouped: toCards(vis(unassigned(board, sessionIds))),
-      byColumn: new Map(board.columns.map((c) => [c.id, toCards(vis(assignedTo(board, c.id)))]))
+      ungrouped: toCards(vis(orderColumnByLineage(unassigned(board, sessionIds), lineageOrder))),
+      byColumn: new Map(
+        board.columns.map((c) => [c.id, toCards(vis(orderColumnByLineage(assignedTo(board, c.id), lineageOrder)))])
+      )
     }
-  }, [board, byId, sessionIds, activeLocalFilter, assigneeFilter, statusChips, statusFacts])
+  }, [board, byId, sessionIds, lineageOrder, activeLocalFilter, assigneeFilter, statusChips, statusFacts])
 
   // Lifecycle: the board's progress (null when no column says what "complete" means) and the
   // columns this user sees — `closed` ones only when they asked for them.

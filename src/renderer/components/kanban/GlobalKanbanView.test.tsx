@@ -144,4 +144,11 @@ describe('global kanban card read state', () => {
     expect(GLOBAL_KANBAN_SRC).toContain('const lanesByColumn = useMemo(')
     expect(GLOBAL_KANBAN_SRC).toContain('const sortOrderSig = useAgentStatus(')
   })
+
+  it('orders cards within each column and Ungrouped by canvas lineage (live or stored ropes)', () => {
+    expect(GLOBAL_KANBAN_SRC).toContain('kanbanLineageOrder(')
+    expect(GLOBAL_KANBAN_SRC).toContain('orderColumnByLineage(unassigned(board, sessionIds), lineageOrder)')
+    expect(GLOBAL_KANBAN_SRC).toContain('orderColumnByLineage(assignedTo(board, c.id), lineageOrder)')
+    expect(GLOBAL_KANBAN_SRC).toContain('liveLineageOrder={isLive && live ? live.lineageOrder : undefined}')
+  })
 })
