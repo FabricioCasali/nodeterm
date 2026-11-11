@@ -1614,6 +1614,14 @@ describe('--after-success + report-outcome: a dependent that waits for a reporte
     expect(flat).toContain('The Server Edition accepts both the flag and the verb')
   })
 
+  // PAR-161: an armed node off screen starts by itself; a cold open with no dependency still waits.
+  it.each(bodies)('%s states that an armed node off screen starts headless', (_name, body) => {
+    const flat = body.replace(/\s+/g, ' ')
+    expect(flat).toContain('a node waiting on `--after` / `--after-success` in a project that is not on screen')
+    expect(flat).toContain('it starts headless')
+    expect(flat).toContain('Still only on view: a node with no dependency (use `--run-now`), an `--after-pr` wait, a closed or SSH project')
+  })
+
   // Plain `--after` and new work (core/station-handover.ts): the rule an orchestrator reusing a
   // station must know, in both bodies, in the words core implements.
   it.each(bodies)('%s states that new work resets a plain --after wait, and how to reuse a station', (_name, body) => {

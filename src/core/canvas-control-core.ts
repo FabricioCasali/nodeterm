@@ -298,6 +298,21 @@ function afterSuccessDocLines(): string[] {
 }
 
 /**
+ * PAR-161: an ARMED node in a project that is not on screen starts by itself, headless, once its
+ * stations are done (renderer/lib/backgroundCascade.ts). Both agent-facing bodies share these
+ * lines; `canvas-control-core.test.ts` pins them against both.
+ */
+export function offScreenCascadeDocLines(): string[] {
+  return [
+    '  EXCEPTION — armed nodes: a node waiting on `--after` / `--after-success` in a project that is not',
+    '  on screen (open, local, desktop app) does NOT wait for the user to view it. Once its stations are',
+    '  done (and reported success, for `--after-success`) it starts headless, the user\'s view untouched',
+    '  and a notice raised — the same start as `run`. Still only on view: a node with no dependency (use',
+    '  `--run-now`), an `--after-pr` wait, a closed or SSH project.'
+  ]
+}
+
+/**
  * The plain `--after` "new work" rule — core/station-handover.ts. Both agent-facing bodies share
  * these lines; `canvas-control-core.test.ts` pins them against both.
  */
@@ -928,6 +943,7 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  and do not report the session as started. `--cwd`/`--count`/`--group`/`--after`/`--prompt`',
     '  all still apply. If your project is CLOSED the node is still saved into it and the reply',
     '  says the project is closed; the tab is not reopened for you.',
+    ...offScreenCascadeDocLines(),
     '  A cold-opened node has NO session yet, so a `send` to it cannot land: it is queued for up to',
     '  24 hours and flushed after the node starts and finishes its first turn (`targetNotStarted` when',
     '  it cannot be queued; a message queued before the node started does not survive an app restart).',
@@ -1519,6 +1535,7 @@ Verbs:
   **closed**, the node is still saved into it and the reply says so; the tab is not reopened for
   you. So: opening a station is safe to do at any time, but a station you opened while the user was
   elsewhere is not running yet — read \`queued\` before you route work to it.
+${offScreenCascadeDocLines().join('\n')}
   Add \`--run-now\` to start a cold-opened session immediately instead. Put it LAST on the line,
   in either form (\`--run-now\` or \`--run-now=1\`): an older shim can still sit on an SSH host (it
   is rewritten only on connect), and it takes the token after any flag as that flag's value, so

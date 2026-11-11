@@ -1206,6 +1206,12 @@ cannot disagree about when a dependent starts. And never let a gate read its "sa
 file: a success a git commit can claim releases every dependent waiting on it — the station's
 report lives in a transient core store, and its board-log line is display only.
 
+**Held launches are judged in two places on the desktop: the canvas loop (active project) and the
+off-screen cascade (`src/renderer/lib/backgroundCascade.ts`, every other open local project, started
+through the #925 headless start).** Both call `launchesToFire`, so a new gate there reaches both — but
+a gate whose facts exist only for the project on screen (the `--after-pr` watch is the example) must
+also be excluded in `cascadeNodeEligible`, or the cascade judges it on stale data.
+
 **Never move the user's view on a background agent's say-so.** Canvas-control requests route by
 SOURCE, and React Flow holds only the ACTIVE project's nodes — so the dispatch used to travel to the
 caller's project before answering. For an OPEN that was a screen hijack: the user is looking at

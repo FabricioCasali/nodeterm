@@ -721,6 +721,13 @@ import {
   LAUNCH_STALL_MS,
   type ArmedNode
 } from '../lib/pendingLaunch'
+import {
+  backgroundCascadeTargets,
+  backgroundLaunches,
+  cascadeDepIds,
+  cascadeKey,
+  cascadeSetupGroups
+} from '../lib/backgroundCascade'
 import { prHoldReports, prWaitReplyLine, resolvePrWaitFor, startFreshReadAsks, type PrWaitArmResult } from '../lib/prWait'
 import { RUN_NOW_AFTER_PR_REFUSAL } from '@shared/pr-wait'
 import {
@@ -2703,7 +2710,8 @@ export function Canvas() {
       { outcomes: useStationOutcomes.getState().byId, now: Date.now() },
       // Stations handed new work they have not finished: their `done` is the previous task's.
       useStationHandovers.getState().byId
-    ).filter((f) => !launchInFlight.current.has(f.id))
+      // A headless start (#925, or the off-screen cascade below) owns the node while it runs.
+    ).filter((f) => !launchInFlight.current.has(f.id) && !headlessInFlightRef.current.has(f.id))
     // Anything we were reporting on that is no longer an armed node — delivered, run by hand with
     // ▶, or deleted — stops being reported. Timers go with it: a stall warning for a node that has
     // already started is a lie with a countdown on it. A headless start in flight is spared: its
@@ -19103,6 +19111,83 @@ export function Canvas() {
       }
     }
   })
+
+  // ---- PAR-161: armed nodes in projects that are NOT on screen ----
+  // The launch loop above sees only the active project's React Flow nodes, so a node armed with
+  // `--after` / `--after-success` in another project used to stay QUEUED until that project was
+  // viewed. Here the same `launchesToFire` runs over the STORED nodes of every eligible background
+  // project (lib/backgroundCascade), and what is ready goes to the #925 headless start — the path
+  // `open-* --run-now` and `run` take (write-ahead claim, STARTING, notice). No tab is activated or
+  // restored. Desktop only: the browser renderer has no headless launcher (Server Edition runs its
+  // own `refreshArmed`), and an unsupported launch there would leave the node claimed and failed.
+  const bgCascadeKey = useProjects((s) =>
+    isBrowserRuntime() ? '' : cascadeKey(backgroundCascadeTargets(s.projects, s.activeProjectId))
+  )
+  const bgCascade = useMemo(() => {
+    if (!bgCascadeKey) return []
+    const st = useProjects.getState()
+    return backgroundCascadeTargets(st.projects, st.activeProjectId)
+  }, [bgCascadeKey])
+  // Read by the selectors below (assigned during render, like nodesRef): the triggers are PRIMITIVE
+  // signatures over the waited-on stations only — the `armedDepSig` discipline, never `byId`.
+  const bgDepsRef = useRef<string[]>([])
+  bgDepsRef.current = useMemo(() => cascadeDepIds(bgCascade), [bgCascade])
+  const bgGroupsRef = useRef<string[]>([])
+  bgGroupsRef.current = useMemo(() => cascadeSetupGroups(bgCascade), [bgCascade])
+  const bgStatusSig = useAgentStatus((s) =>
+    bgDepsRef.current
+      .map((d) => {
+        const st = s.byId[d]
+        return `${d}=${st?.state ?? ''}${st?.lastTurnError ? 'e' : ''}${st?.lastTurnInterrupted ? 'i' : ''}`
+      })
+      .join(',')
+  )
+  const bgHandoverSig = useStationHandovers((s) => bgDepsRef.current.filter((d) => s.byId[d]).join(','))
+  const bgSuccessSig = useStationOutcomes((s) =>
+    bgDepsRef.current
+      .map((d) => {
+        const r = outcomeOf(s.byId, d)
+        return `${d}:${r ? `${r.outcome}@${r.at}${r.workPending ? 'p' : ''}` : '-'}`
+      })
+      .join(',')
+  )
+  const bgSetupSig = useProjectSetup((s) =>
+    bgGroupsRef.current
+      .map((g) => {
+        const runKey = s.groupRunKey[g]
+        return `${g}=${runKey === undefined ? '-' : (s.byRunKey[runKey]?.state ?? '')}+${s.pendingByGroup[g] ?? 0}`
+      })
+      .join('|')
+  )
+  // Background starts this run that did not start and handed the launch back unchanged
+  // (not-persistent, claim-not-saved): never retried from here — retrying on every store change
+  // would loop. Such a node still starts when its project is viewed, or with Run now / `run`.
+  const bgDeclinedRef = useRef(new Set<string>())
+  useEffect(() => {
+    if (!bgCascade.length) return
+    const st = useProjects.getState()
+    const batches = backgroundLaunches(
+      backgroundCascadeTargets(st.projects, st.activeProjectId),
+      {
+        status: useAgentStatus.getState().byId,
+        setupDone: setupDoneForGroup,
+        deliveries: useLaunchDelivery.getState().byId,
+        outcomes: useStationOutcomes.getState().byId,
+        handovers: useStationHandovers.getState().byId,
+        now: Date.now()
+      },
+      // Exactly once: a start in flight (its id is added synchronously, before the claim's write),
+      // the canvas loop's delivery, or a start this run already declined.
+      (id) =>
+        headlessInFlightRef.current.has(id) || launchInFlight.current.has(id) || bgDeclinedRef.current.has(id)
+    )
+    for (const b of batches) {
+      void startNodesHeadlessRef.current(b.project, b.nodes).then(({ outcomes }) => {
+        for (const o of outcomes)
+          if (!o.started && o.reason !== 'already-starting') bgDeclinedRef.current.add(o.id)
+      })
+    }
+  }, [bgCascade, bgStatusSig, bgHandoverSig, bgSuccessSig, bgSetupSig, setupDoneForGroup])
 
   // OS-notification click → focus the originating node (see the note beside focusNodeById:
   // travelToNode, not focusNodeById, so a closed project's tab is reopened first).
