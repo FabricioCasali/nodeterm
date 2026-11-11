@@ -5913,6 +5913,37 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     never by first id match. It neither unhides a closed project nor raises a notice, the same as
     its other immediate opens. Its immediate open delivers through the same launcher with
     `release:false`: the attached client is what keeps even a plain shell reachable there.
+  **Off-screen cascade (PAR-161): an ARMED node in a project that is not on screen starts by
+  itself, headless.** The launch loop runs over the ACTIVE project's React Flow nodes only, so a
+  node armed with `--after` / `--after-success` in another project stayed QUEUED until someone
+  viewed it (measured: a station reported `succeeded`, its dependent sat QUEUED for 2+ min while
+  the user was on the board). Now `renderer/lib/backgroundCascade.ts` (pure) runs the SAME
+  `launchesToFire` over the STORED nodes of every eligible background project, and Canvas hands
+  what is ready to `startNodesHeadlessRef` — the #925 start above (claim, STARTING, "Go there"
+  notice); `background-cascade.source.test.ts` pins that it calls nothing else. Rules:
+  - **Eligible projects**: not the active one (the canvas loop owns it), not closed (a headless
+    start would restore the tab, and closing is the user's "park this"), not SSH, not a relay tab,
+    not unavailable, not handed off. **Eligible nodes**: a held launch that WAITS on something —
+    non-empty `after` or a valid `afterSuccess` — and is not `manualOnly`, not `attempted`, not
+    `executor:'server'`, not over SSH. A dependency-less cold open still starts on view (that is
+    what `--run-now` is for), and `--run-now` still refuses `--after`.
+  - **Still needs the canvas**: an `--after-pr` wait (the PR watch and its fresh-read asks run only
+    for the project on screen, so a background board is stale or absent — excluded, and the PR
+    context is passed absent, which `launchesToFire` reads as closed). The setup gate uses the same
+    `setupDoneForGroup` probe (the run store is global by group id). Deadlines use `Date.now()`, as
+    on the canvas; an expired success wait never fires and needs ▶ / `run`. A dep in ANOTHER project
+    reads as deleted, exactly as on the canvas loop (resolveAfter refuses it at arm time).
+  - **Exactly once**: `headlessInFlightRef` gets the id synchronously before the claim's write,
+    the claim (`manualOnly`) is patched into the store in the same tick, and the cascade also skips
+    the canvas loop's `launchInFlight`; the canvas loop now skips `headlessInFlightRef` too. A
+    start that answers not-started (not-persistent, claim-not-saved, …) is recorded in
+    `bgDeclinedRef` for the app run and never retried from here (the hand-back would loop); the
+    node still starts on view or by Run now / `run`.
+  - **Triggers**: primitive signatures over the waited-on stations only (status, hand-over,
+    outcome, setup), plus a projects-store key of which background nodes are armed — never `byId`.
+  - **Desktop only** (`!isBrowserRuntime()`): the browser renderer has no headless launcher, and an
+    unsupported launch would leave the node claimed and failed. The Server Edition already fires
+    its headless nodes itself (`refreshArmed`). Mobile: N/A.
   **Settings (`settings`, 2026-09):** `settings [--project <id>]` lists, `settings --get <key>`
   reads, `settings --set <key> --value <v> [--project <id>]` asks to change — flags only, because the
   shim drops a positional sub-action for an unlisted verb and an SSH host can still be running an
