@@ -20,6 +20,8 @@
 //     is the text the human saw, whatever happens to the original afterwards.
 //
 // `pair` / `join` links are handed to the renderer's existing flows, which have their own approval.
+// `focus` links only bring an existing node forward, so they skip the feature flag; a malformed one
+// is sent as a null node (the renderer says "not found"), never as the generic refusal.
 // Everything here is desktop-only: the Server Edition has no URL scheme.
 
 import {
@@ -83,7 +85,7 @@ export interface OpenLinkDeps {
   now(): number
 }
 
-export type OpenLinkChannel = 'request' | 'pair' | 'notice'
+export type OpenLinkChannel = 'request' | 'pair' | 'notice' | 'focus'
 
 interface Pending {
   prompt: OpenLinkPrompt
@@ -173,24 +175,30 @@ export function createOpenLinkService(deps: OpenLinkDeps): OpenLinkService {
   }
 
   const dispatch = (url: string): void => {
+    const parsed = parseNodetermLink(url)
+    const focus = parsed.ok ? (parsed.link.kind === 'focus' ? parsed.link : null) : parsed.focus ? { nodeId: null } : null
+    if (focus) {
+      deps.send('focus', { nodeId: focus.nodeId })
+      deps.raise()
+      return
+    }
     if (!deps.enabled()) {
       notice(OPEN_LINKS_OFF_NOTICE)
       // The user clicked something and must see why nothing opened (rate-limited like any link).
       deps.raise()
       return
     }
-    const parsed = parseNodetermLink(url)
     if (!parsed.ok) {
       notice(`Link refused: ${parsed.reason}.`)
       return
     }
     const link = parsed.link
-    if (link.kind !== 'open') {
+    if (link.kind === 'pair' || link.kind === 'join') {
       deps.send('pair', { kind: link.kind, url: link.url })
       deps.raise()
       return
     }
-    void ask(link.request).catch((e) => notice(`Link refused: ${e instanceof Error ? e.message : String(e)}.`))
+    if (link.kind === 'open') void ask(link.request).catch((e) => notice(`Link refused: ${e instanceof Error ? e.message : String(e)}.`))
   }
 
   return {

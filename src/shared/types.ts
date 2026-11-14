@@ -4645,6 +4645,8 @@ export interface OpenLinkApi {
   onPair(listener: (link: { kind: 'pair' | 'join'; url: string }) => void): () => void
   /** A refused or dropped link, as one sentence for a toast. */
   onNotice(listener: (n: { text: string }) => void): () => void
+  /** A `focus` link: go to this node like a notification click. `null` = malformed link. */
+  onFocus(listener: (link: { nodeId: string | null }) => void): () => void
   /** The human's choice; main re-checks it and answers with the final open. */
   accept(id: string, choice: import('./open-link').OpenLinkChoice): Promise<import('./open-link').OpenLinkAcceptResult>
   /** The sheet was dismissed (or replaced): forget the request. */

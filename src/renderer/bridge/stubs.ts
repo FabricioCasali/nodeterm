@@ -605,6 +605,7 @@ export function buildStubApi(): Omit<
       onRequest: noopUnsub,
       onPair: noopUnsub,
       onNotice: noopUnsub,
+      onFocus: noopUnsub,
       accept: U('openLink.accept'),
       cancel: noop
     },

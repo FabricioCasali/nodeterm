@@ -373,7 +373,7 @@ import { SystemResourcePill } from '../components/SystemResourcePill'
 import { PresenceLayer } from '../components/PresenceLayer'
 import { Facepile } from '../components/Facepile'
 import { PresenceNamePrompt } from '../components/PresenceNamePrompt'
-import { nodeTravel, projectTravel } from '../lib/presenceTravel'
+import { linkFocusAction, nodeTravel, projectTravel } from '../lib/presenceTravel'
 import { nodeIdsHeldElsewhere, nodeOwner } from '../lib/nodeOwner'
 import {
   closeConfirmCopy,
@@ -18908,6 +18908,28 @@ export function Canvas() {
     return id ? (accounts.find((a) => a.id === id)?.label ?? null) : null
   }, [])
 
+  // The last `nodeterm://focus` link, held until the workspace has loaded (a link that cold-starts
+  // the app reaches the renderer before the projects do).
+  const [linkFocus, setLinkFocus] = useState<{ nodeId: string | null } | null>(null)
+  useEffect(() => {
+    if (!linkFocus || !workspaceLoaded) return
+    setLinkFocus(null)
+    const { nodeId } = linkFocus
+    const { projects, activeProjectId } = useProjects.getState()
+    const action = linkFocusAction(projects, activeProjectId, nodeId, {
+      liveOnCanvas: nodeId !== null && nodesRef.current.some((n) => n.id === nodeId),
+      activeLanded: flowLanding.holds(activeProjectId)
+    })
+    if (nodeId === null || action === 'not-found') {
+      // Warning style, yet it fades: the strip's own timer only dismisses 'info'. Not this effect's
+      // cleanup, which runs as soon as `linkFocus` is cleared above.
+      const n = { kind: 'error' as const, text: 'Node not found.' }
+      setNotice(n)
+      setTimeout(() => setNotice((cur) => (cur === n ? null : cur)), NOTICE_MS)
+    } else if (action === 'wait-landing') pendingFocusRef.current = nodeId
+    else travelToNode(nodeId)
+  }, [linkFocus, workspaceLoaded, travelToNode, flowLanding])
+
   useEffect(() => {
     const ol = window.nodeTerminal.openLink
     const unRequest = ol.onRequest((req) => {
@@ -18956,12 +18978,14 @@ export function Canvas() {
       })()
     })
     const unNotice = ol.onNotice(({ text }) => setNotice({ kind: 'error', text }))
+    const unFocus = ol.onFocus(({ nodeId }) => setLinkFocus({ nodeId }))
     // Listening: main delivers anything that arrived first (a link that launched the app).
     ol.ready()
     return () => {
       unRequest()
       unPair()
       unNotice()
+      unFocus()
     }
   }, [connectOffer, api])
 

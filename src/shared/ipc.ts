@@ -724,10 +724,11 @@ export const IPC = {
   remoteHostApprove: 'remote:host:approve',
   remotePhoneApprove: 'remote:phone:approve',
   // `nodeterm://` links (desktop only, raw ipcMain, main-window sender only — see main/open-link.ts).
-  // main → renderer: an `open` link to confirm, a pair/join link to route, a refusal to toast.
+  // main → renderer: an `open` link to confirm, a pair/join link to route, a refusal to toast, a node to focus.
   openLinkRequest: 'open-link:request',
   openLinkPair: 'open-link:pair',
   openLinkNotice: 'open-link:notice',
+  openLinkFocus: 'open-link:focus',
   // renderer → main: listening (deliver held links), the human's choice, a dismissal.
   openLinkReady: 'open-link:ready',
   openLinkAccept: 'open-link:accept',

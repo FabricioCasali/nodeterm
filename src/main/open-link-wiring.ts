@@ -27,7 +27,8 @@ import {
 const CHANNEL: Record<OpenLinkChannel, string> = {
   request: IPC.openLinkRequest,
   pair: IPC.openLinkPair,
-  notice: IPC.openLinkNotice
+  notice: IPC.openLinkNotice,
+  focus: IPC.openLinkFocus
 }
 
 export interface OpenLinkWiringDeps {
