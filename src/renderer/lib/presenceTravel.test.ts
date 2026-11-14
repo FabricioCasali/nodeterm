@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { nodeTravel, projectTravel, type TravelProject } from './presenceTravel'
+import { linkFocusAction, nodeTravel, projectTravel, type TravelProject } from './presenceTravel'
 
 const projects: TravelProject[] = [
   { id: 'open', nodes: [{ id: 'n-open' }] },
@@ -77,5 +77,43 @@ describe('nodeTravel', () => {
 
   it('does nothing for an unknown node', () => {
     expect(nodeTravel(projects, 'active', 'n-ghost')).toEqual({ kind: 'none' })
+  })
+})
+
+describe('linkFocusAction', () => {
+  // `active` is the active project; `open` is another open tab; `closed` is closed; `gone` is unreadable.
+  const landed = { liveOnCanvas: false, activeLanded: true }
+
+  it('a malformed link (no node id) is not found', () => {
+    expect(linkFocusAction(projects, 'active', null, landed)).toBe('not-found')
+    expect(linkFocusAction(projects, 'active', null, { liveOnCanvas: false, activeLanded: false })).toBe('not-found')
+  })
+
+  it('travels to a node on the live canvas of the landed active project', () => {
+    expect(linkFocusAction(projects, 'active', 'n-active', { liveOnCanvas: true, activeLanded: true })).toBe('travel')
+  })
+
+  it('travels to a node of another open project', () => {
+    expect(linkFocusAction(projects, 'active', 'n-open', landed)).toBe('travel')
+  })
+
+  it('travels to a node of a closed project', () => {
+    expect(linkFocusAction(projects, 'active', 'n-closed', landed)).toBe('travel')
+  })
+
+  it('travels to a node of an unavailable project, like the notification click', () => {
+    expect(linkFocusAction(projects, 'active', 'n-gone', landed)).toBe('travel')
+  })
+
+  it('a node no project has is not found', () => {
+    expect(linkFocusAction(projects, 'active', 'n-ghost', landed)).toBe('not-found')
+  })
+
+  it('waits for the landing when the active project owns the node but has not landed yet', () => {
+    expect(linkFocusAction(projects, 'active', 'n-active', { liveOnCanvas: false, activeLanded: false })).toBe('wait-landing')
+  })
+
+  it('a node in the landed active project store but off the live canvas is not found', () => {
+    expect(linkFocusAction(projects, 'active', 'n-active', landed)).toBe('not-found')
   })
 })
