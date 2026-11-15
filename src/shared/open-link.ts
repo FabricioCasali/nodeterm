@@ -15,6 +15,7 @@
 //
 // `nodeterm://pair?code=…` and `nodeterm://join?code=…` are recognised and handed back verbatim so
 // the app can route them to its existing pairing / join flows, which have their own approval.
+// `nodeterm://focus?node=<id>` only brings an existing node forward (no confirm): it creates nothing.
 // Design: docs/superpowers/specs/2026-10-13-open-link-design.md.
 
 import { BUILTIN_AGENT_IDS, type BuiltinAgentId } from './agents/config'
@@ -60,8 +61,11 @@ export interface OpenLinkRequest {
 export type ParsedLink =
   | { kind: 'open'; request: OpenLinkRequest }
   | { kind: 'pair' | 'join'; url: string }
+  | { kind: 'focus'; nodeId: string }
 
-export type ParseLinkResult = { ok: true; link: ParsedLink } | { ok: false; reason: string }
+/** `focus` is set on a refusal only when the host is `focus`: main turns it into "node not found"
+ *  instead of the generic refusal notice. */
+export type ParseLinkResult = { ok: true; link: ParsedLink } | { ok: false; reason: string; focus?: true }
 
 const OPEN_PARAMS = ['agent', 'project', 'project-cwd', 'cwd', 'prompt', 'prompt-file', 'title', 'source'] as const
 type OpenParam = (typeof OPEN_PARAMS)[number]
@@ -128,6 +132,11 @@ export function isAcceptableAbsolutePath(p: string): boolean {
   return !segments.some((s) => s === '.' || s === '..')
 }
 
+/** A project or node id: non-empty, capped, nothing invisible or reordering. */
+function isValidId(id: string): boolean {
+  return !!id && id.length <= OPEN_LINK_LIMITS.projectId && !ANY_CONTROL.test(id) && !FORMAT_CONTROL.test(id) && !hasHiddenText(id)
+}
+
 function isOpenLinkAgent(a: string): a is OpenLinkAgent {
   return a === 'terminal' || (BUILTIN_AGENT_IDS as readonly string[]).includes(a)
 }
@@ -177,6 +186,18 @@ export function parseNodetermLink(input: unknown): ParseLinkResult {
     // Rebuilt from the decoded code so the existing decoders see the canonical prefix form.
     return { ok: true, link: { kind: host, url: `nodeterm://${host}?code=${code}` } }
   }
+  if (host === 'focus') {
+    const refuseFocus = (reason: string): ParseLinkResult => ({ ok: false, reason: `the focus link: ${reason}`, focus: true })
+    const params = readQuery(query)
+    if (typeof params === 'string') return refuseFocus(params)
+    for (const key of params.keys()) {
+      if (key !== 'node') return refuseFocus(`unknown parameter "${clip(key)}"`)
+    }
+    const nodeId = params.get('node')
+    if (!nodeId) return refuseFocus('it has no node')
+    if (!isValidId(nodeId)) return refuseFocus('"node" is not a valid node id')
+    return { ok: true, link: { kind: 'focus', nodeId } }
+  }
   if (host !== 'open') return refuse(host ? `nodeterm://${host} is not a link nodeterm opens` : 'it names no action')
 
   const params = readQuery(query)
@@ -198,7 +219,7 @@ export function parseNodetermLink(input: unknown): ParseLinkResult {
     return refuse('"project" and "project-cwd" cannot be combined')
   }
   if (project !== undefined) {
-    if (!project || project.length > OPEN_LINK_LIMITS.projectId || ANY_CONTROL.test(project) || FORMAT_CONTROL.test(project) || hasHiddenText(project)) {
+    if (!isValidId(project)) {
       return refuse('"project" is not a valid project id')
     }
     request.project = project

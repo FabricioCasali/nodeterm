@@ -918,6 +918,7 @@ const api: NodeTerminalApi = {
     onRequest: subscribe<[OpenLinkPrompt]>(IPC.openLinkRequest),
     onPair: subscribe<[{ kind: 'pair' | 'join'; url: string }]>(IPC.openLinkPair),
     onNotice: subscribe<[{ text: string }]>(IPC.openLinkNotice),
+    onFocus: subscribe<[{ nodeId: string | null }]>(IPC.openLinkFocus),
     accept: (id: string, choice: OpenLinkChoice) => ipcRenderer.invoke(IPC.openLinkAccept, { id, choice }),
     cancel: (id: string) => ipcRenderer.send(IPC.openLinkCancel, id)
   },

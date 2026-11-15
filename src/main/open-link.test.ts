@@ -151,6 +151,74 @@ describe('open-link service: delivery', () => {
   })
 })
 
+describe('open-link service: focus', () => {
+  const focuses = (h: Harness) => h.sent.filter((s) => s.channel === 'focus').map((s) => s.payload)
+  const malformed = [
+    'nodeterm://focus',
+    'nodeterm://focus?node=',
+    'nodeterm://focus?node=a&x=1',
+    'nodeterm://focus?node=a&node=b',
+    'nodeterm://focus?node=%ZZ',
+    'nodeterm://focus?node=a%00b',
+    'nodeterm://focus?node=a%E2%80%AEb',
+    `nodeterm://focus?node=${'n'.repeat(201)}`
+  ]
+
+  it.each([true, false])('sends the node to the renderer and raises the window (links enabled: %s)', async (enabled) => {
+    const h = harness()
+    h.enabled = enabled
+    const svc = createOpenLinkService(h.deps)
+    svc.ready()
+    svc.receive('nodeterm://focus?node=n1')
+    await flush()
+    expect(h.sent).toEqual([{ channel: 'focus', payload: { nodeId: 'n1' } }])
+    expect(h.raised).toBe(1)
+    expect(notices(h)).toEqual([])
+    expect(requests(h)).toEqual([])
+  })
+
+  it.each([true, false])('sends a malformed focus link as a null node, without a notice (links enabled: %s)', async (enabled) => {
+    const h = harness()
+    h.enabled = enabled
+    h.clock.t = 0
+    const svc = createOpenLinkService(h.deps)
+    svc.ready()
+    for (const url of malformed) {
+      h.sent.length = 0
+      h.raised = 0
+      h.clock.t += 60_000
+      svc.receive(url)
+      await flush()
+      expect(h.sent, url).toEqual([{ channel: 'focus', payload: { nodeId: null } }])
+      expect(h.raised, url).toBe(1)
+    }
+  })
+
+  it('holds a focus link until the renderer is ready', async () => {
+    const h = harness()
+    const svc = createOpenLinkService(h.deps)
+    svc.receive('nodeterm://focus?node=n1')
+    await flush()
+    expect(h.sent).toEqual([])
+    expect(h.raised).toBe(0)
+    svc.ready()
+    await flush()
+    expect(focuses(h)).toEqual([{ nodeId: 'n1' }])
+    expect(h.raised).toBe(1)
+  })
+
+  it('counts focus links in the 5-a-minute limit: the 6th is dropped with the existing notice and no raise', async () => {
+    const h = harness()
+    const svc = createOpenLinkService(h.deps)
+    svc.ready()
+    for (let i = 0; i < 6; i++) svc.receive(`nodeterm://focus?node=n${i}`)
+    await flush()
+    expect(focuses(h)).toEqual([0, 1, 2, 3, 4].map((i) => ({ nodeId: `n${i}` })))
+    expect(h.raised).toBe(5)
+    expect(notices(h).filter((t) => t.includes('Too many'))).toHaveLength(1)
+  })
+})
+
 describe('open-link service: validation', () => {
   it('refuses a cwd that is missing or a file', async () => {
     const h = harness()

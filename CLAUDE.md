@@ -10095,7 +10095,7 @@ approves every link in a confirm sheet. Spec + as-built decisions:
 - **Behind a flag, OFF by default** (`settings.allowOpenLinks`, Settings → Behavior "Allow
   nodeterm:// links"). Main reads it on every link and again on accept; off, a link is not even
   parsed — one notice says where to turn it on. The scheme is still registered, so the notice is
-  what a click meets.
+  what a click meets. **`focus` is the exception**: it creates nothing, so it works with the flag off.
 - **The parser refuses, never drops**: unknown/duplicate params, over-cap values, relative paths,
   controls. No canvas-control power flags exist here; `source` is display-only.
 - **Paths are stat'ed before the sheet, so a path may not reach another machine.** A POSIX-form
@@ -10124,6 +10124,11 @@ approves every link in a confirm sheet. Spec + as-built decisions:
   that first second and untouched — after that it is dropped (reading fires no event). An accepted
   link waiting for its project to load is dropped after 30 s, never created later.
 - `pair`/`join` links open the existing code prompt pre-filled; never auto-connect.
+- `nodeterm://focus?node=<id>` (only `node`, same id rule as `project`) raises the window and does
+  what a notification click does (`travelToNode`), no confirm. Main checks it before the flag and
+  sends a malformed one as `{ nodeId: null }`; the renderer holds it until the workspace loads,
+  decides with `linkFocusAction` (`lib/presenceTravel`) and shows "Node not found." for a malformed
+  or unknown node. Counts in the 5-a-minute limit.
 - Desktop only. Server Edition stub is inert; `open-link:` is a host-only prefix. A dev run registers
   the scheme only with `NODETERM_DEV_PROTOCOL=1`. An `NT_MULTI` sandbox takes links (argv,
   `second-instance`, `open -a <Electron.app> 'nodeterm://…'`) only with that variable and never

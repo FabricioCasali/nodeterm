@@ -151,6 +151,34 @@ describe('parseNodetermLink — pair / join', () => {
   })
 })
 
+describe('parseNodetermLink — focus', () => {
+  it('parses a focus link to the node id', () => {
+    const expected = { ok: true, link: { kind: 'focus', nodeId: 'term-abc' } }
+    expect(parseNodetermLink('nodeterm://focus?node=term-abc')).toEqual(expected)
+    expect(parseNodetermLink('nodeterm://FOCUS?node=term-abc')).toEqual(expected)
+    expect(parseNodetermLink('nodeterm://focus/?node=term-abc')).toEqual(expected)
+  })
+
+  it.each([
+    ['nodeterm://focus'],
+    ['nodeterm://focus?node='],
+    ['nodeterm://focus?node=a&x=1'],
+    ['nodeterm://focus?node=a&node=b'],
+    ['nodeterm://focus?node=%ZZ'],
+    ['nodeterm://focus?node=a%00b'],
+    ['nodeterm://focus?node=a%E2%80%AEb'],
+    [`nodeterm://focus?node=${'n'.repeat(201)}`]
+  ])('refuses %s as a focus link', (url) => {
+    const r = parseNodetermLink(url)
+    expect(r.ok).toBe(false)
+    expect(r).toMatchObject({ ok: false, focus: true, reason: expect.any(String) })
+  })
+
+  it('a refusal of an unknown host carries no focus flag', () => {
+    expect(parseNodetermLink('nodeterm://delete?all=1')).not.toHaveProperty('focus')
+  })
+})
+
 describe('isAcceptableAbsolutePath', () => {
   it.each([
     ['/a/b', true],

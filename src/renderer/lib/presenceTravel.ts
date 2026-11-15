@@ -65,3 +65,22 @@ export function nodeTravel(
   if (!owner) return { kind: 'none' }
   return projectTravel(projects, activeProjectId, owner.id)
 }
+
+/** What a `nodeterm://focus?node=<id>` link does once it reaches the canvas:
+ *  - `not-found`    — malformed link, or a node no project has (or the landed active canvas lost it);
+ *  - `wait-landing` — the active project owns it but has not landed yet: let the landing focus it;
+ *  - `travel`       — go there like a notification click (`travelToNode`). */
+export function linkFocusAction(
+  projects: readonly TravelProject[],
+  activeProjectId: string,
+  nodeId: string | null,
+  state: { liveOnCanvas: boolean; activeLanded: boolean }
+): 'not-found' | 'wait-landing' | 'travel' {
+  if (nodeId === null) return 'not-found'
+  if (state.liveOnCanvas) return 'travel'
+  const owner = nodeOwner(projects, nodeId)
+  if (!owner) return 'not-found'
+  // The store copy of the active project can still list a node deleted from the live canvas.
+  if (owner.id === activeProjectId) return state.activeLanded ? 'not-found' : 'wait-landing'
+  return 'travel'
+}
