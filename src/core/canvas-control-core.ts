@@ -17,7 +17,7 @@ import { NODE_TOKEN_READ_SH } from './agents/node-token-sh'
 import { AGENT_CONFIG, AGENT_HOOK_TARGETS, BUILTIN_AGENT_IDS, MODEL_SWITCH_CAPABLE } from '@shared/agents/config'
 import { shimCommand, shimFence, windowsShimNoteLines, type ShimDialect } from '@shared/agents/shim-invocation'
 import { RETRYABLE } from './agents/agent-message-decide'
-import { FANOUT_PER_TURN, PAIR_MIN_INTERVAL_MS } from './agents/agent-message-flow'
+import { FANOUT_PER_TURN, FANOUT_WINDOW_MS, PAIR_MIN_INTERVAL_MS } from './agents/agent-message-flow'
 import { BROWSER_RETRYABLE, BROWSER_OUTCOME_LABEL } from './browser-outcomes'
 import { BROWSER_FLAGS, BROWSER_KEYS, BROWSER_TIMEOUT_DEFAULT_MS, BROWSER_TIMEOUT_MAX_MS } from './browser-verb'
 import { nodeColorChoices } from '@shared/node-colors'
@@ -69,7 +69,8 @@ function messagingGuidanceLines(): string[] {
     `- Worth retrying, after the wait the reply names: ${yes.join(', ')}.`,
     `- NOT worth retrying — the cause will not clear on its own: ${no.join(', ')}.`,
     `Budgets: one message per sender→target pair per ${Math.round(PAIR_MIN_INTERVAL_MS / 1000)}s, and at`,
-    `most ${FANOUT_PER_TURN} deliveries per turn.`
+    `most ${FANOUT_PER_TURN} deliveries per turn and per ${Math.round(FANOUT_WINDOW_MS / 1000)}s window — a rateLimited reply`,
+    'names the exact wait.'
   ]
 }
 

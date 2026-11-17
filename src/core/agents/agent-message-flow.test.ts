@@ -2,8 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import {
   PAIR_MIN_INTERVAL_MS,
   FANOUT_PER_TURN,
-  FANOUT_RETRY_AFTER_MS,
-  TURN_STALE_MS,
+  FANOUT_WINDOW_MS,
   checkFanOut,
   checkFlowLimits,
   checkPairRate,
@@ -120,18 +119,19 @@ describe('the per-pair rate limit', () => {
 })
 
 describe('the per-turn fan-out cap', () => {
-  it('passes FANOUT_PER_TURN deliveries in one turn and refuses the next', () => {
+  it('passes FANOUT_PER_TURN deliveries in one turn and refuses the next with the real wait', () => {
     // Four DIFFERENT targets, so nothing here can be the per-pair limiter firing.
     for (let i = 0; i < FANOUT_PER_TURN; i++) {
       expect(wait(checkFanOut('a', T0 + i)), `send ${i + 1} of the turn`).toBeNull()
       noteSent('a', `dst-${i}`, T0 + i)
     }
-    expect(wait(checkFanOut('a', T0 + FANOUT_PER_TURN))).toBe(FANOUT_RETRY_AFTER_MS)
+    // The oldest send leaves the window at T0 + FANOUT_WINDOW_MS.
+    expect(wait(checkFanOut('a', T0 + FANOUT_PER_TURN))).toBe(FANOUT_WINDOW_MS - FANOUT_PER_TURN)
   })
 
   it("resets on the SOURCE's own newTurn", () => {
     for (let i = 0; i < FANOUT_PER_TURN; i++) noteSent('a', `dst-${i}`, T0 + i)
-    expect(wait(checkFanOut('a', T0 + 10))).toBe(FANOUT_RETRY_AFTER_MS)
+    expect(wait(checkFanOut('a', T0 + 10))).toBe(FANOUT_WINDOW_MS - 10)
     noteNewTurn('a')
     expect(wait(checkFanOut('a', T0 + 10))).toBeNull()
   })
@@ -142,7 +142,7 @@ describe('the per-turn fan-out cap', () => {
     for (let i = 0; i < FANOUT_PER_TURN; i++) noteSent('a', `dst-${i}`, T0 + i)
     noteNewTurn('b')
     noteNewTurn('dst-0')
-    expect(wait(checkFanOut('a', T0 + 10))).toBe(FANOUT_RETRY_AFTER_MS)
+    expect(wait(checkFanOut('a', T0 + 10))).toBe(FANOUT_WINDOW_MS - 10)
   })
 
   it('a tool-event burst does not reset it — nothing but a newTurn does', () => {
@@ -150,35 +150,66 @@ describe('the per-turn fan-out cap', () => {
     // working cycle happens many times inside one turn. This module is given no state signal at
     // all, so the assertion is that everything else it accepts leaves the budget standing.
     for (let i = 0; i < FANOUT_PER_TURN; i++) noteSent('a', `dst-${i}`, T0 + i)
-    for (let t = 1; t < 60; t++) {
-      checkFanOut('a', T0 + t * 1000)
-      checkPairRate('a', 'dst-0', T0 + t * 1000)
+    const last = T0 + FANOUT_WINDOW_MS - 1000
+    for (let t = T0 + 1000; t <= last; t += 1000) {
+      checkFanOut('a', t)
+      checkPairRate('a', 'dst-0', t)
       noteNewTurn('someone-else')
     }
-    // Still inside the same turn (well under TURN_STALE_MS), still capped.
-    expect(wait(checkFanOut('a', T0 + 60_000))).toBe(FANOUT_RETRY_AFTER_MS)
+    // Still inside the window, still capped.
+    expect(wait(checkFanOut('a', last))).toBe(1000)
   })
 
   it('the budget is per SENDER: one node using it up does not silence another', () => {
     for (let i = 0; i < FANOUT_PER_TURN; i++) noteSent('a', `dst-${i}`, T0 + i)
-    expect(wait(checkFanOut('a', T0 + 10))).toBe(FANOUT_RETRY_AFTER_MS)
+    expect(wait(checkFanOut('a', T0 + 10))).toBe(FANOUT_WINDOW_MS - 10)
     expect(wait(checkFanOut('b', T0 + 10))).toBeNull()
   })
 
-  it('expires on its own if the turn signal never arrives — the stuck-limiter backstop', () => {
-    // A shell that never wires `noteNewTurn` would otherwise silence every sender after four
-    // messages, for the rest of the run, with no way to wait it out.
+  it('refills by the clock without a newTurn: the reported wait is exactly when a slot frees', () => {
+    // A sender with no turns (a script running under its parent's identity) would otherwise be
+    // silent until a newTurn that never comes.
     for (let i = 0; i < FANOUT_PER_TURN; i++) noteSent('a', `dst-${i}`, T0 + i)
-    const lastSend = T0 + FANOUT_PER_TURN - 1
-    expect(wait(checkFanOut('a', lastSend + TURN_STALE_MS - 1))).toBe(FANOUT_RETRY_AFTER_MS)
-    expect(wait(checkFanOut('a', lastSend + TURN_STALE_MS))).toBeNull()
+    const w = wait(checkFanOut('a', T0 + 100)) as number
+    expect(wait(checkFanOut('a', T0 + 100 + w - 1))).toBe(1)
+    expect(wait(checkFanOut('a', T0 + 100 + w))).toBeNull()
+    // One slot freed, not the whole budget: the next refusal waits for the second-oldest send.
+    noteSent('a', 'dst-x', T0 + 100 + w)
+    expect(wait(checkFanOut('a', T0 + 100 + w))).toBe(1)
   })
 
-  it('the backstop measures the LAST send, not the first — a slow turn is still capped', () => {
-    noteSent('a', 'dst-0', T0)
-    for (let i = 1; i < FANOUT_PER_TURN; i++) noteSent('a', `dst-${i}`, T0 + i * (TURN_STALE_MS - 1))
-    const last = T0 + (FANOUT_PER_TURN - 1) * (TURN_STALE_MS - 1)
-    expect(wait(checkFanOut('a', last + 1))).toBe(FANOUT_RETRY_AFTER_MS)
+  it('a batch of 2×FANOUT_PER_TURN to distinct targets, obeying retryAfterMs, ends within one window', () => {
+    let now = T0
+    let refusals = 0
+    for (let i = 0; i < 2 * FANOUT_PER_TURN; i++) {
+      for (;;) {
+        const r = reserveFlow('central', `card-${i}`, now)
+        if (r.ok) {
+          noteSent('central', `card-${i}`, now)
+          r.release()
+          break
+        }
+        refusals++
+        now += r.outcome.retryAfterMs
+      }
+    }
+    expect(now - T0).toBeLessThanOrEqual(FANOUT_WINDOW_MS)
+    // Every wait was exact, so each refusal was followed by a delivery: no wasted retries.
+    expect(refusals).toBeLessThanOrEqual(FANOUT_PER_TURN)
+  })
+
+  it('retryAfterMs is never zero, never negative, never longer than one window', () => {
+    for (let i = 0; i < FANOUT_PER_TURN; i++) noteSent('a', `dst-${i}`, T0 + i * 1000)
+    for (let t = T0 + 3000; t < T0 + FANOUT_WINDOW_MS; t += 250) {
+      const w = wait(checkFanOut('a', t))
+      expect(w).toBeGreaterThan(0)
+      expect(w).toBeLessThanOrEqual(FANOUT_WINDOW_MS)
+    }
+    // Held reservations count too, and theirs is a full window.
+    resetMessageFlow()
+    for (let i = 0; i < FANOUT_PER_TURN; i++) reserveFlow('h', `t${i}`, T0)
+    const over = reserveFlow('h', 'tx', T0)
+    expect(over.ok ? null : over.outcome.retryAfterMs).toBe(FANOUT_WINDOW_MS)
   })
 })
 
@@ -196,7 +227,7 @@ describe('the refusals are the union member, and they refuse for real', () => {
       target: { state: 'done', updatedAt: T0, stateVerified: true, clientRevision: MANAGED_SCRIPT_REVISION },
       retryAfterMs: (v as { retryAfterMs: number }).retryAfterMs
     })
-    expect(outcome).toEqual({ kind: 'rateLimited', retryAfterMs: FANOUT_RETRY_AFTER_MS })
+    expect(outcome).toEqual({ kind: 'rateLimited', retryAfterMs: FANOUT_WINDOW_MS - 10 })
     expect(RETRYABLE.rateLimited).toBe(true)
   })
 
@@ -232,26 +263,25 @@ describe('checkFlowLimits — both budgets in one call', () => {
     expect(checkFlowLimits('a', 'fresh-target', T0 + 10)).toEqual({
       ok: false,
       limit: 'fan-out',
-      outcome: { kind: 'rateLimited', retryAfterMs: FANOUT_RETRY_AFTER_MS }
+      outcome: { kind: 'rateLimited', retryAfterMs: FANOUT_WINDOW_MS - 10 }
     })
   })
 
-  it('reports the FAN-OUT cap when both refuse — its wait is never the shorter one', () => {
-    for (let i = 0; i < FANOUT_PER_TURN; i++) noteSent('a', `dst-${i}`, T0 + i)
-    // dst-0's pair window has 2 ms left; the fan-out floor is the whole interval. Reporting the
-    // smaller of two live limits would invite a retry that is already known to fail.
-    const nearlyOpen = T0 + PAIR_MIN_INTERVAL_MS - 2
-    expect(checkFlowLimits('a', 'dst-0', nearlyOpen)).toEqual({
+  it('reports the LONGER wait when both refuse — the shorter retry is already known to fail', () => {
+    // dst-0 is written LAST, so its pair window outlasts the fan-out slot freed by dst-1.
+    for (let i = 1; i < FANOUT_PER_TURN; i++) noteSent('a', `dst-${i}`, T0 + i - 1)
+    noteSent('a', 'dst-0', T0 + 100)
+    expect(checkFlowLimits('a', 'dst-0', T0 + 200)).toEqual({
+      ok: false,
+      limit: 'pair',
+      outcome: { kind: 'rateLimited', retryAfterMs: PAIR_MIN_INTERVAL_MS - 100 }
+    })
+    // …and a fresh target only waits for the fan-out slot.
+    expect(checkFlowLimits('a', 'fresh', T0 + 200)).toEqual({
       ok: false,
       limit: 'fan-out',
-      outcome: { kind: 'rateLimited', retryAfterMs: FANOUT_RETRY_AFTER_MS }
+      outcome: { kind: 'rateLimited', retryAfterMs: FANOUT_WINDOW_MS - 200 }
     })
-  })
-
-  it('and the precedence is only sound while the fan-out floor is the longer wait', () => {
-    // The invariant behind the branch above, pinned so that changing either constant fails here
-    // rather than silently telling a caller to come back before it can be served.
-    expect(FANOUT_RETRY_AFTER_MS).toBeGreaterThanOrEqual(PAIR_MIN_INTERVAL_MS)
   })
 })
 
@@ -272,13 +302,13 @@ describe('eviction — the entries go away, not just the verdicts', () => {
     expect(flowStats().pairs).toBe(1)
   })
 
-  it('drops a sender budget once it goes stale, and on a newTurn', () => {
+  it('drops a sender budget once its sends leave the window, and on a newTurn', () => {
     noteSent('a', 'b', T0)
     expect(flowStats().senders).toBe(1)
     noteNewTurn('a')
     expect(flowStats().senders).toBe(0)
     noteSent('a', 'b', T0)
-    checkFanOut('z', T0 + TURN_STALE_MS)
+    checkFanOut('z', T0 + FANOUT_WINDOW_MS)
     expect(flowStats().senders).toBe(0)
   })
 
@@ -300,7 +330,7 @@ describe('eviction — the entries go away, not just the verdicts', () => {
     // NaN (which `decidePreProbe` reads as "no limit", so it fails open) while the fan-out cap
     // keeps returning a real number forever, silencing the sender for the rest of the run.
     for (let i = 0; i < FANOUT_PER_TURN; i++) noteSent('a', `dst-${i}`, T0 + i)
-    expect(wait(checkFanOut('a', T0 + 10))).toBe(FANOUT_RETRY_AFTER_MS)
+    expect(wait(checkFanOut('a', T0 + 10))).toBe(FANOUT_WINDOW_MS - 10)
     expect(wait(checkFanOut('a', Number.NaN))).toBeNull()
     expect(flowStats()).toEqual({ pairs: 0, senders: 0 })
     // …and the budget is genuinely released rather than merely reported open once.
@@ -309,7 +339,7 @@ describe('eviction — the entries go away, not just the verdicts', () => {
   })
 
   it('an INFINITE reading is safe too, though not because of that guard', () => {
-    // Measured, not assumed: +Infinity is dropped by the staleness arm and -Infinity by the future
+    // Measured, not assumed: +Infinity is dropped by the window arm and -Infinity by the future
     // arm, so swapping `!Number.isFinite` for `Number.isNaN` is an EQUIVALENT mutation. NaN is the
     // one value both comparisons are false for, which is what the previous test pins.
     noteSent('a', 'b', T0)
@@ -434,7 +464,7 @@ describe('reserveFlow — check + provisional hold, atomically', () => {
     expect(over.ok).toBe(false)
     if (!over.ok) {
       expect(over.limit).toBe('fan-out')
-      expect(over.outcome).toEqual({ kind: 'rateLimited', retryAfterMs: FANOUT_RETRY_AFTER_MS })
+      expect(over.outcome).toEqual({ kind: 'rateLimited', retryAfterMs: FANOUT_WINDOW_MS })
     }
     for (const r of held) r.release()
   })

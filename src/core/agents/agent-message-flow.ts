@@ -42,7 +42,7 @@ import type { AgentMessageOutcome } from './agent-message-decide'
  *   future, a NON-FINITE clock reading drops everything (every comparison is false for `NaN`, which
  *   would otherwise make an entry immortal — and would silence the fan-out budget while the pair
  *   budget failed open, the worst of both), and a fan-out budget whose reset signal never arrives
- *   expires on its own after `TURN_STALE_MS`.
+ *   drains on its own, one send per `FANOUT_WINDOW_MS`.
  *
  * Nothing here reads the clock, the filesystem or a socket; `now` is injected exactly as it is in
  * `decideDelivery`, so the whole thing is testable without fake timers.
@@ -51,42 +51,23 @@ import type { AgentMessageOutcome } from './agent-message-decide'
 /** #98's 10 s, kept: the same number, now enforced. */
 export const PAIR_MIN_INTERVAL_MS = 10_000
 
-/** How many DIFFERENT deliveries one sender may make inside a single turn. */
+/** How many DIFFERENT deliveries one sender may make in a burst: inside one turn AND inside one
+ *  `FANOUT_WINDOW_MS`. */
 export const FANOUT_PER_TURN = 4
 
 /**
- * The fan-out backstop, and the reason it exists is the failure direction above.
+ * The fan-out budget also refills by the clock: a send stops counting once it is this old.
  *
- * The cap's real reset is the sender's own `newTurn`. If that signal never arrives — a shell that
- * forgot to wire `noteNewTurn`, a normalizer that stopped flagging turn starts — the counter would
- * stand forever and the sender would be silent for the rest of the run, which is precisely the
- * stuck-limiter failure. So a budget that has seen no send for this long is treated as belonging to
- * a turn that is over.
+ * The turn reset alone starves a sender that has no turns — a script running under an agent's
+ * identity (the team's dispatch loop runs as its parent node) spends the parent's four and then
+ * waits for a `newTurn` that will not come while it works. A sliding window gives every sender a
+ * steady `FANOUT_PER_TURN` per window, so the wait is bounded and computable.
  *
- * It does not make the cap leaky: a burst is by definition sends seconds apart, and this window
- * never elapses inside one. The worst case it admits is four extra messages per five idle minutes
- * per sender — and each of those still has to clear the per-pair window.
+ * Equal to the pair interval: a burst to distinct targets is paced exactly like repeated writes to
+ * one target already are, so a sender in a loop gains no more reach than the pair limit grants it.
+ * The same window is the stuck-limiter backstop — an entry with no send inside it is gone.
  */
-export const TURN_STALE_MS = 5 * 60_000
-
-/**
- * What a fan-out refusal reports as `retryAfterMs`, and it is a FLOOR, not a promise.
- *
- * The budget resets on a turn boundary, which is not a clock event, so no number here is exactly
- * right. The two obviously-wrong choices are worse than a floor: `0` would be read as "no limit at
- * all" by `decidePreProbe`, whose refusal is `retryAfterMs > 0` — the cap would silently stop
- * existing — and something enormous would tell a caller to abandon a budget that clears the moment
- * its turn ends. The per-pair interval is the honest lower bound: nothing this sender does can land
- * sooner than that anyway.
- *
- * KNOWN COST, stated so it is not a surprise: in the degenerate case where `noteNewTurn` never
- * arrives, a caller that obeys this floor exactly spends `TURN_STALE_MS / FANOUT_RETRY_AFTER_MS`
- * = 30 refused attempts before the staleness backstop opens the budget. Those 30 are cheap for the
- * host (pre-probe, no pane, no ssh) and expensive for the caller (30 tool calls). The alternative —
- * reporting the true wait — is not available: the number does not exist while the reset is a turn
- * boundary rather than a clock event.
- */
-export const FANOUT_RETRY_AFTER_MS = PAIR_MIN_INTERVAL_MS
+export const FANOUT_WINDOW_MS = PAIR_MIN_INTERVAL_MS
 
 /** The `rateLimited` member of the delivery outcome union — reused, never re-declared. */
 export type RateLimited = Extract<AgentMessageOutcome, { kind: 'rateLimited' }>
@@ -153,18 +134,17 @@ const pairLastSentAt = new Map<string, number>()
  *   mid-turn tool event"*). A cap that resets mid-turn is not a cap.
  * - **The session id** spans an entire session — hours, hundreds of turns. A cap keyed on it never
  *   resets in practice: four messages per session is a permanent block wearing a budget's clothes.
- * - **Wall-clock windows** refill in the middle of a long turn and refuse at the start of a short
- *   one, which is the same objection as the first, plus arbitrariness.
+ * - **A wall-clock window alone** refills in the middle of a long turn and refuses at the start of
+ *   a short one. It is kept as the SECOND exit, not the definition of a turn: it is what lets a
+ *   sender without turns keep going (see `FANOUT_WINDOW_MS`).
  *
- * So the entry IS the turn: it is created by the turn's first send, incremented by each subsequent
+ * So the entry IS the turn: it is created by the turn's first send, extended by each subsequent
  * one, and destroyed by `noteNewTurn(src)` — the same edge `normalize.ts` already flags for exactly
- * this purpose. `TURN_STALE_MS` is its only other exit, and that exit exists to fail open.
+ * this purpose. Each send also leaves the count once it is `FANOUT_WINDOW_MS` old.
  */
 interface TurnBudget {
-  /** Sends recorded in the current turn. */
-  sent: number
-  /** When the last of them was recorded — the staleness backstop's input, nothing else. */
-  lastSentAt: number
+  /** When each counted send was recorded, oldest first. Its length is the budget spent. */
+  sentAt: number[]
 }
 const senderTurns = new Map<string, TurnBudget>()
 
@@ -187,13 +167,13 @@ const senderTurns = new Map<string, TurnBudget>()
  * below is false for `NaN`, so without this line an entry becomes immortal — and the two budgets
  * then fail in OPPOSITE directions, which is the worst of both. The pair limiter fails open by
  * accident (its `retryAfterMs` is `NaN`, and `decidePreProbe` refuses on `retryAfterMs > 0`, which
- * `NaN` is not), while a fan-out budget already at the cap returns a real `FANOUT_RETRY_AFTER_MS`
+ * `NaN` is not), while a fan-out budget already at the cap returns a real wait
  * forever — a permanently silent sender that only a `newTurn` can rescue, which is exactly the
  * failure this module claims not to have. Unreachable while `now` is `Date.now()`; the guard costs
  * one comparison and makes the claim true instead of true-by-luck.
  *
  * NaN is the only value this line is load-bearing for, and the test says so: `+Infinity` is already
- * dropped by the staleness arm and `-Infinity` by the future arm below. It is written as
+ * dropped by the window arm and `-Infinity` by the future arm below. It is written as
  * `!Number.isFinite` rather than `Number.isNaN` because that is the intent — a clock reading that
  * is not a position on the number line — and because a mutation swapping the two is EQUIVALENT
  * rather than a defect the sweep would let through.
@@ -206,8 +186,27 @@ function sweep(now: number): void {
   }
   for (const [key, at] of pairLastSentAt)
     if (at > now || now - at >= PAIR_MIN_INTERVAL_MS) pairLastSentAt.delete(key)
-  for (const [id, b] of senderTurns)
-    if (b.lastSentAt > now || now - b.lastSentAt >= TURN_STALE_MS) senderTurns.delete(id)
+  for (const [id, b] of senderTurns) {
+    if (b.sentAt.some((at) => at > now)) {
+      senderTurns.delete(id)
+      continue
+    }
+    while (b.sentAt.length > 0 && now - b.sentAt[0] >= FANOUT_WINDOW_MS) b.sentAt.shift()
+    if (b.sentAt.length === 0) senderTurns.delete(id)
+  }
+}
+
+/**
+ * The real wait until `held` (in-flight reservations) plus the counted sends leave room for one
+ * more, or `null` when there is room now. Swept entries are all in `(now - window, now]`, so the
+ * answer is in `(0, FANOUT_WINDOW_MS]`: never zero (which `decidePreProbe` would read as "no limit")
+ * and never longer than a window. A hold has not landed yet, so its slot frees a full window out.
+ */
+function fanOutWait(key: string, held: number, now: number): number | null {
+  const sentAt = senderTurns.get(key)?.sentAt ?? []
+  const over = sentAt.length + held - FANOUT_PER_TURN
+  if (over < 0) return null
+  return over < sentAt.length ? sentAt[over] + FANOUT_WINDOW_MS - now : FANOUT_WINDOW_MS
 }
 
 /**
@@ -229,9 +228,8 @@ export function checkPairRate(src: string, dst: string, now: number): FlowVerdic
 /** Has `src` used up this turn's fan-out budget? Pure read, same contract as `checkPairRate`. */
 export function checkFanOut(src: string, now: number): FlowVerdict {
   sweep(now)
-  const budget = senderTurns.get(src)
-  if (!budget || budget.sent < FANOUT_PER_TURN) return { ok: true }
-  return { kind: 'rateLimited', retryAfterMs: FANOUT_RETRY_AFTER_MS }
+  const w = fanOutWait(src, 0, now)
+  return w === null ? { ok: true } : { kind: 'rateLimited', retryAfterMs: w }
 }
 
 /**
@@ -240,18 +238,20 @@ export function checkFanOut(src: string, now: number): FlowVerdict {
  * A caller that consults the pair limit and forgets the fan-out cap has shipped half a feature that
  * looks whole, and nothing would fail.
  *
- * When BOTH refuse, the fan-out cap is the one reported, because its wait is never the shorter of
- * the two: a pair remainder is at most `PAIR_MIN_INTERVAL_MS`, which is what the fan-out floor is.
- * Reporting the smaller of two live limits would invite a retry already known to fail. The test
- * pins that relationship between the constants, so weakening either one fails there rather than
- * quietly turning this precedence into the wrong answer.
+ * When BOTH refuse, the LONGER wait is reported (the fan-out cap on a tie): reporting the smaller
+ * of two live limits would invite a retry already known to fail.
  */
 export function checkFlowLimits(src: string, dst: string, now: number): FlowCheck {
   const pair = checkPairRate(src, dst, now)
   const fanOut = checkFanOut(src, now)
-  if (!('ok' in fanOut)) return { ok: false, limit: 'fan-out', outcome: fanOut }
-  if (!('ok' in pair)) return { ok: false, limit: 'pair', outcome: pair }
-  return { ok: true }
+  return refuseLonger('ok' in fanOut ? null : fanOut.retryAfterMs, 'ok' in pair ? null : pair.retryAfterMs)
+}
+
+function refuseLonger(fanOut: number | null, pair: number | null): FlowCheck {
+  if (fanOut === null && pair === null) return { ok: true }
+  const limit: FlowLimit = pair === null || (fanOut !== null && fanOut >= pair) ? 'fan-out' : 'pair'
+  const retryAfterMs = (limit === 'fan-out' ? fanOut : pair) as number
+  return { ok: false, limit, outcome: { kind: 'rateLimited', retryAfterMs } }
 }
 
 /**
@@ -285,9 +285,9 @@ export interface FlowReservation {
  * Check BOTH budgets and take a provisional hold in one synchronous step.
  *
  * A refused reservation reports the same `rateLimited` shape `checkFlowLimits` does. A pair held
- * by an in-flight delivery reports the full `PAIR_MIN_INTERVAL_MS` — a floor, same reasoning as
- * `FANOUT_RETRY_AFTER_MS`: if the in-flight send lands, that is the real wait; if it fails, the
- * caller retries early and merely gets refused zero times instead of once.
+ * by an in-flight delivery reports the full `PAIR_MIN_INTERVAL_MS`, and an in-flight hold counts as
+ * a fan-out slot that frees a full `FANOUT_WINDOW_MS` out: if the in-flight send lands, that is the
+ * real wait; if it fails, the caller retries early and merely gets refused zero times instead of once.
  */
 export type FlowReserve = { ok: false; limit: FlowLimit; outcome: RateLimited } | FlowReservation
 
@@ -299,31 +299,13 @@ export type FlowReserve = { ok: false; limit: FlowLimit; outcome: RateLimited } 
  */
 export function reserveFlow(src: string, dst: string, now: number, fanOutKey: string = src): FlowReserve {
   sweep(now)
-  const sent = senderTurns.get(fanOutKey)?.sent ?? 0
   const pending = pendingBySender.get(fanOutKey) ?? 0
-  if (sent + pending >= FANOUT_PER_TURN) {
-    return {
-      ok: false,
-      limit: 'fan-out',
-      outcome: { kind: 'rateLimited', retryAfterMs: FANOUT_RETRY_AFTER_MS }
-    }
-  }
   const key = pairKey(src, dst)
   const last = pairLastSentAt.get(key)
-  if (last !== undefined) {
-    return {
-      ok: false,
-      limit: 'pair',
-      outcome: { kind: 'rateLimited', retryAfterMs: PAIR_MIN_INTERVAL_MS - (now - last) }
-    }
-  }
-  if (pendingPairs.has(key)) {
-    return {
-      ok: false,
-      limit: 'pair',
-      outcome: { kind: 'rateLimited', retryAfterMs: PAIR_MIN_INTERVAL_MS }
-    }
-  }
+  const pairWait =
+    last !== undefined ? PAIR_MIN_INTERVAL_MS - (now - last) : pendingPairs.has(key) ? PAIR_MIN_INTERVAL_MS : null
+  const verdict = refuseLonger(fanOutWait(fanOutKey, pending, now), pairWait)
+  if (!verdict.ok) return verdict
   pendingPairs.add(key)
   pendingBySender.set(fanOutKey, pending + 1)
   let released = false
@@ -354,12 +336,8 @@ export function noteSent(src: string, dst: string, now: number, fanOutKey: strin
   sweep(now)
   pairLastSentAt.set(pairKey(src, dst), now)
   const budget = senderTurns.get(fanOutKey)
-  if (budget) {
-    budget.sent += 1
-    budget.lastSentAt = now
-  } else {
-    senderTurns.set(fanOutKey, { sent: 1, lastSentAt: now })
-  }
+  if (budget) budget.sentAt.push(now)
+  else senderTurns.set(fanOutKey, { sentAt: [now] })
 }
 
 /**
