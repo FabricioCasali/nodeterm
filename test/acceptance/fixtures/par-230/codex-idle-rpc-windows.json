@@ -1,0 +1,59 @@
+{
+  "version": "0.169.0",
+  "pid": 125364,
+  "args": [
+    "app-server",
+    "--listen",
+    "stdio://"
+  ],
+  "startedAt": "2026-11-17T19:57:18.352Z",
+  "transport": "private child stdio",
+  "responses": [
+    {
+      "method": "initialize",
+      "userAgent": "par230_probe/0.169.0 (Windows 10.0.26300; x86_64) unknown (par230_probe; 1.0)"
+    },
+    {
+      "method": "account/read",
+      "accountPresent": false,
+      "requiresOpenaiAuth": true
+    },
+    {
+      "method": "thread/start",
+      "thread": {
+        "id": "01a1eb15-d3cd-75c1-b098-cf18281f2ee9",
+        "sessionId": "01a1eb15-d3cd-75c1-b098-cf18281f2ee9",
+        "status": {
+          "type": "idle"
+        },
+        "turns": []
+      }
+    },
+    {
+      "method": "thread/read",
+      "thread": {
+        "id": "01a1eb15-d3cd-75c1-b098-cf18281f2ee9",
+        "sessionId": "01a1eb15-d3cd-75c1-b098-cf18281f2ee9",
+        "status": {
+          "type": "idle"
+        },
+        "turns": []
+      }
+    }
+  ],
+  "notifications": [
+    {
+      "method": "thread/started",
+      "threadId": "01a1eb15-d3cd-75c1-b098-cf18281f2ee9",
+      "status": {
+        "type": "idle"
+      }
+    }
+  ],
+  "exit": {
+    "code": 0,
+    "signal": null,
+    "at": "2026-11-17T19:57:19.137Z"
+  },
+  "limitations": "Separate ephemeral app-server session; no TUI was attached to this thread. No turn/start was sent because account/read reported no account and requiresOpenaiAuth=true. idle proves only the thread status, not readiness to receive terminal input."
+}
