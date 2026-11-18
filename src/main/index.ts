@@ -200,7 +200,7 @@ import {
 import { answerHeldPermission, isStructuredTicket, type HeldPermissionIo } from '../core/agents/permission-decision'
 import type { AnswerPermissionPayload } from '../shared/agents/permission-answer'
 import { setMainWindow, getMainWindow, sendToMain, closeAction, createCrashReloadPolicy } from './main-window'
-import { createChildProcessGoneLog, createHangTracker, formatRenderProcessGone } from './process-health-log'
+import { createChildProcessGoneLog, createHangTracker, createHealthFileLog, formatRenderProcessGone } from './process-health-log'
 import { WINDOW_VISIBILITY_EVENTS, windowVisibilitySignal } from './window-visibility'
 import {
   MENU_ITEM_ID_CLOSE,
@@ -491,6 +491,7 @@ if (NT_MULTI && process.platform === 'darwin') app.commandLine.appendSwitch('use
 // .dispatch / .cast — see platform-electron.ts). `platform()` only exposes the CorePlatform half.
 const corePlatform = electronPlatform()
 initPlatform(corePlatform)
+createHealthFileLog(logBuffer, join(corePlatform.userDataDir, 'process-health.log'))
 
 const settingsStore = new SettingsStore()
 // ⌘M / ⌘W are registry commands (`node.toggleMarkdown` / `node.close`), so what the window

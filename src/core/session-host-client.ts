@@ -57,6 +57,7 @@ import { isTerminalReport } from './terminal-reports'
 import type { PreparedAgentLaunch } from './agent-launch'
 import type { HostImageStaging } from './session-host-runtime'
 import { sleep } from '../shared/sleep'
+import { createAttachExistingLog } from './attach-existing-log'
 
 export interface SessionSubscriber {
   onData(data: string): void
@@ -429,6 +430,7 @@ export class SessionHostClient {
    * later same-name attach, even after the old state has left `sessions`. */
   private readonly nameTails = new Map<string, Promise<void>>()
   private readonly sessionGenerations = new Map<string, string>()
+  private readonly attachExistingLine = createAttachExistingLog()
   /** Installed before the first destructive write so reconnect restoration cannot resurrect an
    * old generation whose kill reply may have been lost. */
   private readonly killReplayBarriers = new Set<string>()
@@ -1298,6 +1300,7 @@ export class SessionHostClient {
               applyReplay
             )
           } else {
+            this.logAttachExisting(state.name, 'reconnect', watchRestore)
             await this.requestOnSocket<AttachResult>(
               socket,
               watchRestore
@@ -1350,6 +1353,18 @@ export class SessionHostClient {
     }
   }
 
+  /** Main-side trace of each `attachExisting` sent; the `[pty]` tag puts it in process-health.log. */
+  private logAttachExisting(name: string, reason: string, watch: boolean): void {
+    const { info, warn } = this.attachExistingLine({
+      key: name,
+      reason,
+      facts: watch ? { watch: true } : undefined,
+      now: Date.now()
+    })
+    console.info(info)
+    if (warn) console.warn(warn)
+  }
+
   private async reconcileOnSocket(state: ClientSessionState, socket: net.Socket): Promise<void> {
     if (
       this.sessions.get(state.name) !== state ||
@@ -1373,6 +1388,7 @@ export class SessionHostClient {
     // viewer never keeps the owner's old size pinned (the host keeps the pty at the size it has).
     // A claim-carrying attach is the only way back up, so a watch-mode attachment never resizes.
     if (this.watchOnly(state) && !state.appliedWatch) {
+      this.logAttachExisting(state.name, 'watch-reconcile', true)
       await this.requestOnSocket(socket, {
         cmd: 'attachExisting',
         name: state.name,
@@ -1575,6 +1591,7 @@ export class SessionHostClient {
         const attempts = canRetryColdCreate ? 2 : 1
         for (let attempt = 0; attempt < attempts; attempt++) {
           try {
+            if (useWarmOnly && protocolVersion !== 1) this.logAttachExisting(name, 'warm-attach', watchAttach)
             response = useWarmOnly
               ? protocolVersion === 1
                 ? await this.request<AttachResult>({

@@ -13,6 +13,8 @@
 // 3D-API block "until restart", so anything that provokes more of them degrades the session).
 //
 // Electron-free on purpose (structural types only) so it unit-tests without an Electron runtime.
+import { promises as fsp } from 'fs'
+import type { LogRecord } from '../shared/types'
 
 export type HealthLevel = 'info' | 'warn'
 
@@ -109,4 +111,53 @@ export function createHangTracker(): HangTracker {
       since = null
     }
   }
+}
+
+/** Above this the mirror file is truncated before the next append (same rule as session-host.log). */
+export const HEALTH_LOG_MAX_BYTES = 512 * 1024
+
+/** The slice of `LogBuffer` the mirror reads. */
+export interface HealthLogSource {
+  onAppend(cb: () => void): () => void
+  since(seq: number): LogRecord[]
+}
+
+function mirrored(r: LogRecord): boolean {
+  return r.tag === 'process' || (r.tag === 'pty' && r.msg.startsWith('attach-existing'))
+}
+
+/**
+ * Mirror the `[process]` lines and the `[pty] attach-existing` lines of the ring to `file`, so a
+ * hang or a reattach burst survives the app being killed. Reads redacted records from the ring.
+ * Appends are async and chained, so order holds and the main thread never waits on the disk; an
+ * I/O failure drops that batch and never throws. Returns the unsubscribe and the pending chain.
+ */
+export function createHealthFileLog(
+  source: HealthLogSource,
+  file: string
+): { stop: () => void; flushed: () => Promise<void> } {
+  let lastSeq = 0
+  let chain: Promise<void> = Promise.resolve()
+  const drain = (): void => {
+    const fresh = source.since(lastSeq)
+    if (!fresh.length) return
+    lastSeq = fresh[fresh.length - 1].seq
+    const text = fresh
+      .filter(mirrored)
+      .map((r) => `${new Date(r.ts).toISOString()} ${r.level} [${r.tag}] ${r.msg}\n`)
+      .join('')
+    if (!text) return
+    chain = chain.then(async () => {
+      try {
+        const st = await fsp.stat(file).catch(() => null)
+        if (st && st.size > HEALTH_LOG_MAX_BYTES) await fsp.truncate(file, 0)
+        await fsp.appendFile(file, text, { mode: 0o600 })
+      } catch {
+        /* best-effort: a lost line must never break logging */
+      }
+    })
+  }
+  const stop = source.onAppend(drain)
+  drain() // lines logged before the mirror was wired (boot-time child-process-gone) are still in the ring
+  return { stop, flushed: () => chain }
 }
