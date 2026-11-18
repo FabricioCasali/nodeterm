@@ -1827,6 +1827,47 @@ describe('SessionHostClient confirmed kill barrier', () => {
     await expect(within(client.killSession('nt-uncertain-kill'))).resolves.toBeUndefined()
     expect(killRequests).toBe(3)
   })
+
+  it('retries a host-rejected kill on the same connection, leaving other sessions attached (PAR-241)', async () => {
+    const { userDataDir, paths } = createUserData()
+    const killConnections: number[] = []
+    let reattaches = 0
+    await serve(paths.endpoint, (request, socket, connection) => {
+      if (request.cmd === 'hello') {
+        socket.write(acceptedHello(request.id))
+      } else if (request.cmd === 'attach') {
+        socket.write(
+          encodeFrame({
+            id: request.id,
+            ok: true,
+            result: { fresh: true, generation: `generation-${request.name}` }
+          })
+        )
+      } else if (request.cmd === 'attachExisting') {
+        reattaches++
+        socket.write(
+          encodeFrame({ id: request.id, ok: true, result: { fresh: false, generation: `generation-${request.name}` } })
+        )
+      } else if (request.cmd === 'killSession') {
+        killConnections.push(connection)
+        // The host ANSWERED: the first attempt is refused, the retry is confirmed.
+        socket.write(
+          killConnections.length === 1
+            ? encodeFrame({ id: request.id, ok: false, error: 'session-host could not confirm terminal process termination' })
+            : encodeFrame({ id: request.id, ok: true, result: {} })
+        )
+      }
+    })
+
+    const client = new SessionHostClient({ userDataDir })
+    await within(client.attach('nt-bystander', spawnOptions(userDataDir), 1_000, subscriber()))
+    await within(client.attach('nt-closing', spawnOptions(userDataDir), 1_000, subscriber()))
+    await expect(within(client.killSession('nt-closing'))).resolves.toBeUndefined()
+
+    // Both attempts on the first connection, and the bystander was never made to reconnect.
+    expect(killConnections).toEqual([killConnections[0], killConnections[0]])
+    expect(reattaches).toBe(0)
+  })
 })
 
 describe('SessionHostClient request failures', () => {

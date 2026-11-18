@@ -41,7 +41,7 @@ import {
 import { HostSession } from './session'
 import { sendTextWhenSettled } from '../core/settled-text'
 import { paneCommand as readPaneCommand } from './process-tree'
-import { terminateWindowsProcessTree } from './windows-process-tree'
+import { rootGoneAfterFailedTreeKill, terminateWindowsProcessTree } from './windows-process-tree'
 import { terminatePaneOwner } from './terminate-owner'
 import { readWindowsConsoleOwner, setWindowsOwnerReadFailureLog } from './windows-pane-owner'
 import { publishSessionHostState } from './state-file'
@@ -58,7 +58,7 @@ import {
   retireSessionGeneration
 } from './generation-barrier'
 import { drainSessionHostTransport, writeSessionHostFrame } from './socket-flow'
-import { SessionHostSocketRequestQueue } from './socket-request-queue'
+import { SessionHostSocketRequestQueue, usesSessionLane } from './socket-request-queue'
 import { trySessionHostHello } from './hello-probe'
 import { killHostSession } from './kill-session'
 import { clampEmulatorScrollback } from '../shared/scrollback'
@@ -821,26 +821,37 @@ async function main(): Promise<void> {
     if (process.platform === 'win32') {
       // node-pty defers WindowsTerminal.kill() until first output. taskkill owns the process tree
       // independently, then endSession acknowledges only after the PID is confirmed absent.
-      void terminateWindowsProcessTree(session.proc.pid).then(
-        () => {
-          if (sessions.get(name) !== session || session.exited) return
-          try {
-            session.releaseWindowsPtyAfterExternalTreeKill()
-            // No manual endSession here. Closing the ConPTY handle must produce node-pty's real
-            // onExit, which is the proof that shell descendants *and* host-parented conhost are
-            // gone. If it never arrives, the client times out uncertain instead of receiving a
-            // false destructive acknowledgement.
-            void beginKillRetirement(session).catch(failOperation)
-          } catch (error) {
-            log(`ConPTY release failed name=${name}: ${String(error)}`)
-            failOperation(new Error('session-host could not confirm terminal process termination'))
-          }
-        },
-        (error) => {
-          log(`process-tree termination failed name=${name}: ${String(error)}`)
+      const rootPid = session.proc.pid
+      const retireAfterTreeKill = (): void => {
+        if (sessions.get(name) !== session || session.exited) return
+        try {
+          session.releaseWindowsPtyAfterExternalTreeKill()
+          // No manual endSession here. Closing the ConPTY handle must produce node-pty's real
+          // onExit, which is the proof that shell descendants *and* host-parented conhost are
+          // gone. If it never arrives, the client times out uncertain instead of receiving a
+          // false destructive acknowledgement.
+          void beginKillRetirement(session).catch(failOperation)
+        } catch (error) {
+          log(`ConPTY release failed name=${name}: ${String(error)}`)
           failOperation(new Error('session-host could not confirm terminal process termination'))
         }
-      )
+      }
+      void terminateWindowsProcessTree(rootPid).then(retireAfterTreeKill, async (error) => {
+        log(`process-tree termination failed name=${name}: ${String(error)}`)
+        // taskkill exits non-zero as soon as ONE pid of the tree vanished between its walk and its
+        // kill ("no running instance of the task") — the ordinary outcome for an agent CLI's tree,
+        // where killing a parent takes its children with it. Reporting that as a failed kill made
+        // every node close on Windows fail twice: the client retired its whole connection to retry,
+        // and main kept the dead session's local state behind an "unknown end" (PAR-241). The error
+        // is still never converted into success: with the root gone, the operation takes the same
+        // path a clean taskkill does and is acknowledged only by node-pty's real onExit.
+        if (await rootGoneAfterFailedTreeKill(rootPid)) {
+          log(`process-tree root gone after failed taskkill name=${name}; awaiting real exit`)
+          retireAfterTreeKill()
+        } else {
+          failOperation(new Error('session-host could not confirm terminal process termination'))
+        }
+      })
     } else {
       try {
         session.proc.kill()
@@ -1248,7 +1259,9 @@ async function main(): Promise<void> {
         // would throw `TypeError` here — post-auth, inside the data handler, caught only by the
         // process-level logger, silently dropping the rest of this chunk's frames. Skip it.
         if (typeof req !== 'object' || req === null) continue
-        if ('name' in req) void requestQueue.enqueue(req.name, () => dispatchAndRespond(req))
+        if ('name' in req && usesSessionLane(req.cmd)) {
+          void requestQueue.enqueue(req.name, () => dispatchAndRespond(req))
+        }
         else void dispatchAndRespond(req)
       }
     })
