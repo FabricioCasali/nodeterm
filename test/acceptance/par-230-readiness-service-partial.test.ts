@@ -10,6 +10,7 @@ import type { NormalizedAgentEvent } from '../../src/shared/agents/normalize'
 import type { ReceiptEvent } from '../../src/core/agents/agent-message'
 import { initPlatform, resetPlatformForTests } from '../../src/core/platform'
 import { fakePlatform } from '../../src/core/platform-fake'
+import { writeNodeTokenFile, resetNodeTokenFilesForTests } from '../../src/core/agents/node-token-files'
 import captured from '../../src/shared/agents/__fixtures__/claude/composer-capture.json'
 
 type Guard = { beforePaste(screen: string): boolean; beforeSubmit(screen: string): boolean }
@@ -18,8 +19,13 @@ const event = (over: Partial<NormalizedAgentEvent>): NormalizedAgentEvent => ({ 
 const inferred = () => reduceEntry(reduceEntry(undefined, event({ state: 'working', newTurn: true }), Date.now()), event({ state: 'done', idle: true }), Date.now())
 const queues: ReturnType<typeof createDeliveryQueue>[] = []
 
-beforeEach(() => { initPlatform(fakePlatform()); vi.useFakeTimers(); vi.setSystemTime(1_000_000); resetMessageFlow(); resetAgentMessageTraceForTests() })
-afterEach(() => { for (const queue of queues.splice(0)) queue.resetForTests(); vi.clearAllTimers(); vi.useRealTimers(); resetMessageFlow(); resetAgentMessageTraceForTests(); resetPlatformForTests() })
+beforeEach(() => {
+  initPlatform(fakePlatform())
+  resetNodeTokenFilesForTests()
+  expect(writeNodeTokenFile('worker', 'test-token')).toBe(true)
+  vi.useFakeTimers(); vi.setSystemTime(1_000_000); resetMessageFlow(); resetAgentMessageTraceForTests()
+})
+afterEach(() => { for (const queue of queues.splice(0)) queue.resetForTests(); vi.clearAllTimers(); vi.useRealTimers(); resetMessageFlow(); resetAgentMessageTraceForTests(); resetNodeTokenFilesForTests(); resetPlatformForTests() })
 
 function harness(change: Partial<MirrorEntry> | null = null) {
   let entry = inferred()

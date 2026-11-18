@@ -39,7 +39,7 @@ async function peer(options: { feature?: boolean; captureFeature?: boolean; capt
         let result: unknown
         if (req.cmd === 'hello') result = { protocolVersion: SESSION_HOST_PROTOCOL_VERSION, features: [...(options.captureFeature === false ? [] : ['captureVisible']), ...(options.feature === false ? [] : ['guardedMessageEnvelopeV1'])] }
         else if (req.cmd === 'messageOwnerV1') result = owner
-        else if (req.cmd === 'hasSession') result = { exists: true, generation: 'g' }
+        else if (req.cmd === 'hasSession') result = { exists: true, generation: 'peer-generation-v1' }
         else if (req.cmd === 'captureVisible') result = options.capture === null ? null : frame(options.capture ?? captured.screens.empty)
         else if (req.cmd === 'messageEnvelopePrepareV1') result = options.notPasted ? { kind: 'not-pasted' } : { kind: 'pasted', preparationId: 'peer-preparation', screen: options.pasted === null ? null : frame(options.pasted ?? captured.screens.draft) }
         else if (req.cmd === 'messageEnvelopeCommitV1') result = { submitted: options.submitted ?? true }
