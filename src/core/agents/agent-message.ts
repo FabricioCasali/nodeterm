@@ -498,21 +498,16 @@ export async function deliverAgentMessage(
     // subscription opened after that probe would miss it and report `stalled` for a message that
     // demonstrably landed. See `watchForReceipt`: that miss is what makes an LLM send it twice.
     const watch = watchForReceipt(req.targetNodeId, deps.subscribeEvents)
-    let pasteVeto = false
     const guard: EnvelopeGuard | undefined = recovery ? {
-      beforePaste: (screen) => {
-        const allowed = sameProof() && claudeComposerEmpty(screen)
-        pasteVeto = !allowed
-        return allowed
-      },
+      beforePaste: (screen) => sameProof() && claudeComposerEmpty(screen),
       beforeSubmit: (screen) => sameProof() && claudeComposerMatches(screen, payload)
     } : undefined
     const wrote = guard
       ? await deps.sendEnvelope(req.targetNodeId, payload, owner, guard)
       : await deps.sendEnvelope(req.targetNodeId, payload, owner)
-    if (!wrote && pasteVeto) {
+    if (!wrote && guard) {
       watch.cancel()
-      return refuse({ kind: 'targetNotIdleUnknown', reason: 'readiness changed before paste' })
+      return refuse({ kind: 'targetNotIdleUnknown', reason: 'readiness not confirmed before paste' })
     }
     // A dialog owned the keyboard and nothing was written: the pane waits on a person, which the
     // idle gate already reports as `targetBusy` / `blocked` (retryable, queued when queueing is on).
