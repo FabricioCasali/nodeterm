@@ -92,10 +92,17 @@ describe('buildRealApi: workspace', () => {
 
 describe('buildRealApi: visible capture', () => {
   it('forwards the visible-only read without converting backend failure into an empty screen', async () => {
-    const c = fakeClient()
+    const calls: ReturnType<typeof fakeClient>['calls'] = []
+    let result: unknown = { visibleCapture: true, screen: 'visible' }
+    const c = { ...fakeClient(), calls, request: (method: string, ...args: unknown[]) => {
+      calls.push({ kind: 'request', method, args })
+      return Promise.resolve(result)
+    } }
     const api = buildRealApi(c as never)
-    expect(await api.pty.capture('node', false, true)).toBe('R')
+    expect(await api.pty.capture('node', false, true)).toBe('visible')
     expect(c.calls).toEqual([{ kind: 'request', method: IPC.ptyCapture, args: ['node', false, true] }])
+    result = 'history from a legacy host'
+    await expect(api.pty.capture('node', false, true)).rejects.toThrow('unavailable on this host')
     c.request = () => Promise.reject(new Error('capture unavailable'))
     await expect(api.pty.capture('node', false, true)).rejects.toThrow('capture unavailable')
     await expect(api.pty.capture('node')).resolves.toBe('')

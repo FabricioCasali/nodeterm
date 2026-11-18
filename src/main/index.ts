@@ -1857,9 +1857,10 @@ app.whenReady().then(async () => {
     return generateGroupName(contents, localNamingCwd(memberKeys, cwd), settingsStore.get())
   })
 
-  corePlatform.handle(IPC.ptyCapture, (persistKey: string, full?: boolean, visibleOnly?: boolean) =>
-    ptyManager.captureSession(persistKey, full, visibleOnly)
-  )
+  corePlatform.handle(IPC.ptyCapture, async (persistKey: string, full?: boolean, visibleOnly?: boolean) => {
+    const screen = await ptyManager.captureSession(persistKey, full, visibleOnly)
+    return visibleOnly === true ? { visibleCapture: true, screen } : screen
+  })
 
   // The early-attach gate (see PtyManager.remoteSessionConfirmed). Registered here rather than in
   // core's shared pty block because only the desktop shell has SSH projects at all; the browser

@@ -1,6 +1,6 @@
 import { subscribeAgentReplay } from '../shared/agent-replay-subscription'
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
-import { IPC } from '../shared/ipc'
+import { IPC, visibleCaptureText } from '../shared/ipc'
 import type { AlertSoundKind } from '../shared/alert-sound'
 import { resolveUiScale } from '../shared/ui-scale'
 import type { RecentConversationsRequest } from '../shared/recent-conversations'
@@ -104,7 +104,10 @@ const api: NodeTerminalApi = {
       ipcRenderer.invoke(IPC.ptyGenerateName, persistKey, cwd, accountId),
     generateGroupName: (memberKeys, cwd) =>
       ipcRenderer.invoke(IPC.ptyGenerateGroupName, memberKeys, cwd),
-    capture: (persistKey, full, visibleOnly) => ipcRenderer.invoke(IPC.ptyCapture, persistKey, full, visibleOnly),
+    capture: async (persistKey, full, visibleOnly) => {
+      const result = await ipcRenderer.invoke(IPC.ptyCapture, persistKey, full, visibleOnly)
+      return visibleOnly ? visibleCaptureText(result) : result
+    },
     remoteSessionConfirmed: (persistKey, sshRemote) =>
       ipcRenderer.invoke(IPC.ptyRemoteSessionConfirmed, persistKey, sshRemote),
     sessionAge: (persistKey) => ipcRenderer.invoke(IPC.ptySessionAge, persistKey),

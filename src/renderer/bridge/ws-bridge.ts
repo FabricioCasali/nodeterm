@@ -27,7 +27,7 @@ import {
   E_DISCONNECTED,
   type RpcMessage
 } from '../../shared/rpc'
-import { IPC } from '../../shared/ipc'
+import { IPC, visibleCaptureText } from '../../shared/ipc'
 import type { ChatPromptResult, EmptyPromptResult } from '../../shared/text-delivery'
 import type { GitHubControlApi, GitHubIssuesApi } from '../../shared/github-issues'
 import {
@@ -284,7 +284,8 @@ export function buildRealApi(
     generateName: () => Promise.resolve(AI_NAMING_UNAVAILABLE),
     generateGroupName: () => Promise.resolve(AI_NAMING_UNAVAILABLE),
     capture: (persistKey, full, visibleOnly) =>
-      client.request(IPC.ptyCapture, persistKey, full, visibleOnly).catch((error) => {
+      client.request(IPC.ptyCapture, persistKey, full, visibleOnly)
+      .then((result) => visibleOnly ? visibleCaptureText(result) : result).catch((error) => {
         if (visibleOnly) throw error
         return ''
       }) as Promise<string>,

@@ -2814,6 +2814,8 @@ hooks retain its age; replacement/resolution clears it. Folder trust is read fro
 screen and shown as `NEEDS YOU [dialog: folder-trust]`, without synthesizing a hook or changing state.
 The existing `pty:capture` bridge accepts `visibleOnly`; this read never falls back to scrollback or
 turns an unavailable backend into a successful empty screen. Relay tabs reuse the WebSocket builder.
+Visible-only responses carry a `visibleCapture` marker. Clients reject an older host's unmarked
+string response rather than interpreting its recent history as a current-screen capture.
 
 **A board comment that @mentions a session is a message from a PERSON** (`@shared/board-comment`,
 `deliverBoardCommentFromUi` in `core/agents/agent-messaging.ts`). The comment composer's @ picker

@@ -1,5 +1,14 @@
 // IPC channel names — single source of truth for both main and preload.
 
+/** An older host ignores the visible-only argument and returns history as a string. */
+export function visibleCaptureText(value: unknown): string {
+  if (!value || typeof value !== 'object' ||
+    !('visibleCapture' in value) || value.visibleCapture !== true ||
+    !('screen' in value) || typeof value.screen !== 'string')
+    throw new Error('Visible capture unavailable on this host')
+  return value.screen
+}
+
 export const IPC = {
   ptyCreate: 'pty:create',
   ptyWrite: 'pty:write',
