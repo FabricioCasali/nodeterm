@@ -2,7 +2,16 @@
 import { EventEmitter } from 'events'
 import { PassThrough } from 'stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { WindowsProbeWorker, getWindowsProbeWorker, type ProbeChild } from './windows-probe-worker'
+import {
+  PROBE_COOLDOWN_MS,
+  PROBE_FIRST_REQUEST_TIMEOUT_MS,
+  PROBE_IDLE_MS,
+  PROBE_REQUEST_TIMEOUT_MS,
+  WindowsProbeWorker,
+  getWindowsProbeWorker,
+  type ProbeChild
+} from './windows-probe-worker'
+import { WINDOWS_ONESHOT_PROBE_TIMEOUT_MS } from './windows-probe-budget'
 import { WINDOWS_PROBE_WORKER_SCRIPT, windowsConsoleProbeScript } from './windows-probe-script'
 
 interface FakeChild extends ProbeChild {
@@ -144,6 +153,38 @@ describe('WindowsProbeWorker', () => {
     const q = worker.request({ op: 'table' })
     await vi.advanceTimersByTimeAsync(51)
     await expect(q).resolves.toEqual({ kind: 'unavailable' })
+  })
+
+  // PAR-239. Measured on a CPU-saturated Windows 11 machine with the real scripts: a warm request
+  // 1.3-1.9 s, a cold one 11 s, a one-shot powershell 5-10 s. The old deadlines (1.5 s / 6 s / 4 s)
+  // sat inside those figures, so one slow warm answer ended the warm worker and every path after
+  // it was slower than its own deadline: every pane read `unknown` until the load went away.
+  it('a warm answer that takes 2 s on a loaded machine is an answer, and the worker survives it', async () => {
+    vi.useFakeTimers()
+    worker = make() // the production deadlines
+    const first = worker.request({ op: 'table' })
+    await vi.advanceTimersByTimeAsync(0)
+    children[0].reply({ id: children[0].requests()[0].id, ok: true, result: [] })
+    await vi.advanceTimersByTimeAsync(0)
+    await expect(first).resolves.toEqual({ kind: 'ok', result: [] })
+
+    const slow = worker.request({ op: 'owner', pid: 4321 })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(children[0].killed).toBe(false)
+    children[0].reply({ id: children[0].requests()[1].id, ok: true, result: { console: [], processes: [] } })
+    await vi.advanceTimersByTimeAsync(0)
+    await expect(slow).resolves.toEqual({ kind: 'ok', result: { console: [], processes: [] } })
+    expect(worker.spawnCount).toBe(1)
+  })
+
+  it('the production deadlines clear the figures measured under load, and a bench is short', () => {
+    expect(PROBE_REQUEST_TIMEOUT_MS).toBeGreaterThanOrEqual(3 * 1900) // warm: 1.9 s measured
+    expect(PROBE_FIRST_REQUEST_TIMEOUT_MS).toBeGreaterThan(11_000) // cold: 11 s measured
+    expect(WINDOWS_ONESHOT_PROBE_TIMEOUT_MS).toBeGreaterThanOrEqual(8000) // one-shot: 5-10 s measured
+    // A bench sends every probe down the one-shot path; five minutes of that was the outage.
+    expect(PROBE_COOLDOWN_MS).toBeLessThanOrEqual(60_000)
+    // An orchestration sends a message every few minutes; the worker must still be warm for it.
+    expect(PROBE_IDLE_MS).toBeGreaterThanOrEqual(5 * 60_000)
   })
 
   it('a malformed reply or a dying child is unavailable', async () => {

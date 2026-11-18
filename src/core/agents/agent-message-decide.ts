@@ -72,7 +72,9 @@ export type AgentMessageOutcome =
   | { kind: 'targetStatusUnverified'; note: string } // no token file — needs a human. NOT retryable.
   | { kind: 'targetStatusStale' } // token file exists, no verified event yet. Retryable.
   | { kind: 'targetHookScriptStale'; note: string; observedRevision?: number } // Finding F2. NOT retryable.
-  | { kind: 'targetPaneUnreadable' } // the pane probe failed/timed out — says NOTHING about the pane
+  // The pane probe failed/timed out — says NOTHING about the pane. `detail` says which of the two
+  // (no answer inside the budget, or an answer that named no owner) and how long it took.
+  | { kind: 'targetPaneUnreadable'; detail?: string }
   | { kind: 'targetNotAgentPane'; observed: string }
   | { kind: 'targetNotPasteAware' }
   | { kind: 'targetGone' }
@@ -185,6 +187,8 @@ export interface DeliveryFacts {
   pane: AgentPaneVerdict
   /** `#{pane_current_command}` (or 'unknown'), reported back so a refusal names what was seen. */
   paneObserved?: string
+  /** How an unreadable pane read ended, for the `targetPaneUnreadable` refusal's text. */
+  paneUnreadableDetail?: string
   /** The target's mirror entry — gate 2's entire input. `undefined` = this node has never posted. */
   target: MirrorEntry | undefined
   /** `nodeTokenFilePresent(targetNodeId)` — injected, so the decider stays pure. */
@@ -400,7 +404,11 @@ export function decideDelivery(f: DeliveryFacts): AgentMessageOutcome | Proceed 
   // what the old DO-NOT-RETRY note (a 2s loop stacking ~7 ssh children per pane — the 72k-logins
   // shape, memory: ssh-controlmaster-fallback) was protecting; the limiter + the halved probe are
   // what make honesty affordable now.
-  if (f.pane === 'unknown') return { kind: 'targetPaneUnreadable' }
+  if (f.pane === 'unknown')
+    return {
+      kind: 'targetPaneUnreadable',
+      ...(f.paneUnreadableDetail ? { detail: f.paneUnreadableDetail } : {})
+    }
   if (f.pane !== 'agent')
     return { kind: 'targetNotAgentPane', observed: f.paneObserved ?? 'not-agent' }
   // Last, and only when everything else passed: the pane must have ASKED for bracketed paste.

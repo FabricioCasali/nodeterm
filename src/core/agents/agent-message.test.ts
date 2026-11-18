@@ -139,7 +139,11 @@ describe('deliverAgentMessage — sequencing', () => {
     const r = recorder({ paneOwner: async () => null })
     const out = await deliverAgentMessage(req(), r.deps)
     // issue #460: an unreadable pane is its own refusal — not "not running its agent".
-    expect(out).toEqual({ kind: 'targetPaneUnreadable' })
+    // PAR-239: and it says HOW the read failed — here it answered, with nothing.
+    expect(out).toEqual({
+      kind: 'targetPaneUnreadable',
+      detail: 'the pane read answered, but named no owner'
+    })
     expect(r.sends).toEqual([])
     expect(r.order).not.toContain('bracketPasteRequested')
   })
@@ -619,7 +623,11 @@ describe('deliverAgentMessage — the per-target pane-read budget (paneProbeTime
     const r = recorder({ paneProbeTimeoutMs: undefined, paneOwner: slowPane(3000) })
     const p = deliverAgentMessage(req(), r.deps)
     await vi.advanceTimersByTimeAsync(PANE_PROBE_TIMEOUT_MS)
-    await expect(p).resolves.toEqual({ kind: 'targetPaneUnreadable' })
+    // PAR-239: a LAPSED read is told apart from one that answered with nothing.
+    await expect(p).resolves.toEqual({
+      kind: 'targetPaneUnreadable',
+      detail: 'the pane read gave no answer inside its 2-second budget'
+    })
     expect(r.sends).toEqual([])
   })
 

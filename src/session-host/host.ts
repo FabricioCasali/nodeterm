@@ -43,7 +43,7 @@ import { sendTextWhenSettled } from '../core/settled-text'
 import { paneCommand as readPaneCommand } from './process-tree'
 import { terminateWindowsProcessTree } from './windows-process-tree'
 import { terminatePaneOwner } from './terminate-owner'
-import { readWindowsConsoleOwner } from './windows-pane-owner'
+import { readWindowsConsoleOwner, setWindowsOwnerReadFailureLog } from './windows-pane-owner'
 import { publishSessionHostState } from './state-file'
 import {
   EMPTY_LOCK_STALE_MS,
@@ -160,6 +160,9 @@ async function main(): Promise<void> {
   const paths = sessionHostPaths(userDataDir)
   logPath = path.join(userDataDir, 'session-host.log')
   log(`starting pid=${process.pid} endpoint=${paths.endpoint}`)
+  // A pane-owner read that answers null refuses an agent message as `targetPaneUnreadable`; the
+  // reason used to be recorded nowhere (PAR-239).
+  setWindowsOwnerReadFailureLog(log)
 
   // 1) Exclusive-create race gate. Two app instances launched at once will both spawn a host;
   // exactly one of them may proceed past this point on the first try.

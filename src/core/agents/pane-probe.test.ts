@@ -90,6 +90,6 @@ describe('WINDOWS_PANE_PROBE_TIMEOUT_MS covers the Windows probe it bounds (#121
     // The outer bound only has to outlast the inner ones; it must stay a bound (finite, sane).
     const { WINDOWS_PANE_PROBE_TIMEOUT_MS, PANE_PROBE_TIMEOUT_MS } = await import('./pane-probe')
     expect(WINDOWS_PANE_PROBE_TIMEOUT_MS).toBeGreaterThan(PANE_PROBE_TIMEOUT_MS)
-    expect(WINDOWS_PANE_PROBE_TIMEOUT_MS).toBeLessThanOrEqual(15_000)
+    expect(WINDOWS_PANE_PROBE_TIMEOUT_MS).toBeLessThanOrEqual(30_000)
   })
 })
