@@ -190,7 +190,7 @@ describe('initServerCanvasControl', () => {
     expect(shimBody).toContain('NODETERM_CANVAS_CONTROL')
     expect(shimBody).toContain('CODEX_THREAD_ID')
     expect(shimBody).toContain(path.join(dataDir, 'codex-thread-nodes'))
-    expect(fs.statSync(shim).mode & 0o111).not.toBe(0)
+    if (process.platform !== 'win32') expect(fs.statSync(shim).mode & 0o111).not.toBe(0)
 
     const opened = await runtime.handler({
       verb: 'open-agent',

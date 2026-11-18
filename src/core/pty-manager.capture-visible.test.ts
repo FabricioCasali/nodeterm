@@ -81,6 +81,7 @@ async function manager(session: Record<string, unknown>, tmux: string | null = '
 }
 
 beforeEach(() => {
+  vi.stubEnv('NODETERM_NATIVE_SSH', '0')
   calls.length = 0
   ssh.path = '/usr/bin/ssh'
   hostCapture.mockClear()
@@ -89,7 +90,7 @@ beforeEach(() => {
   vi.resetModules()
   initPlatform(fakePlatform())
 })
-afterEach(() => resetPlatformForTests())
+afterEach(() => { resetPlatformForTests(); vi.unstubAllEnvs() })
 
 describe('captureVisible — local tmux', () => {
   it('asks the local tmux once: visible screen + cursor, exact target, no history', async () => {

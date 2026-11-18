@@ -1376,7 +1376,16 @@ export class PtyManager {
    */
   private released = new Map<
     string,
-    { sessionId: string; size?: PtySize; remote: boolean; sessionHost?: boolean }
+    {
+      sessionId: string
+      size?: PtySize
+      remote: boolean
+      sessionHost?: boolean
+      tmuxBacked?: boolean
+      zellij?: boolean
+      nativeWindowsPane?: boolean
+      sshRemote?: Session['sshRemote']
+    }
   >()
   /**
    * The ONE control-mode client this manager keeps for background WRITES, plus the node whose tmux
@@ -1531,7 +1540,11 @@ export class PtyManager {
         remote: !!session.sshRemote,
         // Which backend still holds the session after this client goes. Agent messaging reaches a
         // released session by NAME, and must ask the backend that owns it (`sessionHostOwns`).
-        sessionHost: !!session.sessionHost
+        sessionHost: !!session.sessionHost,
+        tmuxBacked: session.tmuxBacked,
+        zellij: session.zellij,
+        nativeWindowsPane: !!session.nativeWindowsPane,
+        sshRemote: session.sshRemote
       })
     releasePty(session.proc as ReleasablePty)
     this.forget(sessionId, session)
@@ -5893,7 +5906,7 @@ export class PtyManager {
     const indexed = this.byPersistKey.get(nodeId)
     if (indexed && this.sessions.has(indexed)) return indexed
     const session = this.sessionByPersistKey(nodeId)
-    return session ? [...this.sessions].find(([, value]) => value === session)?.[0] : undefined
+    return session ? [...this.sessions].find(([, value]) => value === session)?.[0] : this.released.get(nodeId)?.sessionId
   }
 
   /**
@@ -5932,12 +5945,16 @@ export class PtyManager {
    * invocation — never history. The keyframe's `altScreen` is the caller's, from the join (a
    * tmux-backed client paints on the alternate screen; see `VisibleCapture`). Which backends get
    * one, the exact target and the parse are `watch-link/capture-route.ts`. The session host
-   * (scrollback only), a direct Windows pane and a plain shell get `unavailableCapture()`, as does
-   * any failure — a dead ControlMaster, tmux's own "can't find session" for an exact-target miss.
+   * without visible-capture support, a direct Windows pane and a plain shell get
+   * `unavailableCapture()`, as does any failure — a dead ControlMaster or an exact-target miss.
    */
   async captureVisible(sessionId: string): Promise<VisibleCapture> {
-    const session = this.sessions.get(sessionId)
-    const key = session ? session.persistKey ?? session.indexKey : undefined
+    const live = this.sessions.get(sessionId)
+    // A released client leaves its persistent backend and generation intact; never adopt it to read.
+    const released = live ? undefined : [...this.released].find(([key, rec]) =>
+      rec.sessionId === sessionId && this.sessionOfNode(key) === sessionId)
+    const session = live ?? released?.[1]
+    const key = live ? live.persistKey ?? live.indexKey : released?.[0]
     if (!session || !key) return unavailableCapture()
     const route = visibleCaptureRoute(session, !!this.tmuxPath)
     const target = sessionName(key)

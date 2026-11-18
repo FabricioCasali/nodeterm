@@ -1,5 +1,5 @@
 /**
- * STATION FAILED — on the agent that was told a station it opened has stopped
+ * Station failures and informational approval reminders on the agent that opened the station
  * (src/core/agents/station-notice.ts). ONE component on the canvas node header and the kanban card
  * modal: one session seen twice must not speak in two voices.
  *
@@ -28,20 +28,32 @@ export function StationFailedChip({
   if (!sig) return null
   const views = noticesFor(useStationNotices.getState().views, nodeId)
   if (views.length === 0) return null
-  const label = views.length === 1 ? 'STATION FAILED' : `${views.length} STATIONS FAILED`
+  const failures = views.filter((v) => v.reason !== 'approval-unconfirmed')
+  const approvals = views.filter((v) => v.reason === 'approval-unconfirmed')
   return (
-    <button
-      className={className}
-      title={`${stationNoticeTooltip(views)}\nClick to go to the station.`}
-      onClick={(e) => {
-        e.stopPropagation()
-        window.dispatchEvent(
-          new CustomEvent('nodeterm:focus-node', { detail: { nodeId: views[0].stationNodeId } })
+    <>
+      {[failures, approvals].filter((group) => group.length > 0).map((group) => {
+        const approval = group[0].reason === 'approval-unconfirmed'
+        const label = approval
+          ? (group.length === 1 ? 'AWAITING APPROVAL CONFIRMATION' : `${group.length} APPROVAL CONFIRMATIONS`)
+          : (group.length === 1 ? 'STATION FAILED' : `${group.length} STATIONS FAILED`)
+        return (
+          <button
+            key={approval ? 'approval' : 'failure'}
+            className={className}
+            title={`${stationNoticeTooltip(group)}\nClick to go to the station.`}
+            onClick={(e) => {
+              e.stopPropagation()
+              window.dispatchEvent(
+                new CustomEvent('nodeterm:focus-node', { detail: { nodeId: group[0].stationNodeId } })
+              )
+            }}
+          >
+            {dot && <span className="term-node__status-dot" />}
+            {label}
+          </button>
         )
-      }}
-    >
-      {dot && <span className="term-node__status-dot" />}
-      {label}
-    </button>
+      })}
+    </>
   )
 }

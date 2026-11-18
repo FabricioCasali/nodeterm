@@ -1715,18 +1715,19 @@ export function recordAgentEvent(rawEvent: NormalizedAgentEvent): NormalizedAgen
   let out = ev
   if (next.pendingQuestion && prev?.pendingQuestion && next.state) {
     if (ev.kind !== 'state' && ev.kind !== 'session') return ev
+    const effectiveAsk = next.pendingAsk ? { ...next.pendingAsk, sessionId: next.sessionId } : undefined
     // A concurrent permission is independent of the held picker. Publish its ticket/card,
     // but keep the parent's waiting badge and question correlation until its own answer.
     if (ev.pendingId && ev.state === 'blocked' && ev.askKind === 'approval') {
       produceInboxFromState(nodeId, ev, prevState, 'blocked', now, true)
       scheduleWrite()
-      return { ...ev, state: next.state, sessionId: next.sessionId }
+      return { ...ev, state: next.state, sessionId: next.sessionId, effectiveAsk }
     }
     scheduleWrite()
     // Broadcast the same held state to Desktop, Server, canvas/board and the phone.
     return { ...ev, kind: 'state', state: next.state, sessionId: next.sessionId,
       verified: ev.verified, newTurn: undefined, interrupted: undefined,
-      askKind: 'question', pendingId: undefined }
+      askKind: 'question', pendingId: undefined, effectiveAsk }
   }
   if (ev.kind === 'state' && ev.state === 'done' && next.awaitingInput && next.state === 'waiting') {
     out = { ...ev, state: 'waiting' }

@@ -38,6 +38,17 @@ beforeEach(() => {
 const entry = (id = N) => status.getState().byId[id]
 
 describe('applyAgentEvent', () => {
+  it('projects the core-held question and its age even into a fresh store', () => {
+    const effectiveAsk = { kind: 'question' as const, since: 1_000, id: 'ask-1',
+      detail: 'Which scope?', sessionId: 'parent' }
+    applyAgentEvent(status, null, ev({ state: 'waiting', sessionId: 'parent',
+      askKind: 'approval', pendingId: 'child-ticket', lastMessage: 'Bash echo child', effectiveAsk }), LOCAL)
+    expect(entry().pendingAsk).toEqual(effectiveAsk)
+    expect(entry().pendingId).toBeUndefined()
+    applyAgentEvent(status, null, ev({ state: 'working', newTurn: true, sessionId: 'replacement' }), LOCAL)
+    expect(entry().pendingAsk).toBeUndefined()
+  })
+
   it('records state, agent and session id', () => {
     const r = applyAgentEvent(status, useAgentNodes, ev({ state: 'working', newTurn: true, sessionId: 'sess-1' }), LOCAL)
     expect(r).toEqual({ nodeId: N, alert: null })

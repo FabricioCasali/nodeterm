@@ -87,6 +87,8 @@ export interface NormalizedAgentEvent {
   // concurrent parent picker cannot hide their approval tickets. The canvas keys the approve/deny
   // buttons off `pendingId`, which is now absent on a question. */
   askKind?: 'question' | 'approval'
+  /** Core's preserved ask when a concurrent hook describes another request. */
+  effectiveAsk?: { kind: 'question' | 'approval'; since: number; id?: string; detail?: string; sessionId?: string }
   /** blocked (Claude PermissionRequest with a held hook) only: the answer-file ticket PLUS the tool
    *  being asked about, so a surface can tell a plan (ExitPlanMode) or question (AskUserQuestion)
    *  hold from an ordinary permission and offer the right controls (a structured

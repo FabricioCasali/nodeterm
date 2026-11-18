@@ -77,8 +77,8 @@ import { isSafeNodeId } from '../../shared/safe-id'
  *    an app-composed station notice (its monitor's state did not survive). Both, and an entry whose
  *    body was too large to store (`QUEUE_PERSIST_BODY_MAX`), are expired at restore so their row /
  *    sender still hears the end.
- *  - Not flushed at boot: the first flush waits for the target's next `done`, like any entry. A
- *    target that stays idle through the rest of the TTL expires it (sender told).
+ *  - Restored entries schedule a timed retry and also wake on the target's next `done`.
+ *    Every attempt rechecks the gates within the original TTL; expiry tells the sender.
  *  - A crash inside the save window loses that window; a clean quit flushes synchronously. The file
  *    is hand-editable, so every entry is re-checked on read (`sanitizePersistedQueueEntry`). It holds
  *    message bodies, so it is written 0600 under userData and never leaves the machine.
@@ -594,7 +594,7 @@ export class DeliveryQueue {
    * Bring back entries an earlier process queued (boot, after every listener is wired). Each one is
    * announced through `onQueued` like a fresh enqueue; one whose wall-clock TTL lapsed while the app
    * was down — or that may not flush after a restart at all — is then EXPIRED at once (traced, and
-   * the sender told). The rest wait for their target's next `done` with the TTL they have LEFT.
+   * the sender told). The rest schedule retries and wake on `done` with the TTL they have LEFT.
    * Capacity still applies per target; an entry past it is expired rather than dropped.
    */
   async restore(entries: readonly PersistedQueueEntry[]): Promise<void> {

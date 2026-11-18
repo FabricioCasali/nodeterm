@@ -429,7 +429,8 @@ export function stationNoticeTooltip(views: readonly StationNoticeView[]): strin
   return views
     .map((v) => {
       const row = stationTrigger(v.reason)
-      return `Station "${v.stationTitle}" (${v.stationNodeId}) stopped: ${row?.label ?? 'it stopped'}. ${stationNoticePaneText(v)}`
+      const status = v.reason === 'approval-unconfirmed' ? '' : ' stopped'
+      return `Station "${v.stationTitle}" (${v.stationNodeId})${status}: ${row?.label ?? 'it stopped'}. ${stationNoticePaneText(v)}`
     })
     .join('\n')
 }

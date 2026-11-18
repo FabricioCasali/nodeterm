@@ -365,7 +365,7 @@ export interface AgentStatusStore {
     errored?: boolean,
     held?: HeldPermission,
     interrupted?: boolean,
-    ask?: { kind?: 'approval' | 'question'; detail?: string; id?: string; sessionId?: string }
+    ask?: { kind?: 'approval' | 'question'; detail?: string; id?: string; sessionId?: string; since?: number }
   ): void
   /**
    * Subscribe to EVERY hook event `setState` records for node `id` — same-state ones included, and
@@ -821,7 +821,7 @@ export function createAgentStatusSession(
           (!askId || askId === previousAsk.id) &&
           (askId !== undefined || ask?.detail === undefined || ask.detail === previousAsk.detail)
         const pendingAsk = needsYou ? {
-          kind: askKind, since: sameAsk ? previousAsk.since : now,
+          kind: askKind, since: ask?.since ?? (sameAsk ? previousAsk.since : now),
           detail: ask?.detail ?? (sameAsk ? previousAsk.detail : undefined),
           id: askId ?? (sameAsk ? previousAsk.id : undefined),
           sessionId: ask?.sessionId ?? prev.sessionId

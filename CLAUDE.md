@@ -11167,8 +11167,8 @@ What a restart MEANS, per fact — decided beside each fact, stated in its heade
   - **Never replayed into a pane**: a board comment (only the local user, typing in THIS app, may
     trigger one — a message read back off disk must not speak as a person) and an app-composed
     station notice; both, and a body over 256 KB (written without it), are expired at restore so
-    their row / sender still hears the end. Not flushed at boot: the first flush waits for the
-    target's next `done`.
+    their row / sender still hears the end. Restored entries schedule a timed retry and also wake
+    on the target's next `done`; each attempt rechecks the gates within the original TTL.
   - Threat model, stated: the file is as trustworthy as the per-node token files beside it — a
     same-user process can write either. A forged `send` entry still runs every gate at flush.
 - **Station report** (`core/station-outcome-store.ts`, `OUTCOME_FACT`): stored with the station's

@@ -78,7 +78,7 @@ export function applyAgentEvent(
           e.errored,
           e.held,
           recordsTurnInterrupt(e),
-          { kind: e.askKind, detail: e.lastMessage, sessionId: e.sessionId,
+          e.effectiveAsk ?? { kind: e.askKind, detail: e.lastMessage, sessionId: e.sessionId,
             id: e.questionId ?? e.pendingId ?? e.held?.pendingId }
         )
       // Claude's Stop names the BACKGROUND tasks still running (async subagents, nested ones,
