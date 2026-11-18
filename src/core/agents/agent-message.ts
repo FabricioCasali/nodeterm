@@ -1,4 +1,6 @@
 import type { MirrorEntry } from '../agent-status-mirror'
+import { claudeComposerEmpty, claudeComposerMatches, type EnvelopeGuard } from '../../shared/agents/message-readiness'
+import { MIN_TOKEN_AWARE_REVISION } from './hooks/managed-script'
 import type { AgentState } from '../../shared/agents/normalize'
 import type { PaneOwner } from '../../shared/agents/pane-owner-predicate'
 import { agentPidIn, isAgentPane } from '../../shared/agents/pane-owner-predicate'
@@ -140,7 +142,8 @@ export interface DeliveryDeps {
    * receipt watch's honest `stalled` outcome. `'dialog'`: nothing was written because the agent's
    * own dialog owns the keyboard (`PtyManager.sendEnvelope`, Cursor).
    */
-  sendEnvelope(nodeId: string, envelope: string, expected?: PaneOwner): Promise<boolean | 'dialog'>
+  sendEnvelope(nodeId: string, envelope: string, expected?: PaneOwner, guard?: EnvelopeGuard): Promise<boolean | 'dialog'>
+  envelopeGuardSupported?(nodeId: string): Promise<boolean>
   /** The target's status mirror entry — gate 2's whole input. */
   mirrorEntry(nodeId: string): MirrorEntry | undefined
   /** `nodeTokenFilePresent(nodeId)`. */
@@ -188,7 +191,7 @@ export interface DeliveryDeps {
  * them can confirm anything, and the fail direction here is to TELL the sender:
  * `deliveredToReplacedTarget` with `nowPane: 'unknown'`, never `delivered`.
  */
-function samePane(
+export function samePane(
   before: PaneOwner,
   after: PaneOwner | null,
   agentId: string,
@@ -363,6 +366,23 @@ export async function deliverAgentMessage(
   }
 
   return deps.lock(req.targetNodeId, async () => {
+    const initial = deps.mirrorEntry(req.targetNodeId)
+    const eligible = (entry: MirrorEntry | undefined): entry is MirrorEntry =>
+      !!entry && req.targetAgentId === 'claude' && entry.agentId === 'claude' &&
+      !!entry.sessionId?.trim() && entry.state === 'done' && entry.idleInferred === true &&
+      entry.stateVerified === true && !entry.restored && !entry.stateExpired &&
+      typeof entry.clientRevision === 'number' && entry.clientRevision >= MIN_TOKEN_AWARE_REVISION &&
+      deps.tokenFilePresent(req.targetNodeId) &&
+      !entry.pendingQuestion && !entry.pendingAsk && !entry.awaitingInput &&
+      !entry.concurrentApprovalIds?.length
+    const recovery = eligible(initial)
+    const proof = initial ? { ...initial } : undefined
+    const sameProof = (): boolean => {
+      const entry = deps.mirrorEntry(req.targetNodeId)
+      return eligible(entry) && entry.sessionId === proof?.sessionId &&
+        entry.updatedAt === proof?.updatedAt && entry.verifiedAt === proof?.verifiedAt &&
+        entry.clientRevision === proof?.clientRevision
+    }
     // The free gates first, and this ordering is load-bearing rather than tidy: a caller that is
     // not permitted, is talking to itself, is over its rate budget, cannot prove its target's
     // identity, or is aiming at a busy target must be refused WITHOUT a tmux round-trip (and, on an
@@ -376,7 +396,7 @@ export async function deliverAgentMessage(
       target: deps.mirrorEntry(req.targetNodeId),
       tokenFilePresent: deps.tokenFilePresent(req.targetNodeId),
       targetIsRemote: req.targetIsRemote
-    })
+    }, recovery)
     if (cheap) return refuse(cheap)
 
     // ── DO NOT RETRY AN `unknown` PANE VERDICT ON A FIXED SHORT TIMER WITHOUT A CIRCUIT BREAKER ──
@@ -405,8 +425,14 @@ export async function deliverAgentMessage(
       // `pasteAware` deliberately absent: the flag costs a second tmux round-trip and there is no
       // point paying for it to tell a rate-limited caller something it cannot act on.
     }
-    const gate = decideDelivery(facts)
+    const gate = decideDelivery(facts, recovery && sameProof())
     if (gate.kind !== 'proceed') return refuse(gate)
+    if (recovery) {
+      let supported = false
+      try { supported = await deps.envelopeGuardSupported?.(req.targetNodeId) === true } catch { /* no proof */ }
+      if (!supported || !sameProof())
+        return refuse({ kind: 'targetNotIdleUnknown', reason: 'guarded readiness is unavailable or changed' })
+    }
     // `before` is non-null here: `isAgentPane(null, …)` is `unknown`, which the gate refused
     // (as `targetPaneUnreadable` since issue #460 — unreadable is not evidence of not-agent).
     const owner = before as PaneOwner
@@ -472,7 +498,22 @@ export async function deliverAgentMessage(
     // subscription opened after that probe would miss it and report `stalled` for a message that
     // demonstrably landed. See `watchForReceipt`: that miss is what makes an LLM send it twice.
     const watch = watchForReceipt(req.targetNodeId, deps.subscribeEvents)
-    const wrote = await deps.sendEnvelope(req.targetNodeId, payload, owner)
+    let pasteVeto = false
+    const guard: EnvelopeGuard | undefined = recovery ? {
+      beforePaste: (screen) => {
+        const allowed = sameProof() && claudeComposerEmpty(screen)
+        pasteVeto = !allowed
+        return allowed
+      },
+      beforeSubmit: (screen) => sameProof() && claudeComposerMatches(screen, payload)
+    } : undefined
+    const wrote = guard
+      ? await deps.sendEnvelope(req.targetNodeId, payload, owner, guard)
+      : await deps.sendEnvelope(req.targetNodeId, payload, owner)
+    if (!wrote && pasteVeto) {
+      watch.cancel()
+      return refuse({ kind: 'targetNotIdleUnknown', reason: 'readiness changed before paste' })
+    }
     // A dialog owned the keyboard and nothing was written: the pane waits on a person, which the
     // idle gate already reports as `targetBusy` / `blocked` (retryable, queued when queueing is on).
     if (wrote === 'dialog') {

@@ -176,12 +176,25 @@ long-lived connection (no positional-FIFO fragility, unlike this app's tmux cont
 | `ping`                           | (liveness probe used during the startup race) | full |
 | `attachExisting {watch: true}`   | `attach-session -E -f ignore-size,read-only` (a live link watcher's client) | feature `watch-attach`: subscribes with NO geometry claim and no pause ticket, refuses `write`/`resize` from that connection, never spawns; on an already-attached connection it withdraws the claim (its last voting subscriber left) |
 | `captureVisible`                 | `capture-pane -p -e` + `display-message '#{cursor_x} #{cursor_y}'` | feature `captureVisible`: visible rows of the ACTIVE buffer only (never history), viewport cursor, `altScreen` — a live link's keyframe |
+| `messageEnvelopePrepareV1` | guarded paste without Enter | feature `guardedMessageEnvelopeV1`: Claude only; validates owner/generation and empty visible composer; returns `not-pasted` or `pasted` with a preparation id and visible frame (null when unproven) |
+| `messageEnvelopeCommitV1` | separately guarded Enter | consumes the preparing socket's id once, revalidates process/birth/generation and exact sanitized draft; returns `{submitted}` |
+| `messageEnvelopeCancelV1` | invalidate preparation | same socket and id only; returns `{cancelled}`, never clears or edits the composer |
 | `paneCwd`                        | `display-message -p '#{pane_current_path}'` | feature `paneCwd`: the cwd the pane last REPORTED (OSC 7 / 9;9 / 633, parsed by `cwd-report.ts`), null until one arrives — never the spawn cwd |
 
-The last three are **negotiated at hello** (`SESSION_HOST_FEATURES`) like `geometry`/`shutdown`: the
+These additive features are **negotiated at hello** (`SESSION_HOST_FEATURES`) like `geometry`/`shutdown`: the
 client never sends one to a host that did not advertise it (an older, long-lived host keeps serving
 everything else and is never replaced for them). Without them: a live link viewer of a node this app
 does not hold is refused (`join-only`), there is no keyframe (R36), and `paneCwd` is null.
+
+Guarded messaging requires the existing authenticated socket to have negotiated both
+`guardedMessageEnvelopeV1` and `captureVisible`. The client runs the core callbacks locally around
+prepare; the host independently rechecks the actual visible composer/process before each write.
+One active preparation belongs to one session object/generation and one socket, including across
+clients. Cancel, socket closure and process exit invalidate it. Prepare never sends Enter, and
+commit cannot replay a consumed/cancelled id or inherit one from a replaced generation. No timer,
+durable preparation or alternate executor is involved. An older host refuses before any byte;
+normal `messageEnvelopeV1` remains usable. A lost reply after prepare transmission or any failure
+after paste returns conservative partial delivery, without reconnect, fallback or body retry.
 
 **Not implemented — deliberately out of scope for this pass:**
 

@@ -14,7 +14,7 @@
 
 import fs from 'fs'
 import net from 'net'
-import { hostMessagePane } from './message-pane'
+import { hostMessagePane, type MessagePaneSession, type MessagePreparation } from './message-pane'
 import path from 'path'
 import crypto from 'crypto'
 import { sessionHostPaths, currentProtocolVersion, type SessionHostState } from './paths'
@@ -354,6 +354,8 @@ async function main(): Promise<void> {
    *  `captureVisible` / `paneCwd` are plain reads and need no per-socket gate — a client that did not
    *  negotiate them never sends them, and an older host answers `unknown command`. */
   const watchSockets = new WeakSet<net.Socket>()
+  const guardedMessageSockets = new WeakSet<net.Socket>()
+  const messagePreparations = new Map<MessagePaneSession, MessagePreparation>()
   /** Set while a `shutdown` is ending sessions. New sessions (attach / attachExisting / launches)
    *  are refused for its duration; cleared again only if the shutdown could not end everything. */
   let shuttingDown = false
@@ -393,6 +395,7 @@ async function main(): Promise<void> {
     if (features.includes('shutdown')) shutdownSockets.add(socket)
     if (features.includes('sessionDetails')) sessionDetailsSockets.add(socket)
     if (features.includes('watch-attach')) watchSockets.add(socket)
+    if (features.includes('guardedMessageEnvelopeV1')) guardedMessageSockets.add(socket)
     return features.length > 0
       ? { protocolVersion: currentProtocolVersion(), features }
       : { protocolVersion: currentProtocolVersion() }
@@ -507,6 +510,7 @@ async function main(): Promise<void> {
       )
     })
     session.proc.onExit(({ exitCode }) => {
+      messagePreparations.delete(session)
       session.observeProcessExit(exitCode)
       void endSession(session, exitCode)
     })
@@ -1025,6 +1029,22 @@ async function main(): Promise<void> {
           ok: true,
           result: await hostMessagePane(() => sessions.get(req.name)).send(req.envelope, req.expected)
         }
+      case 'messageEnvelopePrepareV1':
+      case 'messageEnvelopeCommitV1':
+      case 'messageEnvelopeCancelV1': {
+        if (!guardedMessageSockets.has(socket)) return { ok: false, error: 'guarded envelope feature required' }
+        if (typeof req.name !== 'string') return { ok: false, error: 'invalid session name' }
+        const pane = hostMessagePane(() => sessions.get(req.name), undefined, {}, messagePreparations)
+        if (req.cmd === 'messageEnvelopePrepareV1') {
+          if (req.agentId !== 'claude' || typeof req.envelope !== 'string' || !req.expected || typeof req.expected !== 'object')
+            return { ok: false, error: 'invalid guarded envelope' }
+          return { ok: true, result: await pane.prepare(req.envelope, req.expected, socket) }
+        }
+        if (typeof req.preparationId !== 'string') return { ok: false, error: 'invalid preparation' }
+        return req.cmd === 'messageEnvelopeCommitV1'
+          ? { ok: true, result: { submitted: await pane.commit(req.preparationId, socket) } }
+          : { ok: true, result: { cancelled: pane.cancel(req.preparationId, socket) } }
+      }
       case 'terminateOwnerV1': {
         const terminated = await terminatePaneOwner(() => sessions.get(req.name), req.expected, {
           probe: readWindowsConsoleOwner,
@@ -1252,6 +1272,9 @@ async function main(): Promise<void> {
     socket.on('drain', () => drainSessionHostTransport(socket, sessions.values()))
     socket.on('close', () => {
       liveSockets.delete(socket)
+      for (const [session, preparation] of messagePreparations) {
+        if (preparation.socket === socket) messagePreparations.delete(session)
+      }
       // A connection dropping is a DETACH, never a kill — sessions belong to the host, not to
       // any one connection. Mirrors tmux: closing a client's terminal only ends that client.
       // `detach` also returns this socket's pause ticket; without that second half, a crashed

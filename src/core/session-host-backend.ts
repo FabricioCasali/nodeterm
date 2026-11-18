@@ -29,6 +29,7 @@ import type {
 } from '../session-host/protocol'
 import type { PreparedAgentLaunch } from './agent-launch'
 import type { PaneOwner } from '../shared/agents/pane-owner-predicate'
+import type { EnvelopeGuard } from '../shared/agents/message-readiness'
 
 export async function sessionHostMessageOwner(name: string): Promise<PaneOwner | null> {
   return getClient().messageOwner(name)
@@ -39,9 +40,14 @@ export async function sessionHostMessagePasteReady(name: string): Promise<boolea
 }
 
 export async function sessionHostMessageEnvelope(
-  name: string, envelope: string, expected: PaneOwner
+  name: string, envelope: string, expected: PaneOwner, guard?: EnvelopeGuard
 ): Promise<boolean> {
+  if (guard) return getClient().messageEnvelope(name, envelope, expected, guard)
   return getClient().messageEnvelope(name, envelope, expected)
+}
+
+export function sessionHostEnvelopeGuardSupported(): boolean {
+  return client?.connectedFeature('guardedMessageEnvelopeV1') === true
 }
 
 /** End the proven agent tree on a session-host pane (never the shell). See `terminateOwner`. */

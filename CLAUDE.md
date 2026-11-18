@@ -11483,3 +11483,19 @@ partial/unknown delivery, with no resend. The SessionStart idle rescue latch sto
 agent and receive time; foreign/missing idle identity never creates proof or changes the
 renderer-visible session. These boundaries have behavioral regressions in
 `core/windows-delivery-safety.test.ts` and the mirror/client suites.
+
+Claude's verified `idle_prompt` may recover inferred done only within the same current session,
+with a current hook revision/token and no pending question, approval or input. The core pins that
+state proof per attempt; it never changes the mirror to pass the idle gate. An internal fourth
+`sendEnvelope` argument checks the visible composer before paste and checks the exact sanitized
+draft plus the pinned state again before Enter. Backend owner/generation checks remain mandatory.
+Desktop forwards it to PtyManager; Server uses that same path only when guarded and retains its
+ordinary settled-envelope adapter otherwise. Unsupported backends refuse before paste.
+
+The host's additive `guardedMessageEnvelopeV1` uses prepare/commit/cancel on the already-proven
+socket with `captureVisible`. No callback crosses JSON. Prepare reserves one slot per generation,
+rechecks owner and empty composer, pastes and returns a nonce plus the settled visible frame.
+Commit consumes that socket-bound nonce before awaiting probes and sends Enter only after fresh
+process/composer checks. Cancel/socket close/session exit invalidate it without editing text.
+Lost prepare/commit replies after transmission remain partial; never reconnect, fall back or
+offer the body again. Normal `messageEnvelopeV1` remains compatible; other inferred CLIs stay refused.

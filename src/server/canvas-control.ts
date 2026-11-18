@@ -223,8 +223,10 @@ export async function initServerCanvasControl(
     ...ptyPaneProbeDeps(deps.ptyManager),
     // Server delivery has no renderer/xterm echo stream. Capture the headless pane instead and
     // separate paste from Enter so a fresh TUI cannot swallow the first submit keystroke.
-    sendEnvelope: (nodeId, envelope) =>
-      sendSettledEnvelope(deps.ptyManager, nodeId, envelope),
+    sendEnvelope: (nodeId, envelope, expected, guard) => guard
+      ? deps.ptyManager.sendEnvelope(nodeId, envelope, expected, guard)
+      : sendSettledEnvelope(deps.ptyManager, nodeId, envelope),
+    envelopeGuardSupported: (nodeId) => deps.ptyManager.envelopeGuardSupported(nodeId),
     // Attached OR released-but-running: see AgentMessagingDeps.hasLiveSession.
     hasLiveSession: (nodeId) => deps.ptyManager.sessionExists(nodeId),
     mirrorEntry,

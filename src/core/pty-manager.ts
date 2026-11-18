@@ -106,6 +106,10 @@ import {
 } from './agents/pane-ownership'
 import { PANE_OWNER_FMT, foregroundArgvArgs, paneOwnerFrom, parseCombinedPaneOwner, parsePaneOwner } from './agents/pane-owner'
 import { binariesFor, isAgentPane, type PaneOwner } from '../shared/agents/pane-owner-predicate'
+import { envelopeGuardAllows, type EnvelopeGuard } from '../shared/agents/message-readiness'
+import { samePane } from './agents/agent-message'
+import { pasteThenSubmitWhenSettled } from './settled-submit'
+import { sessionHostEnvelopeGuardSupported } from './session-host-backend'
 import { PANE_PROBE_TIMEOUT_MS, WINDOWS_PANE_PROBE_TIMEOUT_MS } from './agents/pane-probe'
 import { readSpawnResources, spawnResourceNote } from './spawn-resources'
 import {
@@ -7270,18 +7274,30 @@ export class PtyManager {
    * accidental submit a messaging delivery must never perform — an empty envelope refuses here.
    * (`buildEnvelope` can never return '', so this is a guard against a future caller, not a path.)
    */
-  async sendEnvelope(persistKey: string, envelope: string, expected?: PaneOwner): Promise<boolean | 'dialog'> {
-    return this.serializePaneWrite(persistKey, () => this.sendEnvelopeNow(persistKey, envelope, expected))
+  async sendEnvelope(persistKey: string, envelope: string, expected?: PaneOwner, guard?: EnvelopeGuard): Promise<boolean | 'dialog'> {
+    return this.serializePaneWrite(persistKey, () => this.sendEnvelopeNow(persistKey, envelope, expected, guard))
   }
 
-  private async sendEnvelopeNow(persistKey: string, envelope: string, expected?: PaneOwner): Promise<boolean | 'dialog'> {
+  async envelopeGuardSupported(persistKey: string): Promise<boolean> {
+    const live = this.liveSessionForPersistKey(persistKey)
+    if (this.isZellij(persistKey, live)) return false
+    if (live?.nativeWindowsPane) return true
+    if (this.sessionHostOwns(persistKey, live)) return sessionHostEnvelopeGuardSupported()
+    return !!(this.sessionByPersistKey(persistKey)?.sshRemote || this.tmuxPath)
+  }
+
+  private async sendEnvelopeNow(persistKey: string, envelope: string, expected?: PaneOwner, guard?: EnvelopeGuard): Promise<boolean | 'dialog'> {
     if (envelope.length === 0) return false
     const live = this.liveSessionForPersistKey(persistKey)
     if (this.isZellij(persistKey, live)) return false
-    if (live?.nativeWindowsPane) return live.nativeWindowsPane.sendEnvelope(envelope, expected)
+    if (live?.nativeWindowsPane) return guard
+      ? live.nativeWindowsPane.sendEnvelope(envelope, expected, guard)
+      : live.nativeWindowsPane.sendEnvelope(envelope, expected)
     const target = sessionName(persistKey)
     if (this.sessionHostOwns(persistKey, live)) {
-      return expected ? sessionHostMessageEnvelope(target, envelope, expected) : false
+      if (!expected) return false
+      return guard ? sessionHostMessageEnvelope(target, envelope, expected, guard)
+        : sessionHostMessageEnvelope(target, envelope, expected)
     }
     const sshRemote = this.sessionByPersistKey(persistKey)?.sshRemote
     const deliver = async (body: string, enter: boolean): Promise<boolean> => {
@@ -7303,6 +7319,27 @@ export class PtyManager {
         // rather than throwing, so the buffer sweep is never skipped.
         return false
       }
+    }
+    if (guard) {
+      if (!expected) return false
+      const sessionId = this.sessionOfNode(persistKey)
+      const capture = async (): Promise<string | null> => {
+        if (!sessionId || this.sessionOfNode(persistKey) !== sessionId) return null
+        try {
+          const cap = await this.captureVisible(sessionId)
+          return this.sessionOfNode(persistKey) === sessionId ? cap.screen : null
+        } catch { return null }
+      }
+      const check = async (predicate: (screen: string) => boolean): Promise<boolean> => {
+        if (!samePane(expected, await this.paneOwner(persistKey), 'claude', binariesFor('claude'))) return false
+        const screen = await capture()
+        return envelopeGuardAllows(predicate, screen)
+      }
+      return pasteThenSubmitWhenSettled(envelope, {
+        capture,
+        paste: async () => await check(guard.beforePaste) ? deliver(envelope, false) : false,
+        submit: async () => { if (await check(guard.beforeSubmit)) await deliver('', true) }
+      })
     }
     if (!this.submitsSeparatelyKey(persistKey)) return deliver(envelope, true)
     // `sendText`'s split, inlined: this op already holds the pane's `serializePaneWrite` slot, so

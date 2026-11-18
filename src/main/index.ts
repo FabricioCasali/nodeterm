@@ -2275,7 +2275,8 @@ app.whenReady().then(async () => {
   // src/core/agents/agent-messaging.ts for the whole map.
   const messagingDeps: AgentMessagingDeps = {
     ...ptyPaneProbeDeps(ptyManager),
-    sendEnvelope: (id, envelope, expected) => ptyManager.sendEnvelope(id, envelope, expected),
+    sendEnvelope: (id, envelope, expected, guard) => ptyManager.sendEnvelope(id, envelope, expected, guard),
+    envelopeGuardSupported: (id) => ptyManager.envelopeGuardSupported(id),
     envelopePasteReady: (id) => ptyManager.envelopePasteReady(id),
     // Attached OR released-but-running: see AgentMessagingDeps.hasLiveSession.
     hasLiveSession: (id) => ptyManager.sessionExists(id),

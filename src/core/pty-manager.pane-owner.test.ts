@@ -204,6 +204,7 @@ describe('PtyManager.paneOwner', () => {
   })
 
   beforeEach(() => {
+    vi.stubEnv('NODETERM_NATIVE_SSH', '0')
     calls.length = 0
     ssh.path = '/usr/bin/ssh'
     script.answer = healthy
@@ -211,6 +212,7 @@ describe('PtyManager.paneOwner', () => {
     initPlatform(fakePlatform())
   })
   afterEach(() => {
+    vi.unstubAllEnvs()
     resetPlatformForTests()
   })
 

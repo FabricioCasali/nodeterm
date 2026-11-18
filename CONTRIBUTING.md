@@ -105,6 +105,14 @@ its terminals and refuses the extension; never restart it automatically or fall 
 Message dispatch publishes pending canvas edits before main resolves scope, without overwriting
 an unresolved file conflict. See `docs/windows-session-host.md`.
 
+Inferred Claude idle is messageable only with a verified current-session event, current hook
+identity/token, and a guarded backend. Keep the per-attempt checks before paste (empty visible
+composer) and before Enter (exact sanitized envelope, unchanged state/session/process). Do not
+promote the mirror or accept readiness from callers. Both shells forward the same internal guard.
+The host negotiates `guardedMessageEnvelopeV1`: prepare pastes without Enter; commit consumes a
+socket/generation-bound preparation once; cancel only invalidates it. Use the established socket,
+without reconnect/fallback. After a potential paste, uncertainty is partial and must never resend.
+
 Queued messages recheck the full gate chain on idle events and timed retries. Keep one attempt per
 target, the original TTL, and claim-before-effect persistence. Transient retries use the current
 1.5/3/6-second backoff; rate limits use their returned deadline. Coalesce unfinished pane probes:
