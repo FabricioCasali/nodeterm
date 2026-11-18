@@ -162,6 +162,7 @@ function expectRefusalPath(f: Awaited<ReturnType<typeof harness>>, mode: 'not-pa
 describe('PAR-230 C1–C5 real service/core/client/queue with simulated protocol peer', () => {
   it.each(['not-pasted', 'unreadable'] as const)('C1/C2 classifies %s as retryable only after the client refusal', async (mode) => {
     const f = await harness(mode)
+    delete f.deps.queue
     const initial = { ...f.entry }
     const result = await f.deliver()
     expectRefusalPath(f, mode)
