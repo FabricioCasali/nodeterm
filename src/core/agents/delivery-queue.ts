@@ -92,8 +92,19 @@ import { isSafeNodeId } from '../../shared/safe-id'
  * there, like everything else in this directory.
  */
 
-/** How long a message waits queued before it expires. Long enough for an orchestration turn (which
- *  can run minutes), bounded so a target that never goes idle cannot pin a message forever. */
+/**
+ * How long a message waits queued before its expiry is CONSIDERED. Not a cap on the turn it waits
+ * behind: when this lapses and the target is still mid-turn (`stillBusy`), the wait is extended by
+ * another window, up to `QUEUE_PERSIST_TTL_MAX`.
+ *
+ * It used to be a hard 5 minutes, on the theory that this is "long enough for an orchestration
+ * turn". It is not: agent turns routinely run 20 minutes and more, so a reply sent to a working
+ * agent was accepted (`queued`), dropped at minute 5 with the agent still working, and the agent
+ * then ended its turn and sat waiting for an answer that no longer existed (PAR-238 — three
+ * messages on 2026-11-18, each expired at exactly five minutes with its target mid-turn). What
+ * this window still bounds is the wait on a target that is NOT busy and yet never flushes (no
+ * idle event will come): that one expires here, loudly, as before.
+ */
 export const DELIVERY_QUEUE_TTL_MS = 5 * 60_000
 
 /** How many messages one target may have queued at once. Small and per-target: an unbounded queue
@@ -157,6 +168,13 @@ export interface DeliveryQueueDeps {
   /** The target's current agent and session (the status mirror), recorded at enqueue and compared
    *  when a RESTORED entry flushes. Absent ⇒ nothing is recorded, and a restored entry is refused. */
   bindingOf?(nodeId: string): QueueBinding | undefined
+  /**
+   * Is the target in a turn RIGHT NOW (working, or waiting on a person), on a status observed this
+   * run? Asked when an entry's TTL lapses: a message queued behind a turn that is still running is
+   * held for another window instead of expired (see `DELIVERY_QUEUE_TTL_MS`). Absent ⇒ never busy,
+   * i.e. the TTL is a hard deadline as it always was.
+   */
+  stillBusy?(nodeId: string): boolean
 }
 
 /** Which conversation a queued message was addressed to. */
@@ -487,11 +505,34 @@ export class DeliveryQueue {
     if (!list) return
     const i = list.indexOf(entry)
     if (i < 0) return // already delivered/re-queued with a fresh timer — this fire is stale
+    if (this.holdWhileBusy(nodeId, entry)) return
     list.splice(i, 1)
     if (list.length === 0) this.queues.delete(nodeId)
     entry.cancelTimer()
     this.persist()
     await this.reportExpired(entry)
+  }
+
+  /**
+   * An entry's TTL lapsed while its target is still mid-turn: extend the wait by one more window
+   * instead of expiring it. The turn's end is what flushes the queue, and that end has not happened
+   * yet — dropping the message now is dropping it before its target could possibly have read it.
+   * `ttlMs` itself grows (and is persisted), so a restart computes the same deadline. Bounded by
+   * `QUEUE_PERSIST_TTL_MAX`: a target stuck "working" forever still ends in a loud expiry.
+   */
+  private holdWhileBusy(nodeId: string, entry: QueueEntry): boolean {
+    // A board comment keeps its hard deadline: its row stops saying "queued" on a clock derived
+    // from this TTL (`BOARD_COMMENT_QUEUE_STALE_MS`), and a person can see that and post again.
+    if (entry.req.verb === 'board-comment') return false
+    if (!this.deps.stillBusy?.(nodeId)) return false
+    const extended = Math.min(entry.ttlMs + this.ttlMs, QUEUE_PERSIST_TTL_MAX)
+    if (extended <= entry.ttlMs) return false
+    entry.ttlMs = extended
+    entry.cancelTimer()
+    const remaining = Math.max(0, entry.ttlMs - (this.deps.now() - entry.enqueuedAt))
+    entry.cancelTimer = this.schedule(remaining, () => void this.expire(nodeId, entry))
+    this.persist()
+    return true
   }
 
   /** Trace `expired` and tell the sender — the two legs every expiry owes. */

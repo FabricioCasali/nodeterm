@@ -24,7 +24,7 @@ import { spawn as spawnChild } from 'child_process'
 import type { Readable, Writable } from 'stream'
 import { powershellArgs, powershellExe } from '../core/win32-powershell'
 import { validProbePid, WINDOWS_PROBE_WORKER_SCRIPT } from './windows-probe-script'
-import { PROBE_FIRST_REQUEST_TIMEOUT_MS } from './windows-probe-budget'
+import { PROBE_FIRST_REQUEST_TIMEOUT_MS, PROBE_WARM_REQUEST_TIMEOUT_MS } from './windows-probe-budget'
 
 export type ProbeRequest = { op: 'owner'; pid: number } | { op: 'table' }
 
@@ -56,11 +56,17 @@ export interface ProbeWorkerDeps {
   now?: () => number
 }
 
-export const PROBE_REQUEST_TIMEOUT_MS = 1500
+export const PROBE_REQUEST_TIMEOUT_MS = PROBE_WARM_REQUEST_TIMEOUT_MS
 export { PROBE_FIRST_REQUEST_TIMEOUT_MS }
-export const PROBE_IDLE_MS = 60_000
+/** Ten minutes, not one: an orchestration sends a message every few minutes, and with a 60 s idle
+ *  limit nearly every one of them met a COLD worker — the slowest path (11 s on a loaded machine,
+ *  see windows-probe-budget.ts). The cost is one idle powershell.exe kept around for that long. */
+export const PROBE_IDLE_MS = 10 * 60_000
 export const PROBE_MAX_FAILURES = 2
-export const PROBE_COOLDOWN_MS = 5 * 60_000
+/** How long a twice-failed worker is benched. While it is, every probe is a one-shot powershell —
+ *  slower, unserialized and uncoalesced — so a long bench turns two slow answers into minutes of
+ *  unreadable panes (PAR-239: it was 5 minutes). One minute still prevents a respawn loop. */
+export const PROBE_COOLDOWN_MS = 60_000
 
 const UNAVAILABLE: ProbeAnswer = { kind: 'unavailable' }
 

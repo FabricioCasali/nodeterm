@@ -194,26 +194,55 @@ function asSnapshot(value: unknown): WindowsConsoleSnapshot | null {
   return snapshot
 }
 
+/** A read's answer plus, when it is null, WHY — every cause used to collapse into the same silent
+ *  null, so an outage of the probe looked identical to a pane with no agent in it (PAR-239). */
+interface OwnerRead {
+  owner: PaneOwner | null
+  why?: string
+}
+
+/** A snapshot that names no owner: the root is gone, or its shell chain is not ONE unambiguous
+ *  chain down to a non-shell (`windowsConsoleOwner`). A definite answer, not an outage. */
+const NO_SINGLE_OWNER = 'the console snapshot names no single owner (root gone, or an ambiguous shell chain)'
+
 /** The original path: one powershell.exe for this probe. Now the fallback when the worker cannot
  *  answer. ABSOLUTE PowerShell path, never a bare name (see core/win32-powershell.ts). */
-function readOneShot(rootPid: number, generation: string, script: string): Promise<PaneOwner | null> {
+function readOneShot(rootPid: number, generation: string, script: string): Promise<OwnerRead> {
   return new Promise((resolve) => {
     execFile(powershellExe(), powershellArgs(script),
       { timeout: WINDOWS_ONESHOT_PROBE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (error, stdout) => {
-        if (error) return resolve(null)
+        if (error) {
+          const killed = (error as { killed?: boolean }).killed === true
+          return resolve({
+            owner: null,
+            why: killed
+              ? `one-shot powershell exceeded its ${WINDOWS_ONESHOT_PROBE_TIMEOUT_MS} ms deadline`
+              : 'one-shot powershell failed (console unavailable, or the probe script errored)'
+          })
+        }
         try {
           const snapshot = asSnapshot(JSON.parse(stdout))
-          resolve(snapshot ? windowsConsoleOwner(rootPid, generation, snapshot) : null)
-        } catch { resolve(null) }
+          if (!snapshot) return resolve({ owner: null, why: 'one-shot powershell printed no snapshot' })
+          const owner = windowsConsoleOwner(rootPid, generation, snapshot)
+          resolve(owner ? { owner } : { owner: null, why: NO_SINGLE_OWNER })
+        } catch { resolve({ owner: null, why: 'one-shot powershell printed unreadable output' }) }
       })
   })
+}
+
+/** Where a null read's reason goes. The session host points it at its log file; unset elsewhere. */
+let reportOwnerReadFailure: ((line: string) => void) | null = null
+
+/** Route "why did a pane-owner read answer null" lines to a log (the session host's). */
+export function setWindowsOwnerReadFailureLog(report: ((line: string) => void) | null): void {
+  reportOwnerReadFailure = report
 }
 
 /**
  * The console owner of `rootPid`'s console. Routed through this process's long-lived probe worker
  * (windows-probe-worker.ts: the C# type is compiled once, not per probe); a worker that cannot
  * answer falls back to the one-shot script, and a probe that FAILED in the worker is null, exactly
- * as a failed one-shot run is.
+ * as a failed one-shot run is. A null answer reports its reason and how long it took.
  */
 export async function readWindowsConsoleOwner(
   rootPid: number,
@@ -222,11 +251,32 @@ export async function readWindowsConsoleOwner(
 ): Promise<PaneOwner | null> {
   if (process.platform !== 'win32') return null
   const script = windowsConsoleProbeScript(rootPid) // validates the pid (throws) before anything runs
+  const startedAt = Date.now()
+  const read = await readOwner(rootPid, generation, script, worker)
+  if (!read.owner)
+    reportOwnerReadFailure?.(
+      `pane owner unreadable pid=${rootPid} after ${Date.now() - startedAt} ms: ${read.why ?? 'unknown'}`
+    )
+  return read.owner
+}
+
+async function readOwner(
+  rootPid: number,
+  generation: string,
+  script: string,
+  worker: Pick<WindowsProbeWorker, 'request'> | null
+): Promise<OwnerRead> {
   const answer = worker ? await worker.request({ op: 'owner', pid: rootPid }) : null
   if (answer?.kind === 'ok') {
     const snapshot = asSnapshot(answer.result)
-    return snapshot ? windowsConsoleOwner(rootPid, generation, snapshot) : null
+    if (!snapshot) return { owner: null, why: 'the probe worker answered no snapshot' }
+    const owner = windowsConsoleOwner(rootPid, generation, snapshot)
+    return owner ? { owner } : { owner: null, why: NO_SINGLE_OWNER }
   }
-  if (answer?.kind === 'failed') return null
-  return readOneShot(rootPid, generation, script)
+  if (answer?.kind === 'failed')
+    return { owner: null, why: 'the probe failed in the worker (console unavailable for that pid)' }
+  const fallback = await readOneShot(rootPid, generation, script)
+  return fallback.owner
+    ? fallback
+    : { owner: null, why: `probe worker ${worker ? 'unavailable (timed out, died or benched)' : 'absent'}; ${fallback.why}` }
 }

@@ -434,7 +434,7 @@ describe('the limiter is consulted BEFORE any pane probe', () => {
     )
     expect(probes.length).toBe(1)
     // An unreadable pane is refused, so still no write — the probe is the thing being counted.
-    expect(outcome).toEqual({ kind: 'targetPaneUnreadable' })
+    expect(outcome.kind).toBe('targetPaneUnreadable')
     expect(writes).toEqual([])
   })
 })

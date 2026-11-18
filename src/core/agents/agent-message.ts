@@ -391,14 +391,33 @@ export async function deliverAgentMessage(
     // any caller that wants to retry an `unknown` needs backoff plus a per-target cap BEFORE its
     // second attempt, not after the incident.
     const probeMs = deps.paneProbeTimeoutMs?.(req.targetNodeId) ?? PANE_PROBE_TIMEOUT_MS
-    const before = await probeWithin(() => deps.paneOwner(req.targetNodeId), probeMs)
+    let probeSettled = false
+    const before = await probeWithin(async () => {
+      try {
+        return await deps.paneOwner(req.targetNodeId)
+      } finally {
+        probeSettled = true
+      }
+    }, probeMs)
     const verdict = isAgentPane(before, req.targetAgentId, req.targetBinaries)
+    // Why an unreadable read was unreadable, in the refusal itself: "no answer inside the budget"
+    // (a slow or wedged probe — retrying later helps) and "answered with nothing" (the backend
+    // cannot name an owner) used to be the same sentence. The budget is spelled in whole seconds
+    // with a hyphen so a caller scraping the text for a retry delay ("1500ms", "30 s") does not
+    // read one out of it.
+    const paneUnreadableDetail =
+      before !== null
+        ? undefined
+        : probeSettled
+          ? 'the pane read answered, but named no owner'
+          : `the pane read gave no answer inside its ${Math.round(probeMs / 1000)}-second budget`
     const facts: DeliveryFacts = {
       notPermitted: req.notPermitted,
       retryAfterMs: req.retryAfterMs,
       targetLive: req.targetLive ?? true,
       pane: verdict,
       paneObserved: before?.command,
+      ...(paneUnreadableDetail ? { paneUnreadableDetail } : {}),
       target: deps.mirrorEntry(req.targetNodeId),
       tokenFilePresent: deps.tokenFilePresent(req.targetNodeId),
       targetIsRemote: req.targetIsRemote
