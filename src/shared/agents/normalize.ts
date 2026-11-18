@@ -323,8 +323,10 @@ export function normalizeClaude(env: RawHookEnvelope): NormalizedAgentEvent | nu
 
   if (ev === 'PreToolUse' || ev === 'PostToolUse') {
     if (tool === 'AskUserQuestion' && p.tool_use_id) {
+      const questions = readQuestions(p.tool_input)
       return ev === 'PreToolUse'
-        ? { ...base, kind: 'state', state: 'waiting', questionId: p.tool_use_id }
+        ? { ...base, kind: 'state', state: 'waiting', questionId: p.tool_use_id,
+            ...(questions ? { lastMessage: questions.map((q) => q.question).join('\n') } : {}) }
         : { ...base, kind: 'state', state: 'working', answeredQuestionId: p.tool_use_id }
     }
     if (SUBAGENT_TOOLS.has(tool)) {
@@ -1007,7 +1009,7 @@ interface AntigravityPayload {
   fullyIdle?: unknown
   terminationReason?: unknown
   invocationNum?: unknown
-  toolCall?: { name?: unknown } | null
+  toolCall?: { name?: unknown; args?: { questions?: unknown } } | null
 }
 
 /**
@@ -1077,7 +1079,11 @@ export function normalizeAntigravity(env: RawHookEnvelope): NormalizedAgentEvent
   if (ev === 'PreToolUse') {
     const tool = antigravityToolName(p)
     const asks = tool !== undefined && ANTIGRAVITY_ASK_TOOLS.has(tool)
-    return { ...base, kind: 'state', state: asks ? 'waiting' : 'working' }
+    const questions = p.toolCall?.args?.questions
+    const detail = asks && Array.isArray(questions)
+      ? questions.flatMap((q) => q && typeof q.question === 'string' ? [q.question] : []).join('\n') : ''
+    return { ...base, kind: 'state', state: asks ? 'waiting' : 'working',
+      ...(detail ? { lastMessage: detail } : {}) }
   }
   if (ev === 'PostToolUse') {
     const tool = antigravityToolName(p)

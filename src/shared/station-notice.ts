@@ -28,37 +28,10 @@ import { oneLine } from './one-line'
 import { isSafeNodeId } from './safe-id'
 
 /** The closed set of reasons. A reason that is not in this union cannot produce a notice. */
-export type StationFailureReason = 'turn-errored' | 'dropped' | 'question-unanswered'
+export type StationFailureReason = 'turn-errored' | 'dropped' | 'question-unanswered' | 'approval-unconfirmed'
 
-/**
- * How long a station's QUESTION must stay unanswered — measured from the moment it was asked —
- * before its orchestrator is told, and only while that orchestrator is itself idle.
- *
- * Why this trigger exists at all: a station waiting on a question is not a failure the orchestrator
- * can fix (it has no verb that answers one, and `write` is confirm-gated), but an orchestrator that
- * is idle and waiting on the station will wait forever, which is the exact overnight stall this
- * feature is for. Told, it can reassign the work, skip the station, or stop and tell the user — and
- * the notice says which station is waiting, which is the thing the user needs when they come back.
- *
- * Why a QUESTION and not a permission prompt. A question (Claude's `AskUserQuestion`) is answered
- * by a tool result the moment the user picks an option, so the status mirror's `pendingQuestion` —
- * correlated by session and tool-use id, and held across unrelated hook traffic — is a fact about
- * whether it is still unanswered. A permission prompt has no such fact: on the main thread Claude
- * paints its dialog CONCURRENTLY with our held hook (docs/hook-reply-approvals.md), and an approval
- * given in the pane fires nothing until the approved tool FINISHES. A twenty-minute build approved
- * in the pane reads exactly like a prompt nobody answered, and a notice there would invite the
- * orchestrator to reassign or close a station that is working. So permission prompts are not a
- * trigger at all — a false "your station is stuck" is worse than none.
- *
- * Why 15 minutes: the human already gets NEEDS YOU, an unread dot and (in the background) an OS
- * notification the moment the station asks. A person at the desk answers inside a few minutes;
- * waking the orchestrator sooner would only race them — an orchestrator that reassigns a task
- * seconds before the user answers has doubled the work. Fifteen minutes is past any "I was reading
- * the diff" pause and short of "the user went home".
- *
- * Why only while the orchestrator is idle: a WORKING orchestrator is not stalled on anything, will
- * `list` again on its own, and a notice would only land in its queue behind whatever it is doing.
- */
+/** Pending requests get a reminder after 15 minutes. Native approval may precede its next hook,
+ *  so approval reminders describe missing confirmation and offer no failure actions. */
 export const STATION_QUESTION_NOTICE_MS = 15 * 60_000
 
 /** What core knows about a station when it asks the table. Every field is optional because every
@@ -77,6 +50,7 @@ export interface StationObservation {
   /** When the station asked the question the status mirror still holds unanswered
    *  (`pendingQuestion`). `undefined` when there is none, or when the ask was not observed. */
   questionSince?: number
+  approvalSince?: number
 }
 
 export interface StationFailureContext {
@@ -107,16 +81,23 @@ export interface StationTrigger {
  * at all) and a station that errored and was then killed should be reported as the thing the
  * orchestrator can least recover from by itself. Everything else — a `working` station, a `done`
  * station whose turn succeeded, a station whose state is unknown, a question younger than the
- * threshold or one asked while the orchestrator is busy, a permission prompt of any age — matches
+ * threshold or one asked while the orchestrator is busy — matches
  * no row and triggers nothing.
  *
  * Deliberately NOT a row: a station that exited cleanly (`/exit`, SessionEnd), one we exited
  * ourselves (Eco hibernation, Pause), a launch that is still queued. Those are decisions somebody
- * made, not failures, and the DROPPED verdict already refuses hibernated and paused nodes. Nor a
- * permission prompt — see `STATION_QUESTION_NOTICE_MS` for why "unanswered" cannot be told from
- * "approved and running" there.
+ * made, not failures, and the DROPPED verdict already refuses hibernated and paused nodes.
+ * An approval reminder cannot assert that the native prompt is still unanswered.
  */
 export const STATION_TRIGGERS: readonly StationTrigger[] = [
+  {
+    reason: 'approval-unconfirmed',
+    label: 'it is awaiting confirmation of approval; the native prompt may already have been approved',
+    option: 'wait',
+    retry: 'Ask the user to check the approval in this station. This notice does not establish that work has stopped.',
+    fires: (obs, ctx) => typeof obs.approvalSince === 'number' &&
+      ctx.now - obs.approvalSince >= STATION_QUESTION_NOTICE_MS && ctx.recipientState === 'done'
+  },
   {
     reason: 'dropped',
     label: 'its agent process is gone (the CLI died without exiting cleanly)',
@@ -201,6 +182,12 @@ export function stationNoticeBody(
   if (!row) throw new Error(`unknown station failure reason: ${reason}`)
   const id = isSafeNodeId(station.id) ? station.id : '(unknown id)'
   const fill = (s: string): string => s.replace(/<station>/g, id)
+  if (reason === 'approval-unconfirmed') return [
+    'nodeterm approval notice (informational).',
+    `station: ${id} "${stationNoticeTitle(station.title)}"`,
+    `reason: ${row.label}.`,
+    row.retry
+  ].join('\n')
   return [
     'nodeterm station notice: a station you opened has stopped.',
     `station: ${id} "${stationNoticeTitle(station.title)}"`,
@@ -256,6 +243,65 @@ export interface StationRecipient {
   projectId: string
   recipientNodeId: string
   stationTitle: string
+}
+
+/** Retains only closed ancestors reachable from a live station; live links remain revocable. */
+export class StationLineage {
+  private projects = new Map<string, Map<string, { parent?: string; linked: boolean }>>()
+
+  observe(canvases: readonly StationCanvas[], parentOf?: (id: string, projectId: string) => string | undefined): void {
+    const next = new Map<string, Map<string, { parent?: string; linked: boolean }>>()
+    for (const canvas of canvases) {
+      const previous = this.projects.get(canvas.id) ?? new Map()
+      const records = new Map(previous)
+      const live = new Set(canvas.nodes.map((n) => n.id))
+      for (const node of canvas.nodes) {
+        const raw = parentOf ? parentOf(node.id, canvas.id) : node.openedBy
+        const parent = typeof raw === 'string' && isSafeNodeId(raw) ? raw : undefined
+        const old = previous.get(node.id)
+        const linked = !!parent && ((canvas.ropes ?? []).some((r) =>
+          r.source === parent && r.target === node.id && r.id !== `ctrl-after-${parent}-${node.id}`
+        ) || (!live.has(parent) && old?.parent === parent && old.linked))
+        records.set(node.id, { parent, linked })
+      }
+      const reachable = new Set(live)
+      for (const id of live) {
+        let cursor = id
+        const seen = new Set<string>()
+        while (!seen.has(cursor)) {
+          seen.add(cursor)
+          const entry = records.get(cursor)
+          if (!entry?.parent || !entry.linked) break
+          cursor = entry.parent
+          reachable.add(cursor)
+        }
+      }
+      next.set(canvas.id, new Map([...records].filter(([id]) => reachable.has(id))))
+    }
+    this.projects = next
+  }
+
+  recipient(canvases: readonly StationCanvas[], stationNodeId: string): StationRecipient | undefined {
+    const owners = canvases.filter((p) => p.nodes.some((n) => n.id === stationNodeId))
+    if (owners.length !== 1 || !isSafeNodeId(stationNodeId)) return undefined
+    const canvas = owners[0]
+    const records = this.projects.get(canvas.id)
+    const seen = new Set<string>([stationNodeId])
+    let cursor = stationNodeId
+    for (;;) {
+      const entry = records?.get(cursor)
+      if (!entry?.parent || !entry.linked || seen.has(entry.parent)) return undefined
+      cursor = entry.parent
+      seen.add(cursor)
+      const locations = canvases.filter((p) => p.nodes.some((n) => n.id === cursor))
+      if (!locations.length) continue
+      if (locations.length !== 1 || locations[0].id !== canvas.id) return undefined
+      const recipient = canvas.nodes.find((n) => n.id === cursor)
+      if (!isNoticeRecipient(recipient)) return undefined
+      return { projectId: canvas.id, recipientNodeId: cursor,
+        stationTitle: stationNoticeTitle(canvas.nodes.find((n) => n.id === stationNodeId)?.title) }
+    }
+  }
 }
 
 /** A node that may RECEIVE a notice: an agent node whose harness can drive the canvas. Anything
@@ -328,6 +374,8 @@ export function stationRecipientFromOwner(
   owner: { sourceNodeId: string; projectId: string } | undefined
 ): StationRecipient | undefined {
   if (!owner || !isSafeNodeId(stationNodeId) || owner.sourceNodeId === stationNodeId) return undefined
+  if (canvases.filter((c) => c.nodes.some((n) => n.id === stationNodeId)).length !== 1 ||
+    canvases.filter((c) => c.nodes.some((n) => n.id === owner.sourceNodeId)).length !== 1) return undefined
   const canvas = canvases.find((c) => c.id === owner.projectId)
   const station = canvas?.nodes.find((n) => n.id === stationNodeId)
   const recipient = canvas?.nodes.find((n) => n.id === owner.sourceNodeId)

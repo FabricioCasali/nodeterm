@@ -43,6 +43,17 @@
 // block that reads this set for its `confirmBusy()` refusal. Not destructive in the literal sense —
 // a settings change is reversible — but it can GRANT a capability, and one dialog at a time is the
 // rule for every dialog an agent can raise. Its `--get` reads and never reaches the confirm.
+import { oneLine } from './one-line'
+
+export const CONTROL_AGENT_LABELS = {
+  idle: 'IDLE', working: 'WORKING', 'needs-you': 'NEEDS YOU', unconfirmed: 'AGENT STATUS UNCONFIRMED'
+} as const
+
+export function controlAskText(kind: 'approval' | 'question' | 'dialog', detail?: string, minutes?: number): string {
+  return kind === 'dialog' ? `[dialog: ${oneLine(detail ?? '')}]`
+    : `[${kind} ${minutes ?? 0}m${detail ? `: ${oneLine(detail)}` : ''}]`
+}
+
 export const DESTRUCTIVE_VERBS: ReadonlySet<string> = new Set([
   'write',
   'close',

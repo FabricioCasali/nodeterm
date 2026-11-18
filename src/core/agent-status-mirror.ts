@@ -56,6 +56,7 @@ export const IDENTITY_EXPIRE_MS = 30 * 24 * 60 * 60_000
 export const WRITE_DEBOUNCE_MS = 300
 
 export interface MirrorEntry {
+  pendingAsk?: { kind: 'approval' | 'question'; since: number; id?: string; detail?: string }
   /** Tickets introduced concurrently with a picker, retained until reply or explicit reset. */
   concurrentApprovalIds?: string[]
   /** Live question identity, independent of the short-lived display stash. */
@@ -568,6 +569,16 @@ function reduceEffectiveEntry(
     proof: boolean,
     idleAfterSessionStart = false
   ): void => {
+    const needsYou = state === 'blocked' || state === 'waiting'
+    if (needsYou) {
+      const kind = state === 'waiting' ? 'question' : 'approval'
+      const id = kind === 'question' ? ev.questionId ?? next.pendingQuestion?.toolUseId : ev.pendingId
+      const previous = prev?.pendingAsk
+      const same = previous?.kind === kind && (!ev.sessionId || ev.sessionId === prev?.sessionId) &&
+        (!id || previous.id === id)
+      next.pendingAsk = { kind, since: same ? previous.since : now,
+        id: id ?? (same ? previous.id : undefined), detail: ev.lastMessage ?? (same ? previous.detail : undefined) }
+    } else delete next.pendingAsk
     next.state = state
     next.updatedAt = now
     next.stateVerified = proof

@@ -166,6 +166,7 @@ export interface QueueBinding {
 }
 
 interface QueueEntry {
+  retryStep?: number
   req: QueuedDeliveryRequest
   enqueuedAt: number
   ttlMs: number
@@ -318,17 +319,20 @@ export function restoredBindingVerdict(
  *  draining, because one idle event does not promise the target stays idle. Derived from `RETRYABLE`
  *  minus the two outcomes the queue itself produces (`queueFull`, `expired`) — so `deliver`'s
  *  retryable outcomes (`rateLimited`, `targetBusy`, `targetNotIdleUnknown`, `targetStatusStale`) all
- *  wait for the NEXT idle, and a new retryable outcome added upstream is handled here the moment it
- *  exists rather than silently dropped. `rateLimited` waiting for the next idle (not re-flushing on a
- *  timer) is what keeps the queue from spinning against the very limiter that refused it. */
+ *  retain the original deadline. Rate refusals schedule their own retry deadline. */
 const REQUEUE_ON: ReadonlySet<AgentMessageOutcome['kind']> = new Set(
   (Object.keys(RETRYABLE) as AgentMessageOutcome['kind'][]).filter(
     (k) => RETRYABLE[k] && k !== 'queueFull' && k !== 'expired'
   )
 )
 
+const TRANSIENT_RETRY_MS = [1500, 3000, 6000] as const
+
 export class DeliveryQueue {
   private readonly queues = new Map<string, QueueEntry[]>()
+  private readonly flushing = new Set<string>()
+  private readonly enqueuing = new Map<string, Promise<unknown>>()
+  private generation = 0
   /** At most one pending retry nudge per target (`retryAfter`). */
   private readonly nudges = new Map<string, CancelTimer>()
   private readonly capacity: number
@@ -363,6 +367,23 @@ export class DeliveryQueue {
   async enqueue(
     req: QueuedDeliveryRequest,
     opts: { hibernated?: boolean; ttlMs?: number } = {}
+  ): Promise<Extract<AgentMessageOutcome, { kind: 'queued' } | { kind: 'queueFull' }>> {
+    const generation = this.generation
+    const run = (this.enqueuing.get(req.targetNodeId) ?? Promise.resolve()).then(() => {
+      if (generation !== this.generation) throw new Error('Delivery queue stopped')
+      return this.enqueueOne(req, opts, generation)
+    })
+    const settled = run.then(() => {}, () => {})
+    this.enqueuing.set(req.targetNodeId, settled)
+    try { return await run } finally {
+      if (this.enqueuing.get(req.targetNodeId) === settled) this.enqueuing.delete(req.targetNodeId)
+    }
+  }
+
+  private async enqueueOne(
+    req: QueuedDeliveryRequest,
+    opts: { hibernated?: boolean; ttlMs?: number },
+    generation: number
   ): Promise<
     Extract<AgentMessageOutcome, { kind: 'queued' } | { kind: 'queueFull' }>
   > {
@@ -379,6 +400,7 @@ export class DeliveryQueue {
       outcome: 'queued',
       bodyChars: req.body.length
     }, req)
+    if (generation !== this.generation) throw new Error('Delivery queue stopped')
     const binding = this.deps.bindingOf?.(req.targetNodeId)
     // A caller may ask for a longer wait than the queue's default (a target that has not STARTED
     // yet waits for a person to open its project), bounded by what a restored entry may claim.
@@ -388,6 +410,7 @@ export class DeliveryQueue {
       enqueuedAt: now,
       ttlMs,
       queuedTraceId: t.traceId,
+      retryStep: 1,
       cancelTimer: this.schedule(ttlMs, () => void this.expire(req.targetNodeId, entry)),
       ...(binding ? { binding: { ...binding } } : {})
     }
@@ -395,6 +418,7 @@ export class DeliveryQueue {
     this.queues.set(req.targetNodeId, list)
     this.persist()
     this.deps.onQueued?.(req)
+    if (!this.nudges.has(req.targetNodeId)) this.retryAfter(req.targetNodeId, TRANSIENT_RETRY_MS[0])
     // Kick the wake for a hibernated target so it starts its resume; the flush waits on the idle
     // event, not on the wake. A busy (non-hibernated) target needs nothing — it will go idle on its
     // own turn end.
@@ -410,38 +434,55 @@ export class DeliveryQueue {
    * ready again — one idle event does not promise the target stays idle across N deliveries.
    */
   async onTargetIdle(nodeId: string): Promise<void> {
-    for (;;) {
-      const list = this.queues.get(nodeId)
-      if (!list || list.length === 0) return
-      const entry = list[0]
-      // Take it off before delivering: a re-entrant idle event (deliver can await a real round-trip)
-      // must not flush the same entry twice. It goes back on failure, at the FRONT, preserving order.
-      list.shift()
-      entry.cancelTimer()
-      // Written off disk BEFORE the attempt (claim before effect): a crash mid-delivery then loses
-      // this one message rather than typing it twice after the next boot. At most once.
-      this.persist()
-      // A restored entry goes only into the session it was queued for (see the header).
-      const verdict = entry.restored
-        ? restoredBindingVerdict(entry.binding, this.deps.bindingOf?.(nodeId))
-        : 'deliver'
-      if (verdict === 'wait') {
-        this.requeueFront(nodeId, entry)
-        return
+    if (this.flushing.has(nodeId)) return
+    this.flushing.add(nodeId)
+    this.cancelNudge(nodeId)
+    const generation = this.generation
+    try {
+      for (;;) {
+        if (generation !== this.generation) return
+        const list = this.queues.get(nodeId)
+        if (!list || list.length === 0) return
+        const entry = list[0]
+        if (this.deps.now() - entry.enqueuedAt >= entry.ttlMs) {
+          await this.expire(nodeId, entry)
+          continue
+        }
+        // Take it off before delivering: a re-entrant idle event (deliver can await a real round-trip)
+        // must not flush the same entry twice. It goes back on failure, at the FRONT, preserving order.
+        list.shift()
+        entry.cancelTimer()
+        // Written off disk BEFORE the attempt (claim before effect): a crash mid-delivery then loses
+        // this one message rather than typing it twice after the next boot. At most once.
+        this.persist()
+        // A restored entry goes only into the session it was queued for (see the header).
+        const verdict = entry.restored
+          ? restoredBindingVerdict(entry.binding, this.deps.bindingOf?.(nodeId))
+          : 'deliver'
+        if (verdict === 'wait') {
+          this.requeueFront(nodeId, entry)
+          return
+        }
+        const outcome: AgentMessageOutcome =
+          verdict === 'gone' ? { kind: 'targetGone' } : await this.deps.deliver(entry.req).catch(
+            (): AgentMessageOutcome => ({ kind: 'targetGone' })
+          )
+        if (generation !== this.generation) return
+        if (REQUEUE_ON.has(outcome.kind)) {
+          // Not ready yet (busy again, still unverified, or rate-limited): keep it, TTL counting from
+          // its ORIGINAL enqueue, and stop draining — the target is evidently not idle after all.
+          this.requeueFront(nodeId, entry, outcome.kind === 'rateLimited' ? outcome.retryAfterMs : undefined)
+          return
+        }
+        // Terminal: delivered, or a refusal waiting will not fix (notPermitted from a revoked grant,
+        // targetGone, targetNotAgentPane…). The entry is done; tell the sender and move to the next.
+        if (this.queues.get(nodeId)?.length === 0) this.queues.delete(nodeId)
+        this.persist()
+        this.deps.onFlushed?.(entry.req, outcome)
       }
-      const outcome: AgentMessageOutcome =
-        verdict === 'gone' ? { kind: 'targetGone' } : await this.deps.deliver(entry.req)
-      if (REQUEUE_ON.has(outcome.kind)) {
-        // Not ready yet (busy again, still unverified, or rate-limited): keep it, TTL counting from
-        // its ORIGINAL enqueue, and stop draining — the target is evidently not idle after all.
-        this.requeueFront(nodeId, entry)
-        return
-      }
-      // Terminal: delivered, or a refusal waiting will not fix (notPermitted from a revoked grant,
-      // targetGone, targetNotAgentPane…). The entry is done; tell the sender and move to the next.
-      if (this.queues.get(nodeId)?.length === 0) this.queues.delete(nodeId)
-      this.persist()
-      this.deps.onFlushed?.(entry.req, outcome)
+    } finally {
+      this.flushing.delete(nodeId)
+      if (!this.depth(nodeId)) this.cancelNudge(nodeId)
     }
   }
 
@@ -451,13 +492,12 @@ export class DeliveryQueue {
    * queue; a pair window ending emits nothing, so an entry waiting only on it (the target idle all
    * along, or its `done` having landed inside the window) would otherwise sit until its TTL expired.
    *
-   * One pending nudge per target: a second request while one is armed is dropped, and a nudge that
-   * fires too early simply meets the same refusal, whose caller arms the next. Bounded by the TTL — an
-   * expired or delivered entry leaves an empty queue, and a nudge on an empty queue does nothing — and
-   * cheap: a refusal on the pair window is decided before any pane probe.
+   * One pending nudge per target, replaced when a refusal supplies a new deadline.
+   * Expiry and an empty queue cancel it; a rate refusal costs no pane probe.
    */
   retryAfter(nodeId: string, ms: number): void {
-    if (this.nudges.has(nodeId)) return
+    if (!this.depth(nodeId)) return
+    this.cancelNudge(nodeId)
     const cancel = this.schedule(Math.max(0, ms), () => {
       this.nudges.delete(nodeId)
       void this.onTargetIdle(nodeId)
@@ -465,15 +505,23 @@ export class DeliveryQueue {
     this.nudges.set(nodeId, cancel)
   }
 
+  private cancelNudge(nodeId: string): void {
+    this.nudges.get(nodeId)?.()
+    this.nudges.delete(nodeId)
+  }
+
   /** Put an entry back at the front with its TTL re-armed for the time it has LEFT (never reset to a
    *  full TTL — the wait it has already served counts). A lapsed remainder expires it immediately. */
-  private requeueFront(nodeId: string, entry: QueueEntry): void {
+  private requeueFront(nodeId: string, entry: QueueEntry, retryAfterMs?: number): void {
     const remaining = Math.max(0, entry.ttlMs - (this.deps.now() - entry.enqueuedAt))
     entry.cancelTimer = this.schedule(remaining, () => void this.expire(nodeId, entry))
     const list = this.queues.get(nodeId) ?? []
     list.unshift(entry)
     this.queues.set(nodeId, list)
     this.persist()
+    const step = entry.retryStep ?? 0
+    entry.retryStep = Math.min(step + 1, TRANSIENT_RETRY_MS.length - 1)
+    this.retryAfter(nodeId, retryAfterMs ?? TRANSIENT_RETRY_MS[step])
   }
 
   /**
@@ -488,7 +536,10 @@ export class DeliveryQueue {
     const i = list.indexOf(entry)
     if (i < 0) return // already delivered/re-queued with a fresh timer — this fire is stale
     list.splice(i, 1)
-    if (list.length === 0) this.queues.delete(nodeId)
+    if (list.length === 0) {
+      this.queues.delete(nodeId)
+      this.cancelNudge(nodeId)
+    }
     entry.cancelTimer()
     this.persist()
     await this.reportExpired(entry)
@@ -496,6 +547,7 @@ export class DeliveryQueue {
 
   /** Trace `expired` and tell the sender — the two legs every expiry owes. */
   private async reportExpired(entry: QueueEntry): Promise<void> {
+    const generation = this.generation
     const queuedForMs = this.deps.now() - entry.enqueuedAt
     const t = await this.deps.trace({
       sourceNodeId: entry.req.sourceNodeId,
@@ -504,7 +556,7 @@ export class DeliveryQueue {
       outcome: 'expired',
       bodyChars: entry.req.body.length
     }, entry.req)
-    this.deps.onExpired?.(entry.req, { traceId: t.traceId, queuedForMs })
+    if (generation === this.generation) this.deps.onExpired?.(entry.req, { traceId: t.traceId, queuedForMs })
   }
 
   /** Every queued entry as it is written to disk, oldest first per target. */
@@ -559,6 +611,7 @@ export class DeliveryQueue {
         queuedTraceId: p.queuedTraceId,
         cancelTimer: () => {},
         restored: true,
+        retryStep: 1,
         ...(p.binding ? { binding: p.binding } : {})
       }
       this.deps.onQueued?.(entry.req)
@@ -578,6 +631,7 @@ export class DeliveryQueue {
       list.push(entry)
       this.queues.set(p.req.targetNodeId, list)
       entry.cancelTimer = this.schedule(remaining, () => void this.expire(p.req.targetNodeId, entry))
+      if (!this.nudges.has(p.req.targetNodeId)) this.retryAfter(p.req.targetNodeId, TRANSIENT_RETRY_MS[0])
     }
     // The lapsed entries' ends are reported BEFORE the file drops them: a crash in between reports
     // one twice at the next boot, never not at all.
@@ -592,6 +646,7 @@ export class DeliveryQueue {
   /** Test seam / shutdown: cancel every timer and drop every queue WITHOUT tracing (a teardown is
    *  not an expiry the sender needs to hear about). */
   resetForTests(): void {
+    this.generation++
     for (const list of this.queues.values()) for (const e of list) e.cancelTimer()
     this.queues.clear()
     for (const cancel of this.nudges.values()) cancel()

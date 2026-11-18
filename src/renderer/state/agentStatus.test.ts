@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { applyAgentEvent } from './applyAgentEvent'
 import {
   useAgentStatus,
   createAgentStatusSession,
@@ -302,13 +303,12 @@ describe('the verified evidence for a transition', () => {
   })
 
   it('the agent-event reducer hands the event\'s flag to the store — the drop this whole change exists to fix', () => {
-    // A store field with no writer is the same bug in a new place, and this one is a plain
-    // argument list: nothing else in the suite would notice if the last argument disappeared.
-    // (The listener's store writes moved out of Canvas into state/applyAgentEvent.ts.)
-    const src = readFileSync(resolve(__dirname, '../../..', 'src/renderer/state/applyAgentEvent.ts'), 'utf8')
-    expect(src).toMatch(
-      /cs\.setState\(\s*e\.nodeId,\s*e\.state,\s*e\.agentId,\s*e\.newTurn,\s*e\.pendingId,\s*e\.verified,\s*e\.errored,\s*e\.held,\s*recordsTurnInterrupt\(e\)\s*\)/
-    )
+    const { store } = createAgentStatusSession(undefined)
+    const event = { nodeId: nid(), agentId: 'claude' as const, kind: 'state' as const, state: 'blocked' as const }
+    applyAgentEvent(store, null, { ...event, verified: true }, { observationRemote: false })
+    expect(store.getState().byId[event.nodeId].stateVerified).toBe(true)
+    applyAgentEvent(store, null, { ...event, verified: false }, { observationRemote: false })
+    expect(store.getState().byId[event.nodeId].stateVerified).toBe(false)
   })
 
   it('a same-state re-assert by a legacy POST drops the earlier proof', () => {

@@ -2793,6 +2793,28 @@ started a moment ago (`--run-now`, `run`) that has not posted its first hook —
 ordinary TTL: a retry cannot help before that hook, and its first verified `done` flushes the queue.
 Both shells wire `heldLaunch`.
 
+Queued messages also progress without another `done`: one timer and one in-flight attempt per target,
+FIFO, original TTL and claim-before-effect persistence. Transient refusals use a 1.5/3/6-second backoff
+(a tuning hypothesis, not a measured Windows probe budget); a rate refusal uses `retryAfterMs`.
+`ptyPaneProbeDeps` shares an unfinished probe until it settles, so a timeout cannot stack subprocesses.
+Expiring, draining or stopping the queue cancels its nudge. Partial/uncertain writes are terminal.
+Expired/discarded send/reply requests notify their original sender with an app-authored reason; no
+payload is copied and notice failures cannot generate more notices. The sender's current ownership,
+grant and state still gate that delivery; failure to notify is recorded, never called delivered.
+
+`nodeterm capture-pane --node <id> [--lines N]` reads only the currently visible screen through the
+shared core handler registered by Desktop and Server. It requires verified identity and a unique
+same-project target. Omission preserves the capture; N selects the last N visible lines. It creates
+no session and touches no keyboard/focus. An unavailable backend returns a read error; an actually
+empty screen succeeds. Direct native PTY and released sessions without a visible-capture route
+remain explicitly unavailable.
+
+Both editions list pending approval/question detail with the age of that session's request. Reasserted
+hooks retain its age; replacement/resolution clears it. Folder trust is read from Claude's current
+screen and shown as `NEEDS YOU [dialog: folder-trust]`, without synthesizing a hook or changing state.
+The existing `pty:capture` bridge accepts `visibleOnly`; this read never falls back to scrollback or
+turns an unavailable backend into a successful empty screen. Relay tabs reuse the WebSocket builder.
+
 **A board comment that @mentions a session is a message from a PERSON** (`@shared/board-comment`,
 `deliverBoardCommentFromUi` in `core/agents/agent-messaging.ts`). The comment composer's @ picker
 inserts an id-based token `@[label](node:<id>)` (the id is the authority, the label only a fallback
@@ -2808,10 +2830,8 @@ finding; both scenarios are tests); a comment mentions at most `BOARD_COMMENT_ME
 `FANOUT_PER_TURN` sessions and is refused whole above it; a pair-limited board comment is QUEUED
 rather than refused (`BOARD_QUEUE_ON` — an agent retries, a person could only post again; the
 flush re-runs the limiter) AND re-offered on a timer when the window ends
-(`DeliveryQueue.retryAfter`, armed at enqueue and at every `rateLimited` re-queue, one pending nudge
-per target): the queue otherwise flushes only on the target's `done`, and a window ending emits
-nothing — a session already idle, or whose `done` landed inside the window, left the comment to
-expire at the TTL; and the envelope reads `from: board comment by <author>` with no node id
+(`DeliveryQueue.retryAfter`, one pending nudge per target). Timed retries and `done` share the same
+serialized drain; the envelope reads `from: board comment by <author>` with no node id
 and `reply-to: none (…)` (`BOARD_COMMENT_REPLY_TO`; both agent-facing bodies render it from the
 constants). An agent node TITLED like that is labelled `node titled "…"` in its own `from:` line, so
 it cannot pass as a person. The body is the comment with each token turned into the `@<name>` its author saw
@@ -6019,14 +6039,12 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     retry, reassign or END a workflow, so a forgeable event is not evidence. 15 min because the
     human already got NEEDS YOU + a notification; an orchestrator reassigning seconds before the
     user answers doubles the work.
-  - **A permission prompt is NEVER a trigger, and that is a measurement, not caution.** On the main
-    thread Claude paints its dialog CONCURRENTLY with our held hook (docs/hook-reply-approvals.md),
-    and an approval given in the pane fires nothing until the approved tool FINISHES — so neither
-    `blocked` nor a `pendingId` can tell "unanswered" from "approved, twenty-minute build running",
-    and a notice there invites the orchestrator to close a working station. A question can be told
-    apart: its answer is a tool result, and the mirror's `pendingQuestion` is held across unrelated
-    traffic until it arrives. The monitor reads it through `pendingQuestionOf` (required dep)
-    rather than re-deriving it.
+  - **Approval confirmation gets an informational reminder after 15 minutes.** `blocked` and a
+    pending ticket cannot distinguish an unanswered native prompt from an approved tool still
+    running. `approval-unconfirmed` therefore says confirmation is missing, never that the human
+    failed to approve, and includes no close/reassign actions. Both shells consult the mirror's
+    open ask; resolution or verified resumed work suppresses the reminder. Question reminders
+    continue to use the correlated `pendingQuestionOf` fact.
   - **Once per episode, re-armed ONLY by a successful turn** — a turn that started after the notice
     and ended `done` with no error, no interruption and not the idle-prompt rescue — and the re-arm
     clears every fact the episode was about (error, DROPPED, question), or the next sweep re-fires
@@ -6044,11 +6062,14 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     "the other end of the rope" can be a sibling that opened nothing. The open verbs therefore
     STAMP `data.openedBy` where they draw the opener's rope (`connect` for the live paths —
     addAndConnect, verify, spawn-team — plus the off-canvas and cold-open writes; pure helper
-    `lib/stationOpener.ts`), and `stationRecipient` requires BOTH: `openedBy` names a canvas-capable
+    `lib/stationOpener.ts`), and notice resolution requires BOTH: `openedBy` names a canvas-capable
     agent node in the same (single) project, AND that node's OPENER rope to the station still
     exists — never a `ctrl-after-` wait rope (deleting the rope detaches the station). Never a bridge-linked node. `openedBy` is git-shared,
     so `safeOpenedBy` (`isSafeNodeId`) runs at both serializer seams, and a duplicate drops it. A
     node opened before this build has no `openedBy` and is never attributed (no guessing).
+    `StationLineage` retains observed closed ancestors reachable from live stations. It skips a
+    closed parent to the first live ancestor, rejects cycles and cross-project/duplicate identities,
+    and tracks live link revocation. This cache is process-local and grants no control/mutation rights.
   - **Server Edition: the creator LEDGER is the recipient rule** (`stationRecipientFromOwner` over
     `factory.openerOf`) — only stations opened during the current server run, the same creator rule
     as every other verb there; a restart clears it.

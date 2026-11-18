@@ -1380,8 +1380,8 @@ export interface PtyApi {
   generateName(persistKey: string, cwd: string, accountId?: string): Promise<GitResult>
   /** Suggest a group title from its member terminals' recent output via the configured AI agent. */
   generateGroupName(memberKeys: string[], cwd: string): Promise<GitResult>
-  /** Capture a terminal session's output as text. `full` grabs the entire scrollback. */
-  capture(persistKey: string, full?: boolean): Promise<string>
+  /** `full` reads scrollback. `visibleOnly` reads the current screen and rejects an unavailable backend. */
+  capture(persistKey: string, full?: boolean, visibleOnly?: boolean): Promise<string>
   /**
    * Seconds since this node's tmux session was created, measured on the machine that holds it, or
    * `null` when that cannot be told (no session, no tmux, an unreadable host, a garbled answer).

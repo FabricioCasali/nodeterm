@@ -5826,8 +5826,17 @@ export class PtyManager {
   /**
    * Capture a session's output. `full` grabs the entire scrollback (`-S -`, for the
    * markdown view); otherwise the recent ~200 lines (AI naming, palette search).
+   * `visibleOnly` bypasses history and fails explicitly when the backend cannot read the screen.
    */
-  async captureSession(persistKey: string, full = false): Promise<string> {
+  async captureSession(persistKey: string, full = false, visibleOnly = false): Promise<string> {
+    if (visibleOnly === true) {
+      const sessionId = this.sessionOfNode(persistKey)
+      if (!sessionId) throw new Error('Visible capture unavailable')
+      const capture = await this.captureVisible(sessionId)
+      if (capture.unavailable || this.sessionOfNode(persistKey) !== sessionId)
+        throw new Error('Visible capture unavailable or session changed')
+      return capture.screen
+    }
     const live = this.liveSessionForPersistKey(persistKey)
     if (live?.nativeWindowsPane) return live.nativeWindowsPane.capture(full)
     if (this.isZellij(persistKey, live)) {
@@ -5878,6 +5887,13 @@ export class PtyManager {
    */
   nodeOfSession(sessionId: string): string | undefined {
     return this.sessions.get(sessionId)?.nodeId
+  }
+
+  sessionOfNode(nodeId: string): string | undefined {
+    const indexed = this.byPersistKey.get(nodeId)
+    if (indexed && this.sessions.has(indexed)) return indexed
+    const session = this.sessionByPersistKey(nodeId)
+    return session ? [...this.sessions].find(([, value]) => value === session)?.[0] : undefined
   }
 
   /**

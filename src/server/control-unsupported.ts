@@ -64,6 +64,7 @@ export async function serverEditionControlHandler({ verb }: { verb: string }): P
 }
 
 export interface ServerEditionControlActions {
+  list?(sourceNodeId: string, args: Record<string, string>): Promise<ServerControlReply>
   openProject(
     sourceNodeId: string,
     args: Record<string, string>,
@@ -112,6 +113,7 @@ export interface ServerEditionControlActions {
 }
 
 const SERVER_V1_VERBS: ReadonlySet<string> = new Set([
+  'list',
   'open-project',
   'open-terminal',
   'open-agent',
@@ -174,6 +176,10 @@ export function createServerEditionControlHandler(actions: ServerEditionControlA
     }
 
     switch (command.verb) {
+      case 'list':
+        return actions.list ? actions.list(nodeId, command.args) : {
+          ok: false, error: CONTROL_UNSUPPORTED_ERROR, message: unsupportedServerVerbMessage(verb)
+        }
       case 'open-project':
         return actions.openProject(nodeId, command.args, verified)
       case 'open-terminal':

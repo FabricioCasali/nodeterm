@@ -77,7 +77,9 @@ export function applyAgentEvent(
           e.verified,
           e.errored,
           e.held,
-          recordsTurnInterrupt(e)
+          recordsTurnInterrupt(e),
+          { kind: e.askKind, detail: e.lastMessage, sessionId: e.sessionId,
+            id: e.questionId ?? e.pendingId ?? e.held?.pendingId }
         )
       // Claude's Stop names the BACKGROUND tasks still running (async subagents, nested ones,
       // background shells). A background subagent that ends its turn while its own work runs

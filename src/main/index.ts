@@ -1,4 +1,5 @@
 import { registerUpdatePrepIpc } from './update-prep'
+import { createCapturePaneControlHandler } from '../core/capture-pane-control'
 import { installOpenLinks } from './open-link-wiring'
 import { nodetermUrlFromArgv } from '../shared/open-link'
 import { createRemoteContextEnsure } from '../core/remote-context-ensure'
@@ -112,7 +113,7 @@ import {
   registerStationHandoverIpc
 } from '../core/station-handover'
 import { afterSuccessFlagRefusal } from '../shared/station-outcome'
-import { stationRecipient } from '../shared/station-notice'
+import { StationLineage } from '../shared/station-notice'
 import type { RemoteLogExec } from '../core/board-log'
 import type { PtyCreateOptions, TranscriptPresence } from '../shared/types'
 import { boardLogRemotePath } from '../core/board-log'
@@ -659,7 +660,9 @@ const workspaceWatcher = new WorkspaceWatcher({
     })
   }
 })
+const stationLineage = new StationLineage()
 workspaceStore.onPersist = () => {
+  stationLineage.observe(workspaceStore.persistedCanvases())
   workspaceWatcher.sync()
   refreshNodeTokens()
   // A node the store now provably holds nowhere (a delete, the canvas authority's op) ends its links.
@@ -1854,8 +1857,8 @@ app.whenReady().then(async () => {
     return generateGroupName(contents, localNamingCwd(memberKeys, cwd), settingsStore.get())
   })
 
-  corePlatform.handle(IPC.ptyCapture, (persistKey: string, full?: boolean) =>
-    ptyManager.captureSession(persistKey, full)
+  corePlatform.handle(IPC.ptyCapture, (persistKey: string, full?: boolean, visibleOnly?: boolean) =>
+    ptyManager.captureSession(persistKey, full, visibleOnly)
   )
 
   // The early-attach gate (see PtyManager.remoteSessionConfirmed). Registered here rather than in
@@ -2337,16 +2340,20 @@ app.whenReady().then(async () => {
   // every one of its gates, the per-project `agentMessaging` switch included.
   // Shared with `report-outcome --notify-opener` (#1356): same recipient, same delivery.
   const stationOpener = {
-    recipientFor: (id: string) => stationRecipient(workspaceStore.persistedCanvases(), id),
+    recipientFor: (id: string) => {
+      const canvases = workspaceStore.persistedCanvases()
+      stationLineage.observe(canvases)
+      return stationLineage.recipient(canvases, id)
+    },
     deliver: (notice: Parameters<typeof deliverStationNotice>[0]) =>
       deliverStationNotice(notice, messagingDeps)
   }
+  messagingDeps.noticeRecipientFor = (id) => stationOpener.recipientFor(id)?.recipientNodeId
   const stationNotices = new StationNoticeMonitor({
     now: () => Date.now(),
     recipientFor: stationOpener.recipientFor,
-    // The mirror's correlated, unanswered question — the one fact that says a station is really
-    // waiting on a human (station-notice.ts: permission prompts are not a trigger).
     pendingQuestionOf: (id) => mirrorEntry(id)?.pendingQuestion?.toolUseId,
+    pendingApprovalOf: (id) => openAskFor(id)?.kind === 'approval',
     appendBoardLog: (projectId, entry) => appendBoardLogVia(boardLogRouter, projectId, entry),
     deliver: stationOpener.deliver,
     publish: (views) => sendToMain(IPC.stationNoticeChanged, views),
@@ -2355,6 +2362,7 @@ app.whenReady().then(async () => {
     exists: (id) => workspaceStore.projectIdsForNode(id).length > 0
   })
   stationNotices.start()
+  messagingDeps.noticeCurrent = (id, at) => stationNotices.isCurrentNotice(id, at)
   // A queued notice's final outcome (flushed or expired) comes back here, so its chip never says
   // "queued" about a message that has since landed or lapsed.
   messagingDeps.onQueuedResult = (req, outcome) => stationNotices.onQueuedResult(req, outcome)
@@ -4621,7 +4629,11 @@ app.whenReady().then(async () => {
         : { ok: false, error: result.error, message: result.message }
     )
   }
-  hookServer.setControlHandler(async ({ verb, nodeId, args, verified, onLateAnswer }) => {
+  hookServer.setControlHandler(createCapturePaneControlHandler({
+    projects: () => workspaceStore.persistedCanvases(),
+    sessionOf: (nodeId) => ptyManager.sessionOfNode(nodeId),
+    captureVisible: (sessionId) => ptyManager.captureVisible(sessionId)
+  }, async ({ verb, nodeId, args, verified, onLateAnswer }) => {
     // When the request ARRIVED — before a `write` / `run` typed anything. The hand-over tracker
     // stamps the new work with it, so a turn the typed text starts is always later.
     const requestAt = Date.now()
@@ -4820,7 +4832,7 @@ app.whenReady().then(async () => {
       { onLate: onLateAnswer, finish: finishAnswer }
     )
     return result
-  })
+  }))
   initMediaProtocol()
 
   // Context Link reads happen HERE, on the desktop, which is what lets a remote (SSH-project)

@@ -1,4 +1,5 @@
 import type { TextDeliveryResult } from '../shared/text-delivery'
+import { StationLineage, type StationCanvas } from '../shared/station-notice'
 import { isLaunchShell } from '../shared/agents/pane'
 import { randomBytes, randomUUID } from 'node:crypto'
 import path from 'node:path'
@@ -626,6 +627,8 @@ export class HeadlessNodeFactory {
   private attached = new Set<string>()
   /** Process-local proof that a caller created a node during THIS Server Edition run. */
   private ownership: HeadlessNodeOwnership
+  private noticeLineage = new StationLineage()
+  private noticeCanvases: readonly StationCanvas[] = []
   /** Fresh server-spawned agents that have not emitted their first real working turn yet. */
   private awaitingFirstWorking = new Set<string>()
   /** Stations whose LAST turn ended on an API/model error (#521, the `errored` flag on a `done`),
@@ -668,6 +671,7 @@ export class HeadlessNodeFactory {
    */
   private async loadForEdit(): Promise<Workspace> {
     const workspace = structuredClone(await this.readWorkspace())
+    this.observeNoticeLineage(workspace.projects)
     this.baselines.set(workspace, snapshotContent(workspace))
     return workspace
   }
@@ -706,6 +710,7 @@ export class HeadlessNodeFactory {
     for (const [projectId, m] of ops) cast(projectId, m)
     this.baselines.set(workspace, after)
     await this.deps.workspaceStore.save(workspace)
+    this.observeNoticeLineage(workspace.projects)
     return true
   }
 
@@ -744,8 +749,21 @@ export class HeadlessNodeFactory {
 
   /** Who opened `nodeId` during THIS server run (and into which project), or undefined — the
    *  station-failure notice's recipient rule on this edition (src/core/agents/station-notice.ts). */
-  openerOf(nodeId: string): HeadlessNodeOwner | undefined {
-    return this.ownership.ownerOf(nodeId)
+  openerOf(nodeId: string, canvases?: readonly StationCanvas[]): HeadlessNodeOwner | undefined {
+    if (canvases) this.observeNoticeLineage(canvases)
+    const owner = this.ownership.ownerOf(nodeId)
+    if (!owner) return undefined
+    const recipient = this.noticeLineage.recipient(this.noticeCanvases, nodeId)
+    if (recipient) return { sourceNodeId: recipient.recipientNodeId, projectId: recipient.projectId }
+    return this.noticeCanvases.some((p) => p.nodes.some((n) => n.id === nodeId)) ? undefined : owner
+  }
+
+  private observeNoticeLineage(canvases: readonly StationCanvas[]): void {
+    this.noticeCanvases = canvases
+    this.noticeLineage.observe(canvases, (id, projectId) => {
+      const owner = this.ownership.ownerOf(id)
+      return owner?.projectId === projectId ? owner.sourceNodeId : undefined
+    })
   }
 
   /** Literal creator ownership: a caller may act only on nodes it freshly spawned this run. */
@@ -1945,6 +1963,8 @@ export class HeadlessNodeFactory {
 
   stop(): void {
     this.stopped = true
+    this.noticeCanvases = []
+    this.noticeLineage.observe([])
     this.ownership.clear()
     this.projectGrants.clear()
   }

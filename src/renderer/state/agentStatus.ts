@@ -41,6 +41,13 @@ import type { WakeContext } from '../terminal/wake-identity'
  * session into its own namespaced key without touching this file.
  */
 export interface AgentNodeStatus {
+  pendingAsk?: {
+    kind: 'approval' | 'question'
+    detail?: string
+    since: number
+    id?: string
+    sessionId?: string
+  }
   /** Live activity; undefined = idle/unknown. */
   state?: AgentState
   /**
@@ -357,7 +364,8 @@ export interface AgentStatusStore {
     verified?: boolean,
     errored?: boolean,
     held?: HeldPermission,
-    interrupted?: boolean
+    interrupted?: boolean,
+    ask?: { kind?: 'approval' | 'question'; detail?: string; id?: string; sessionId?: string }
   ): void
   /**
    * Subscribe to EVERY hook event `setState` records for node `id` — same-state ones included, and
@@ -775,7 +783,7 @@ export function createAgentStatusSession(
         return s.activeId === id ? { activeId: null } : s
       }),
 
-    setState: (id, state, agentId, newTurn, pendingId, verified, errored, held, interrupted) => {
+    setState: (id, state, agentId, newTurn, pendingId, verified, errored, held, interrupted, ask) => {
       set((s) => {
         const prev = s.byId[id] ?? EMPTY
         const now = Date.now()
@@ -805,12 +813,29 @@ export function createAgentStatusSession(
           state !== 'blocked' || (pendingId ?? prev.pendingId) === prev.pendingId
         // Same for a NEW held request (a held picker re-asserts `waiting`, where pendingId is absent).
         const needsYou = state === 'blocked' || state === 'waiting'
+        const askKind = ask?.kind ?? (state === 'blocked' ? 'approval' : 'question')
+        const askId = ask?.id ?? pendingId ?? held?.pendingId
+        const previousAsk = prev.pendingAsk
+        const sameAsk = needsYou && previousAsk?.kind === askKind &&
+          (!ask?.sessionId || !previousAsk.sessionId || ask.sessionId === previousAsk.sessionId) &&
+          (!askId || askId === previousAsk.id) &&
+          (askId !== undefined || ask?.detail === undefined || ask.detail === previousAsk.detail)
+        const pendingAsk = needsYou ? {
+          kind: askKind, since: sameAsk ? previousAsk.since : now,
+          detail: ask?.detail ?? (sameAsk ? previousAsk.detail : undefined),
+          id: askId ?? (sameAsk ? previousAsk.id : undefined),
+          sessionId: ask?.sessionId ?? prev.sessionId
+        } : undefined
+        const sameAskDetails = previousAsk?.kind === pendingAsk?.kind &&
+          previousAsk?.detail === pendingAsk?.detail && previousAsk?.since === pendingAsk?.since &&
+          previousAsk?.id === pendingAsk?.id && previousAsk?.sessionId === pendingAsk?.sessionId
         const sameHeld = !needsYou || !held || held.pendingId === prev.held?.pendingId
         if (
           prev.state === state &&
           (agentId === undefined || prev.agentId === agentId) &&
           samePendingWhileBlocked &&
           sameHeld &&
+          sameAskDetails &&
           !turnErrorMoves &&
           !turnInterruptMoves
         ) {
@@ -854,6 +879,7 @@ export function createAgentStatusSession(
         // clock is stamped (the same-state fast path above deliberately does not touch it —
         // see `lastEventAt`).
         const next = { ...prev, state, stateAt: now, lastEventAt: now, lastSeen: { at: now, state } }
+        next.pendingAsk = pendingAsk
         // Written on the same edge the state is — the evidence describes THIS transition, and an
         // absent argument is not evidence.
         next.stateVerified = verified === true
@@ -979,7 +1005,7 @@ export function createAgentStatusSession(
       set((s) => {
         const prev = s.byId[id] ?? EMPTY
         if (prev.sessionId === sessionId) return s
-        const byId = { ...s.byId, [id]: { ...prev, sessionId } }
+        const byId = { ...s.byId, [id]: { ...prev, sessionId, pendingAsk: undefined } }
         save(byId)
         return { byId }
       }),

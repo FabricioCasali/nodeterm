@@ -91,7 +91,13 @@ export interface BoardCommentMessage extends BoardCommentDeliverRequest {
 }
 
 /** Everything `runDelivery` can carry: an agent's verb, the app's station notice, or a board comment. */
-export type MessagingRequest = AgentMessageDeliveryInput | BoardCommentMessage
+type MessageFailureNotice = {
+  verb: 'message-failure'
+  sourceNodeId: string
+  targetNodeId: string
+  body: string
+}
+export type MessagingRequest = (AgentMessageDeliveryInput & { noticeAt?: number }) | BoardCommentMessage | MessageFailureNotice
 
 /** The flow-control identity of a board: one person's budget per project. `board:` can never be a
  *  node id (no ':' in `isSafeNodeId`'s alphabet), and a project id with a control character never
@@ -104,6 +110,9 @@ function boardFlowSource(projectId: string): string {
 function requestIdentity(
   req: MessagingRequest
 ): { sourceNodeId: string; sourceTitle: string; body: string } {
+  if (req.verb === 'message-failure') return {
+    sourceNodeId: `message-failure:${req.targetNodeId}`, sourceTitle: STATION_NOTICE_FROM, body: req.body
+  }
   if (req.verb === 'board-comment')
     return {
       sourceNodeId: boardCommentSourceId(req.commentId),
@@ -141,13 +150,22 @@ export function ptyPaneProbeDeps(pty: {
   paneOwner(nodeId: string): Promise<PaneOwner | null>
   paneProbeTimeoutMs(nodeId: string): number
 }): Pick<AgentMessagingDeps, 'paneOwner' | 'paneProbeTimeoutMs'> {
+  const pending = new Map<string, Promise<PaneOwner | null>>()
   return {
-    paneOwner: (nodeId) => pty.paneOwner(nodeId),
+    paneOwner: (nodeId) => {
+      const held = pending.get(nodeId)
+      if (held) return held
+      const read = pty.paneOwner(nodeId).finally(() => pending.delete(nodeId))
+      pending.set(nodeId, read)
+      return read
+    },
     paneProbeTimeoutMs: (nodeId) => pty.paneProbeTimeoutMs(nodeId)
   }
 }
 
 export interface AgentMessagingDeps {
+  noticeRecipientFor?(stationNodeId: string): string | undefined
+  noticeCurrent?(stationNodeId: string, at: number): boolean
   paneOwner(nodeId: string): Promise<PaneOwner | null>
   /** Per-target pane-read budget; see `DeliveryDeps.paneProbeTimeoutMs`. Optional — absent keeps
    *  the 2s default for every target, i.e. exactly the pre-existing behaviour. */
@@ -353,7 +371,7 @@ export function createDeliveryQueue(
       id: randomUUID(),
       ts: now(),
       author: QUEUE_TRACE_AUTHOR,
-      nodeId: req.targetNodeId,
+      nodeId: req.sourceNodeId,
       kind: 'event',
       event: { type: 'agent-message', from: req.sourceNodeId, to: req.targetNodeId, title }
     }
@@ -371,10 +389,11 @@ export function createDeliveryQueue(
             : {
                 // A queued station notice flushes as a station notice: the verb rides the queue, so
                 // its app-authored body and its reversed ownership check survive the wait.
-                verb: qreq.verb as AgentMessageDeliveryInput['verb'],
+                verb: qreq.verb as AgentMessageDeliveryInput['verb'] | 'message-failure',
                 sourceNodeId: qreq.verb === WAKE_VERB ? qreq.targetNodeId : qreq.sourceNodeId,
                 targetNodeId: qreq.targetNodeId,
-                body: qreq.body
+                body: qreq.body,
+                ...(typeof qreq.noticeAt === 'number' ? { noticeAt: qreq.noticeAt } : {})
               },
           deps
         )
@@ -421,7 +440,7 @@ export function createDeliveryQueue(
           targetNodeId: req.targetNodeId,
           landed: WROTE.has(outcome.kind)
         })
-        senderBoardLog(req, outcome.kind)
+        senderBoardLog(req, outcome.kind === 'notPermitted' ? `${outcome.kind}:${outcome.reason}` : outcome.kind)
         deps.onQueuedResult?.(req, outcome)
       },
       // Injected so a test pins TTL expiry deterministically; production uses the default setTimeout.
@@ -727,6 +746,7 @@ export async function runDelivery(
   // have opened the station, which is how the recipient was chosen; re-asked here so a queued
   // notice is re-validated at flush time like every other delivery).
   const stationNotice = req.verb === STATION_NOTICE_VERB
+  const failureNotice = req.verb === 'message-failure'
   const wake = req.verb === WAKE_VERB
 
   const projects = deps.projects()
@@ -759,7 +779,11 @@ export async function runDelivery(
     // toward, by construction: see agent-message-scope.ts). This is also where `isSafeNodeId` runs,
     // which the pair limiter's key and the tmux session namespace both depend on. A board comment has
     // no sender node, so its scope is the comment's own board.
-    const scope = board
+    const failureProjects = failureNotice
+      ? projects.filter((p) => p.nodes.some((n) => n.id === req.targetNodeId)) : []
+    const scope = failureNotice
+      ? resolveBoardCommentScope(projects, failureProjects.length === 1 ? failureProjects[0].id : '', req.targetNodeId)
+      : board
       ? resolveBoardCommentScope(projects, board.projectId, req.targetNodeId)
       : resolveDeliveryScope(projects, ident.sourceNodeId, req.targetNodeId)
     notPermitted = scopeRefusal(scope)
@@ -770,7 +794,11 @@ export async function runDelivery(
     // A station notice asks the ledger the other way round (see `stationNotice` above). So may a
     // `reply` (#1357): a station answering the agent that opened it reaches no node the opener does
     // not already control.
-    if (!notPermitted && deps.callerOwnsTarget) {
+    if (!notPermitted && stationNotice && deps.noticeRecipientFor &&
+      deps.noticeRecipientFor(req.sourceNodeId) !== req.targetNodeId) notPermitted = 'caller-not-owner'
+    if (!notPermitted && stationNotice && req.noticeAt !== undefined &&
+      deps.noticeCurrent?.(req.sourceNodeId, req.noticeAt) !== true) notPermitted = 'caller-not-owner'
+    if (!notPermitted && deps.callerOwnsTarget && !failureNotice && !(stationNotice && deps.noticeRecipientFor)) {
       if (board) notPermitted = 'unsupported-edition'
       else if (
         !(stationNotice
@@ -894,7 +922,7 @@ export async function runDelivery(
         // The from-line is composed HERE from the store's title (oneLine'd inside buildEnvelope);
         // the renderer never supplies a string that ends up inside the frame — except a board
         // comment's author name, which is the local user's own presence name.
-        sourceTitle: board
+        sourceTitle: board || failureNotice
           ? ident.sourceTitle
           : stationNotice
             ? STATION_NOTICE_FROM
@@ -908,7 +936,8 @@ export async function runDelivery(
         notPermitted,
         retryAfterMs,
         targetLive: await deps.hasLiveSession(req.targetNodeId),
-        ...(board || wake ? { origin: 'board-comment' as const } : {})
+        ...(failureNotice ? { origin: 'app-notice' as const }
+          : board || wake ? { origin: 'board-comment' as const } : {})
       },
       delivery
     )
@@ -937,6 +966,7 @@ const BOARD_RETRY_SLACK_MS = 500
 const QUEUE_ON_BUSY: ReadonlySet<AgentMessageOutcome['kind']> = new Set([
   'targetBusy',
   'targetNotIdleUnknown',
+  'targetPaneUnreadable',
   // Opened with its launch held (not on screen, no `--run-now`): flushed on its first idle after
   // the launch lands, with the long TTL below — the start waits for a person to open the project.
   'targetNotStarted',
@@ -1007,6 +1037,11 @@ async function deliverWithQueue(
       return answer(
         await queued(false, outcome.kind === 'targetNotStarted' ? NOT_STARTED_TTL_MS : undefined)
       )
+    if (outcome.kind === 'rateLimited' && req.verb !== 'board-comment') {
+      const held = await queued(false)
+      if (held.kind === 'queued') queue.retryAfter(req.targetNodeId, outcome.retryAfterMs)
+      return answer(held)
+    }
     if (req.verb === 'board-comment' && BOARD_QUEUE_ON.has(outcome.kind)) {
       const held = await queued(false)
       // Held by the pair window, not by the target's turn: nothing will report "idle" when the
@@ -1062,15 +1097,16 @@ export async function deliverBoardCommentFromUi(
  * this function with a body of its own, because `STATION_NOTICE_VERB` is not an IPC verb.
  */
 export async function deliverStationNotice(
-  notice: { stationNodeId: string; recipientNodeId: string; body: string },
+  notice: { stationNodeId: string; recipientNodeId: string; body: string; messageFailure?: true; noticeAt?: number },
   deps: AgentMessagingDeps
 ): Promise<AgentMessageOutcome> {
-  const { outcome } = await deliverFromControl(
+  const { outcome } = await deliverWithQueue(
     {
-      verb: STATION_NOTICE_VERB,
+      verb: notice.messageFailure ? 'message-failure' : STATION_NOTICE_VERB,
       sourceNodeId: notice.stationNodeId,
       targetNodeId: notice.recipientNodeId,
-      body: notice.body
+      body: notice.body,
+      ...(notice.noticeAt !== undefined ? { noticeAt: notice.noticeAt } : {})
     },
     deps
   )

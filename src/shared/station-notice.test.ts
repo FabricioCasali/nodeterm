@@ -67,8 +67,8 @@ describe('the trigger table — closed, and an unknown never triggers', () => {
     expect(stationFailure({ dropped: false, state: 'done' }, { now: T0 })).toBeNull()
   })
 
-  it('the table is exactly three reasons', () => {
-    expect(STATION_TRIGGERS.map((r) => r.reason)).toEqual(['dropped', 'turn-errored', 'question-unanswered'])
+  it('the table separates approval confirmation from failure reasons', () => {
+    expect(STATION_TRIGGERS.map((r) => r.reason)).toEqual(['approval-unconfirmed', 'dropped', 'turn-errored', 'question-unanswered'])
   })
 })
 
@@ -78,6 +78,11 @@ describe('the notice body — app-authored, fixed format', () => {
       const body = stationNoticeBody({ id: 'term-abc', title: 'Build UI' }, row.reason)
       expect(body).toContain('station: term-abc "Build UI"')
       expect(body).toContain(`reason: ${row.label}.`)
+      if (row.reason === 'approval-unconfirmed') {
+        expect(body).toContain('informational')
+        expect(body).not.toMatch(/close --node|reassign|handover/)
+        continue
+      }
       expect(body).toContain(`- ${row.option}: ${row.retry.replace(/<station>/g, 'term-abc')}`)
       for (const [name, text] of STATION_NOTICE_COMMON_OPTIONS)
         expect(body).toContain(`- ${name}: ${text.replace(/<station>/g, 'term-abc')}`)

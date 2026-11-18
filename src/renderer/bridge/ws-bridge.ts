@@ -283,8 +283,11 @@ export function buildRealApi(
     // No server handler — degrade gracefully (never reject the boot path).
     generateName: () => Promise.resolve(AI_NAMING_UNAVAILABLE),
     generateGroupName: () => Promise.resolve(AI_NAMING_UNAVAILABLE),
-    capture: (persistKey, full) =>
-      client.request(IPC.ptyCapture, persistKey, full).catch(() => '') as Promise<string>,
+    capture: (persistKey, full, visibleOnly) =>
+      client.request(IPC.ptyCapture, persistKey, full, visibleOnly).catch((error) => {
+        if (visibleOnly) throw error
+        return ''
+      }) as Promise<string>,
     // Documented degrade, not a stub with a hole in it: SSH PROJECTS are desktop-only (the whole
     // `sshProject` surface is `U(...)`-stubbed here), so no browser session ever holds a remote
     // ControlMaster to attach early over. `false` = "never attach early" = the pre-feature wait,

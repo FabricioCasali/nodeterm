@@ -12,7 +12,7 @@
  * - `question-unanswered` reads the status mirror's `pendingQuestion` (`pendingQuestionOf`) — the
  *   ONE place a Claude question is correlated by session and tool-use id and held across unrelated
  *   hook traffic until its answer arrives — and times it from the verified event that asked it.
- *   Permission prompts are deliberately not a trigger (see `STATION_QUESTION_NOTICE_MS`).
+ *   Approval reminders describe missing confirmation, not an unanswered native prompt.
  * - `dropped` is the RENDERER's pane measurement (`terminal/agent-liveness.ts`), reported in through
  *   `reportDropped`. Core cannot make that call itself: telling a killed CLI from our own Eco exit or
  *   a Pause needs `hibernated`/`paused`, which exist only in the renderer's store. It is therefore
@@ -99,6 +99,7 @@ export interface StationNoticeDeps {
    *  (`mirrorEntry(id)?.pendingQuestion?.toolUseId`), or undefined. Required: a shell that left it
    *  out would compile and never report a waiting station. */
   pendingQuestionOf(nodeId: string): string | undefined
+  pendingApprovalOf?(nodeId: string): boolean
   /** The canvas leg's durable line, on the recipient's card. `false` = no reachable log. */
   appendBoardLog(projectId: string, entry: BoardLogEntry): Promise<boolean>
   /** The pane leg: `deliverStationNotice` over the shell's messaging deps. Absent ⇒ canvas only. */
@@ -106,6 +107,8 @@ export interface StationNoticeDeps {
     stationNodeId: string
     recipientNodeId: string
     body: string
+    messageFailure?: true
+    noticeAt?: number
   }): Promise<AgentMessageOutcome>
   /** Push the full current notice list to every renderer (never a delta). */
   publish(views: StationNoticeView[]): void
@@ -130,6 +133,8 @@ export type StationNoticeEvent = Pick<
   | 'idle'
   | 'sessionPhase'
   | 'questionId'
+  | 'pendingId'
+  | 'sessionId'
 >
 
 interface Episode {
@@ -154,6 +159,8 @@ interface Tracked {
   /** The question this node asked (verified), and when. The mirror decides whether it is still
    *  unanswered; this only remembers the moment it was asked. */
   question?: { id: string; since: number }
+  approval?: { id?: string; since: number }
+  sessionId?: string
   episode?: Episode
   /** A turn started after the notice — the first half of "a later successful turn". */
   turnSinceNotice?: boolean
@@ -182,18 +189,25 @@ export function paneResult(o: AgentMessageOutcome): { pane: StationNoticePane; p
 
 export class StationNoticeMonitor {
   private readonly nodes = new Map<string, Tracked>()
+  private readonly messageResults = new WeakSet<object>()
   private timer: ReturnType<typeof setInterval> | null = null
   private lastPublished = '[]'
+  private stopped = false
+  private retries = new Set<ReturnType<typeof setTimeout>>()
 
   constructor(private readonly deps: StationNoticeDeps) {}
 
   start(intervalMs: number = STATION_SWEEP_MS): void {
     if (this.timer) return
+    this.stopped = false
     this.timer = setInterval(() => this.sweep(), intervalMs)
     ;(this.timer as { unref?: () => void }).unref?.()
   }
 
   stop(): void {
+    this.stopped = true
+    for (const retry of this.retries) clearTimeout(retry)
+    this.retries.clear()
     if (this.timer) clearInterval(this.timer)
     this.timer = null
   }
@@ -201,25 +215,49 @@ export class StationNoticeMonitor {
   /** Feed one normalized hook event. Every event, from every node: the recipient's own state is
    *  what the question row asks about, and its `done` is what an expired notice waits for. */
   onAgentEvent(e: StationNoticeEvent): void {
-    if (!e?.nodeId || e.verified !== true) return
+    if (this.stopped || !e?.nodeId || e.verified !== true) return
     const t = this.track(e.nodeId)
     const now = this.deps.now()
+    if (e.sessionId && t.sessionId && e.sessionId !== t.sessionId) {
+      t.question = undefined
+      t.approval = undefined
+      t.episode = undefined
+    }
+    if (e.sessionId) t.sessionId = e.sessionId
     // ANY verified hook event is the CLI reporting from inside its pane, so a standing DROPPED
     // verdict is withdrawn here, whatever the kind — see the header for why core must not leave
     // this to the renderer.
     t.dropped = false
-    if (e.questionId && t.question?.id !== e.questionId) t.question = { id: e.questionId, since: now }
-    if (e.kind === 'session' && e.sessionPhase === 'end') {
+    if (e.questionId && t.question?.id !== e.questionId) {
+      t.question = { id: e.questionId, since: now }
+      if (t.episode?.reason === 'question-unanswered') t.episode = undefined
+    }
+    if (e.kind === 'session' && (e.sessionPhase === 'end' || e.sessionPhase === 'start')) {
       // An orderly exit: the station's CLI announced its own end. Not a failure, and there is no
       // longer a state to reason about.
       t.state = undefined
       t.question = undefined
+      t.approval = undefined
+      t.episode = undefined
+      this.publish()
       return
     }
     if (e.kind !== 'state' || !e.state) return
     // The idle-prompt rescue may only move a WORKING node (the renderer's and the mirror's rule):
     // blocked/waiting is also "idle at the prompt", and a rescue must not clear a live question.
     if (e.idle === true && t.state !== 'working') return
+    if (e.state === 'blocked' && !t.question) {
+      if (!t.approval || (e.pendingId && e.pendingId !== t.approval.id)) {
+        t.approval = { id: e.pendingId, since: now }
+        if (t.episode?.reason === 'approval-unconfirmed') t.episode = undefined
+      }
+    } else if (e.state === 'working' || e.state === 'done' || e.state === 'waiting') {
+      t.approval = undefined
+      if (t.episode?.reason === 'approval-unconfirmed') {
+        t.episode = undefined
+        this.publish()
+      }
+    }
     if (e.newTurn === true) {
       t.errored = false
       if (t.episode) t.turnSinceNotice = true
@@ -264,6 +302,24 @@ export class StationNoticeMonitor {
     req: { verb?: unknown; sourceNodeId: string; targetNodeId: string },
     outcome: AgentMessageOutcome
   ): void {
+    if (this.stopped) return
+    if (req.verb === 'send' || req.verb === 'reply') {
+      if (['delivered', 'stalled', 'queued'].includes(outcome.kind) || this.messageResults.has(req)) return
+      this.messageResults.add(req)
+      const reason = outcome.kind === 'notPermitted' ? `notPermitted:${outcome.reason}` : outcome.kind
+      const body = `nodeterm message notice: ${req.verb} to ${req.targetNodeId} ended with ${reason}. ` +
+        'Delivery was not confirmed. Do not resend a partial or uncertain delivery.'
+      if (!this.deps.exists(req.sourceNodeId) || !this.deps.deliver) {
+        console.warn('[station-notice] sender unavailable', req.sourceNodeId, req.targetNodeId, reason)
+        return
+      }
+      void this.deps.deliver({ stationNodeId: req.targetNodeId, recipientNodeId: req.sourceNodeId, body, messageFailure: true })
+        .then((result) => {
+          if (!['delivered', 'stalled', 'queued'].includes(result.kind))
+            console.warn('[station-notice] message notice not delivered', req.sourceNodeId, result.kind)
+        }, () => console.warn('[station-notice] message notice failed', req.sourceNodeId))
+      return
+    }
     if (req.verb !== STATION_NOTICE_VERB) return
     const ep = this.nodes.get(req.sourceNodeId)?.episode
     if (!ep?.recipient || ep.recipient.recipientNodeId !== req.targetNodeId || ep.pane !== 'queued')
@@ -306,6 +362,13 @@ export class StationNoticeMonitor {
     const now = this.deps.now()
     let changed = false
     for (const [id, t] of [...this.nodes]) {
+      if (t.approval && this.deps.pendingApprovalOf && !this.deps.pendingApprovalOf(id)) {
+        t.approval = undefined
+        if (t.episode?.reason === 'approval-unconfirmed') {
+          t.episode = undefined
+          changed = true
+        }
+      }
       if (!this.deps.exists(id)) {
         if (t.episode?.recipient) changed = true
         this.nodes.delete(id)
@@ -317,8 +380,8 @@ export class StationNoticeMonitor {
         continue
       }
       if (ep?.recipient && !this.deps.exists(ep.recipient.recipientNodeId)) {
-        // The orchestrator was closed: nobody left to show the chip on.
-        t.episode = { ...ep, recipient: undefined, resolveUntil: 0 }
+        t.episode = { ...ep, recipient: undefined, pane: undefined, resolveUntil: now + STATION_RECIPIENT_GRACE_MS }
+        this.resolveAndTell(id, t.episode)
         changed = true
         continue
       }
@@ -355,11 +418,14 @@ export class StationNoticeMonitor {
     // unrelated hook traffic and drops it on the answer, an interrupt or a session boundary.
     if (t.question && this.deps.pendingQuestionOf(stationNodeId) !== t.question.id)
       t.question = undefined
+    if (t.approval && this.deps.pendingApprovalOf && !this.deps.pendingApprovalOf(stationNodeId))
+      t.approval = undefined
     const obs = {
       state: t.state,
       lastTurnErrored: t.errored,
       dropped: t.dropped,
-      questionSince: t.question?.since
+      questionSince: t.question?.since,
+      approvalSince: t.approval?.since
     }
     // The table is asked twice at most: first without the recipient (DROPPED and ERRORED do not
     // depend on it — and resolving a recipient reads the persisted canvases, so a station that
@@ -367,7 +433,8 @@ export class StationNoticeMonitor {
     // recipient's state.
     let reason = stationFailure(obs, { now })
     let recipient: StationRecipient | undefined
-    if (!reason && t.question && now - t.question.since >= STATION_QUESTION_NOTICE_MS) {
+    const pendingSince = t.question?.since ?? t.approval?.since
+    if (!reason && pendingSince !== undefined && now - pendingSince >= STATION_QUESTION_NOTICE_MS) {
       if (t.recipientMissAt !== undefined && now - t.recipientMissAt < STATION_RECIPIENT_GRACE_MS)
         return
       recipient = this.deps.recipientFor(stationNodeId)
@@ -391,7 +458,7 @@ export class StationNoticeMonitor {
 
   private resolveAndTell(stationNodeId: string, ep: Episode): void {
     const recipient = this.deps.recipientFor(stationNodeId)
-    if (recipient) this.tell(stationNodeId, ep, recipient)
+    if (recipient && this.deps.exists(recipient.recipientNodeId)) this.tell(stationNodeId, ep, recipient)
   }
 
   /** Both legs. The canvas leg needs no switch; the pane leg is the messaging service's to refuse. */
@@ -418,11 +485,13 @@ export class StationNoticeMonitor {
 
   /** One attempt at the pane leg; its result settles the chip, or earns the one rate-limit retry. */
   private sendPane(stationNodeId: string, ep: Episode): void {
+    if (this.stopped) return
     const deliver = this.deps.deliver
     const recipient = ep.recipient
     if (!deliver || !recipient) return
     const body = stationNoticeBody({ id: stationNodeId, title: recipient.stationTitle }, ep.reason)
-    void deliver({ stationNodeId, recipientNodeId: recipient.recipientNodeId, body })
+    void deliver({ stationNodeId, recipientNodeId: recipient.recipientNodeId, body,
+      ...(ep.reason === 'approval-unconfirmed' || ep.reason === 'question-unanswered' ? { noticeAt: ep.at } : {}) })
       .then(
         (o) => o,
         () => null
@@ -430,7 +499,7 @@ export class StationNoticeMonitor {
       .then((o) => {
         // The episode may have been re-armed (or the node forgotten) while the delivery ran; only
         // the episode this delivery belonged to takes its result.
-        if (this.nodes.get(stationNodeId)?.episode !== ep) return
+        if (this.stopped || this.nodes.get(stationNodeId)?.episode !== ep) return
         if (o?.kind === 'rateLimited' && !ep.rateRetried) {
           ep.rateRetried = true
           const wait = Math.min(Math.max(0, o.retryAfterMs), STATION_RATE_RETRY_MAX_MS) + 250
@@ -451,6 +520,17 @@ export class StationNoticeMonitor {
     this.publish()
   }
 
+  isCurrentNotice(nodeId: string, at: number): boolean {
+    const tracked = this.nodes.get(nodeId)
+    const episode = tracked?.episode
+    if (this.stopped || !episode || episode.at !== at) return false
+    if (episode.reason === 'approval-unconfirmed')
+      return !!tracked?.approval && (this.deps.pendingApprovalOf?.(nodeId) ?? tracked.state === 'blocked')
+    if (episode.reason === 'question-unanswered')
+      return !!tracked?.question && this.deps.pendingQuestionOf(nodeId) === tracked.question.id
+    return true
+  }
+
   /** The recipient went idle: deliver the notices that expired waiting for exactly that. */
   private offerExpiredTo(recipientNodeId: string): void {
     for (const [stationNodeId, t] of this.nodes) {
@@ -465,8 +545,12 @@ export class StationNoticeMonitor {
   }
 
   private schedule(ms: number, fn: () => void): void {
-    if (this.deps.schedule) return this.deps.schedule(ms, fn)
-    const h = setTimeout(fn, ms)
+    if (this.deps.schedule) return this.deps.schedule(ms, () => { if (!this.stopped) fn() })
+    const h = setTimeout(() => {
+      this.retries.delete(h)
+      if (!this.stopped) fn()
+    }, ms)
+    this.retries.add(h)
     ;(h as { unref?: () => void }).unref?.()
   }
 

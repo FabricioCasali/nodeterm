@@ -397,6 +397,7 @@ import {
   offScreenRefusal,
   sourceIsControlCapable,
   storedNodeListing,
+  controlListingDialogs,
   controlListingText,
   answerBrowserResolve,
   type BrowserResolveProject
@@ -14289,7 +14290,11 @@ export function Canvas() {
           if (!needsLiveCanvas(verb)) {
             // Stored nodes carry their persisted geometry, which the listing turns into each row's
             // place and size (nothing off screen was measured — see lib/nodeGeometry).
-            const rows = storedNodeListing(projects.find((p) => p.id === route.projectId)?.nodes ?? [], useAgentStatus.getState().byId, useLaunchDelivery.getState().byId, Date.now(), useStationOutcomes.getState().byId, useStationHandovers.getState().byId)
+            const listedNodes = projects.find((p) => p.id === route.projectId)?.nodes ?? []
+            const rows = await controlListingDialogs(
+              storedNodeListing(listedNodes, useAgentStatus.getState().byId, useLaunchDelivery.getState().byId, Date.now(), useStationOutcomes.getState().byId, useStationHandovers.getState().byId),
+              listedNodes, (id) => api.pty.capture(id, false, true)
+            )
             reply({
               ok: true,
               result: rows,
@@ -15091,12 +15096,16 @@ export function Canvas() {
             const st = useAgentStatus.getState().byId
             // Geometry is the MEASURED size on the live canvas (`liveNodeGeometry`), the persisted one
             // only for a node React Flow has not measured yet.
-            const list = storedNodeListing(nodesRef.current.map((n) => ({
+            const listedNodes = nodesRef.current.map((n) => ({
               id: n.id, kind: n.type, title: n.data.title as string,
               pendingLaunch: n.data.pendingLaunch, agentId: n.data.agentId as string | undefined,
               issueRef: n.data.issueRef,
               geometry: liveNodeGeometry(n, nodesRef.current)
-            })), st, useLaunchDelivery.getState().byId, Date.now(), useStationOutcomes.getState().byId, useStationHandovers.getState().byId)
+            }))
+            const list = await controlListingDialogs(
+              storedNodeListing(listedNodes, st, useLaunchDelivery.getState().byId, Date.now(), useStationOutcomes.getState().byId, useStationHandovers.getState().byId),
+              listedNodes, (id) => api.pty.capture(id, false, true)
+            )
             reply({ ok: true, result: list, message: controlListingText(list, { geometry: listGeometryRequested(args) }) })
             return
           }

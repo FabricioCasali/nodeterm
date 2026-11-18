@@ -90,6 +90,18 @@ describe('buildRealApi: workspace', () => {
   })
 })
 
+describe('buildRealApi: visible capture', () => {
+  it('forwards the visible-only read without converting backend failure into an empty screen', async () => {
+    const c = fakeClient()
+    const api = buildRealApi(c as never)
+    expect(await api.pty.capture('node', false, true)).toBe('R')
+    expect(c.calls).toEqual([{ kind: 'request', method: IPC.ptyCapture, args: ['node', false, true] }])
+    c.request = () => Promise.reject(new Error('capture unavailable'))
+    await expect(api.pty.capture('node', false, true)).rejects.toThrow('capture unavailable')
+    await expect(api.pty.capture('node')).resolves.toBe('')
+  })
+})
+
 describe('buildRealApi: host platform', () => {
   it('keeps a failed host read unknown instead of inventing Linux from the browser bridge', async () => {
     const c = fakeClient()

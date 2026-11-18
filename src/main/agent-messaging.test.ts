@@ -494,10 +494,10 @@ describe('deliver-on-idle wiring (PR 7)', () => {
     // deterministic, and a short ttl is irrelevant since the scheduler never really waits.
     const queue = createDeliveryQueue(deps, {
       ttlMs: 1000,
-      schedule: (_ms, fn) => {
-        fire = fn
+      schedule: (ms, fn) => {
+        if (ms === 1000) fire = fn
         return () => {
-          fire = null
+          if (fire === fn) fire = null
         }
       }
     })
@@ -522,6 +522,7 @@ describe('deliver-on-idle wiring (PR 7)', () => {
     )
     expect(expiredLine, 'no expired board-log line reached the sender').toBeTruthy()
     expect(expiredLine?.projectId).toBe('p1')
+    expect(expiredLine?.entry.nodeId).toBe('a1')
   })
 })
 
@@ -564,7 +565,7 @@ describe('a target that has not started yet (launch held off screen)', () => {
     expect(outcome.kind).toBe('queued')
     // The start waits for a person to open the project: 5 minutes lost the message in the field.
     expect(outcome.kind === 'queued' && outcome.ttlMs).toBe(24 * 60 * 60 * 1000)
-    expect(waits).toEqual([24 * 60 * 60 * 1000])
+    expect(waits).toEqual([24 * 60 * 60 * 1000, 1500])
     expect(deps.rec.sent).toHaveLength(0)
     start()
     await queue.onTargetIdle('b1')

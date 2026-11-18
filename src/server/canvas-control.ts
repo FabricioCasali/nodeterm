@@ -1,4 +1,6 @@
 import fs from 'node:fs'
+import { listControlNodes } from '../core/canvas-control-core'
+import { createCapturePaneControlHandler } from '../core/capture-pane-control'
 import path from 'node:path'
 
 import {
@@ -25,6 +27,7 @@ import { HANDOVER_FACT, StationHandoverTracker } from '../core/station-handover'
 import { stationRecipientFromOwner } from '../shared/station-notice'
 import {
   mirrorEntry,
+  openAskFor,
   nodeState
 } from '../core/agent-status-mirror'
 import type { BoardLogHandlers } from '../core/board-log-handlers'
@@ -266,26 +269,35 @@ export async function initServerCanvasControl(
       stationRecipientFromOwner(
         deps.workspaceStore.persistedCanvases(),
         stationNodeId,
-        factory.openerOf(stationNodeId)
+        factory.openerOf(stationNodeId, deps.workspaceStore.persistedCanvases())
       ),
     deliver: (notice: Parameters<typeof deliverStationNotice>[0]) =>
       deliverStationNotice(notice, messaging)
   }
+  messaging.noticeRecipientFor = (id) => opener.recipientFor(id)?.recipientNodeId
   const stationNotices = new StationNoticeMonitor({
     now: () => Date.now(),
     recipientFor: opener.recipientFor,
     pendingQuestionOf: (nodeId) => mirrorEntry(nodeId)?.pendingQuestion?.toolUseId,
+    pendingApprovalOf: (nodeId) => openAskFor(nodeId)?.kind === 'approval',
     appendBoardLog: (projectId, entry) => deps.boardLog.append(projectId, entry),
     deliver: opener.deliver,
     publish: (views) => platform().broadcast(IPC.stationNoticeChanged, views),
     exists: (nodeId) => deps.workspaceStore.projectIdsForNode(nodeId).length > 0
   })
+  messaging.noticeCurrent = (id, at) => stationNotices.isCurrentNotice(id, at)
   stationNotices.start()
   messaging.onQueuedResult = (req, outcome) => stationNotices.onQueuedResult(req, outcome)
   // Every listener is wired: bring back what the previous run queued.
   await restoreDeliveryQueue(queue, queueFile)
 
   const actions: ServerEditionControlActions = {
+    list: (sourceNodeId, args) => listControlNodes(sourceNodeId, args, {
+      projects: () => deps.workspaceStore.persistedCanvases(),
+      statusOf: mirrorEntry,
+      capture: (nodeId) => deps.ptyManager.captureSession(nodeId, false, true),
+      now: Date.now
+    }),
     openProject: (sourceNodeId, args, verified) =>
       factory.openProject(sourceNodeId, args, verified),
     openTerminal: (sourceNodeId, args, verified) =>
@@ -357,7 +369,11 @@ export async function initServerCanvasControl(
   // restart clears it, so an owner request or browser view is the only cold-spawn authority.
   await factory.start()
 
-  const baseHandler = createServerEditionControlHandler(actions)
+  const baseHandler = createCapturePaneControlHandler({
+    projects: () => deps.workspaceStore.persistedCanvases(),
+    sessionOf: (nodeId) => deps.ptyManager.sessionOfNode(nodeId),
+    captureVisible: (sessionId) => deps.ptyManager.captureVisible(sessionId)
+  }, createServerEditionControlHandler(actions))
   return {
     // New work typed into a station by `run` withdraws its older outcome report — the "new task"
     // rule in core/station-outcome-store.ts, applied on the answer. (`send` / `reply` go through

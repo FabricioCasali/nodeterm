@@ -1,4 +1,10 @@
 import { LINK_ENDPOINT_NOT_FOUND } from '../shared/canvas-link'
+import { CONTROL_AGENT_LABELS, controlAskText } from '../shared/control-verbs'
+import { claudeFolderTrustVisible } from '../shared/agents/claude-screen'
+import { isNoticeRecipient, type StationCanvas } from '../shared/station-notice'
+import type { MirrorEntry } from './agent-status-mirror'
+import { oneLine } from '../shared/one-line'
+import { capabilityAgentId, type AgentId } from '../shared/agents/config'
 // Pure core for agent canvas control: the verb model, request validation, and the standalone
 // CLI source. No electron imports, so this module + CONTROL_CLI_SCRIPT are unit-testable.
 // Electron/ipc/server wiring lives in canvas-control.ts + index.ts + hook-server.ts.
@@ -104,12 +110,11 @@ function stationNoticeDocLines(): string[] {
     '  stops, so you do not have to poll `list` to find out. You are told ONCE per station, and not',
     '  again until that station completes a turn successfully — a station that fails again right after',
     '  a retry stays silent, so decide what to do the first time.',
-    '- A station counts as stopped in exactly these cases:',
+    '- These are the notice reasons (approval confirmation is informational):',
     ...STATION_TRIGGERS.map((row) => `  - \`${row.reason}\`: ${row.label}.`),
     `  (\`question-unanswered\` is sent only while YOU are idle: the user sees NEEDS YOU the moment the`,
     `  station asks, and you hear after ${minutes} minutes if nobody has answered. A PERMISSION prompt`,
-    '  is never a notice: an approval given in the station\'s own pane is invisible until the approved',
-    '  tool finishes, so a long approved tool would look exactly like a prompt nobody answered.)',
+    '  gets an informational confirmation reminder: native approval can remain invisible until the tool finishes.)',
     '- Where it shows up: always as a STATION FAILED chip on your node and a line in your card\'s',
     '  activity. It is typed into YOUR session only when the project\'s agent-messaging switch is on',
     '  (off by default), as a framed message whose `from:` line reads',
@@ -119,12 +124,18 @@ function stationNoticeDocLines(): string[] {
     ...STATION_TRIGGERS.map(
       (row) => `  - \`${row.reason}\` → ${row.option}: ${row.retry.replace(/<station>/g, '<station id>')}`
     ),
+    '  For approval-unconfirmed, only check with the user. The following failure actions DO NOT apply:',
     ...STATION_NOTICE_COMMON_OPTIONS.map(
       ([name, text]) => `  - ${name}: ${text.replace(/<station>/g, '<station id>')}`
     ),
+    '- A closed parent is skipped to the first live ancestor in the same project, through observed opener links.',
     '- Nobody opened the station through you? You are not told about it. On the Server Edition you are',
     '  told only about stations you opened during this server run, and a dead CLI (DROPPED) is noticed',
-    '  only while a browser tab shows that station. `list` still marks LAST TURN ERRORED and DROPPED.'
+    '  only while a browser tab shows that station. `list` still marks LAST TURN ERRORED and DROPPED.',
+    '- `list` includes approval/question detail and the age of that pending request; Claude folder trust is',
+    '  NEEDS YOU [dialog: folder-trust]. `capture-pane --node <id> [--lines N]` reads the current visible',
+    '  screen in your project, without focus or keyboard input. N must be a positive decimal integer.',
+    '  An unavailable backend returns an error, never a successful empty screen.'
   ]
 }
 
@@ -495,6 +506,7 @@ function browserVerbDocLines(): string[] {
 
 export type ControlVerb =
   | 'list'
+  | 'capture-pane'
   | 'open-terminal'
   | 'open-claude'
   | 'open-agent'
@@ -540,8 +552,50 @@ export interface ControlCommand {
   args: Record<string, string>
 }
 
+export async function listControlNodes(sourceNodeId: string, args: Record<string, string>, deps: {
+  projects(): readonly StationCanvas[]
+  statusOf(nodeId: string): MirrorEntry | undefined
+  capture(nodeId: string): Promise<string>
+  now(): number
+}) {
+  const refuse = (error: string) => ({ ok: false as const, error, message: error })
+  const projects = deps.projects().filter((p) => p.nodes.some((n) => n.id === sourceNodeId))
+  if (projects.length !== 1 || !isNoticeRecipient(projects[0].nodes.find((n) => n.id === sourceNodeId)))
+    return refuse('list: source node is not authorized for this project')
+  const project = projects[0]
+  if (args.project !== undefined && args.project !== project.id) return refuse('list: project access denied')
+  const rows = []
+  for (const node of project.nodes) {
+    const status = deps.statusOf(node.id)
+    const current = status && !status.restored && !status.stateExpired ? status : undefined
+    const ask = current?.pendingAsk
+    const state = current?.state
+    let launchState: keyof typeof CONTROL_AGENT_LABELS | undefined = state === 'done' ? 'idle' : state === 'working' ? 'working'
+      : state === 'blocked' || state === 'waiting' ? 'needs-you' : node.agentId ? 'unconfirmed' : undefined
+    let dialogDetail: string | undefined
+    if (typeof node.agentId === 'string' && capabilityAgentId(node.agentId as AgentId) === 'claude') {
+      try {
+        if (claudeFolderTrustVisible(await deps.capture(node.id))) {
+          launchState = 'needs-you'
+          dialogDetail = 'folder-trust'
+        }
+      } catch { /* No current dialog evidence. */ }
+    }
+    rows.push({ id: node.id, kind: typeof node.kind === 'string' ? node.kind : 'terminal',
+      title: typeof node.title === 'string' ? node.title : '', ...(launchState ? { launchState } : {}),
+      ...(dialogDetail ? { dialogDetail } : {}),
+      ...(ask ? { askKind: ask.kind, askDetail: ask.detail, askMinutes: Math.floor(Math.max(0, deps.now() - ask.since) / 60_000) } : {}) })
+  }
+  return { ok: true as const, result: rows, message: rows.map((n) =>
+    `${n.id} [${n.kind}] ${oneLine(n.title)}` + (n.launchState ? ` — ${CONTROL_AGENT_LABELS[n.launchState]}` : '') +
+    (n.dialogDetail ? ` ${controlAskText('dialog', n.dialogDetail)}` :
+      n.askKind ? ` ${controlAskText(n.askKind, n.askDetail, n.askMinutes)}` : '')
+  ).join('\n') }
+}
+
 const VERBS: ControlVerb[] = [
   'list',
+  'capture-pane',
   'open-terminal',
   'open-claude',
   'open-agent',
@@ -748,6 +802,13 @@ export function parseControlRequest(
 ): ControlCommand | { error: string } {
   if (!VERBS.includes(verb as ControlVerb)) return { error: `Unknown verb: ${verb}` }
   const v = verb as ControlVerb
+  if (v === 'capture-pane') {
+    if (!args.node) return { error: 'capture-pane requires --node <id>' }
+    const unknown = Object.keys(args).find((key) => key !== 'node' && key !== 'lines')
+    if (unknown) return { error: `capture-pane: unknown flag --${unknown}` }
+    if (args.lines !== undefined && (!/^[1-9]\d*$/.test(args.lines) || !Number.isSafeInteger(Number(args.lines))))
+      return { error: 'capture-pane --lines must be a positive decimal integer' }
+  }
   const browserRefusal = browserFlagRefusal(v, args)
   if (browserRefusal) return { error: browserRefusal }
   if (v === 'close' && !args.node) return { error: 'close requires --node <id>' }
