@@ -2,8 +2,39 @@ import { spawn } from 'child_process'
 import { describe, expect, it } from 'vitest'
 import {
   WINDOWS_PROCESS_TREE_TERMINATION_TIMEOUT_MS,
+  rootGoneAfterFailedTreeKill,
   terminateWindowsProcessTree
 } from './windows-process-tree'
+
+// PAR-241: taskkill /T /F exits non-zero when any pid of the tree vanished mid-walk, although the
+// root died. The host asks this before deciding whether a rejected tree kill is a failed kill.
+describe('rootGoneAfterFailedTreeKill', () => {
+  it('answers true at once for a root that is already absent', async () => {
+    await expect(rootGoneAfterFailedTreeKill(4242, () => false, 50)).resolves.toBe(true)
+  })
+
+  it('waits out the grace for a root the kernel has not reaped yet', async () => {
+    let polls = 0
+    await expect(rootGoneAfterFailedTreeKill(4242, () => ++polls < 3, 1_000)).resolves.toBe(true)
+    expect(polls).toBe(3)
+  })
+
+  it('answers false for a root that outlives the grace: that kill really failed', async () => {
+    await expect(rootGoneAfterFailedTreeKill(4242, () => true, 60)).resolves.toBe(false)
+  })
+
+  it.skipIf(process.platform !== 'win32')(
+    'sees a real exited process as gone, the case taskkill reports as an error',
+    async () => {
+      const child = spawn('cmd.exe', ['/c', 'exit'], { windowsHide: true, stdio: 'ignore' })
+      const pid = child.pid as number
+      await new Promise<void>((resolve) => child.once('exit', () => resolve()))
+      await expect(terminateWindowsProcessTree(pid)).rejects.toThrow(/termination failed for PID/)
+      await expect(rootGoneAfterFailedTreeKill(pid)).resolves.toBe(true)
+    },
+    30_000
+  )
+})
 
 /**
  * The Windows kill path had no test of its own, on the platform this app ships to.

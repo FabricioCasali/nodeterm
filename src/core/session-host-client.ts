@@ -2232,8 +2232,13 @@ export class SessionHostClient {
         return
       } catch (error) {
         lastError = asError(error)
-        if (attempt + 1 < KILL_CONFIRMATION_ATTEMPTS) {
-          // A timeout or explicit error can leave an apparently-live socket behind. Force the
+        // A host REJECTION is a definite answer over a healthy socket, so the retry reuses it.
+        // Retiring the connection for it dropped every other session's stream and in-flight
+        // request, and made each attached terminal reconnect and repaint, once per failed node
+        // close (PAR-241).
+        const answered = error instanceof SessionHostRequestRejectedError
+        if (attempt + 1 < KILL_CONFIRMATION_ATTEMPTS && !answered) {
+          // A timeout or transport error can leave an apparently-live socket behind. Force the
           // retry through a fresh authenticated connection; target replay remains barred while
           // unrelated attachments are eligible for ordinary reconnect replay.
           const socket = this.socket
