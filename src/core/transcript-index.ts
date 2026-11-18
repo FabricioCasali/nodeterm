@@ -2,6 +2,7 @@
 // LOCAL account's {userData}/claude-accounts/<id>/projects. Built on launch + refreshed every 5
 // min, incrementally by mtime, and persisted to userData so a relaunch doesn't cold re-scan.
 // Search runs in-memory over the index. Read-only and local.
+import { createHash } from 'crypto'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -23,15 +24,25 @@ export const TRANSCRIPT_INDEX_REFRESH_MS = 5 * 60 * 1000
 const READ_CAP_BYTES = 5 * 1024 * 1024 // mirror transcript-reader: never read more than the tail
 
 let entries: TranscriptIndexEntry[] = []
-// True while the in-memory index holds changes the file does not. Cleared only by a write that
-// landed, so a failed persist is retried on the next refresh instead of waiting for an unrelated
-// transcript change — and a refresh that changed nothing still costs no 16 MB rewrite.
-let dirty = false
+// Transcript paths whose shard on disk differs from memory (write it, or delete it if the entry is
+// gone). A key leaves only when its write/delete landed, so a failed one is retried next refresh.
+let pending = new Set<string>()
+// The first refresh waits for the shards to load; an empty index would cold re-read every file.
+let loaded: Promise<void> = Promise.resolve()
 let timer: NodeJS.Timeout | undefined
 let accountsGetter: (() => ClaudeAccount[]) | undefined
 
-function indexFilePath(): string {
+/** The single-file index this module wrote before shards; migrated once, then deleted. */
+function legacyIndexFilePath(): string {
   return path.join(platform().userDataDir, 'transcript-index.json')
+}
+
+function indexDirPath(): string {
+  return path.join(platform().userDataDir, 'transcript-index')
+}
+
+export function shardFileName(transcriptPath: string): string {
+  return `${createHash('sha1').update(transcriptPath).digest('hex')}.json`
 }
 
 // Every LOCAL transcript root to index: the system default plus each managed LOCAL account's
@@ -119,7 +130,7 @@ async function readTail(filePath: string): Promise<string> {
   }
 }
 
-/** Read a persisted index. Anything unreadable is an empty index: the next refresh rebuilds it. */
+/** Read the legacy single-file index. Anything unreadable is an empty index. */
 export function loadPersistedIndex(file: string): TranscriptIndexEntry[] {
   try {
     const raw = fs.readFileSync(file, 'utf8')
@@ -131,28 +142,76 @@ export function loadPersistedIndex(file: string): TranscriptIndexEntry[] {
 }
 
 /**
- * Persist the index; resolves false (never throws) when the write did not land.
- *
- * It was a bare `writeFile` of ~16 MB every 5 minutes while agents are active. A crash or power
- * loss mid-write left truncated JSON, which loads as an empty index and forces a cold rescan —
- * measured at ~779 MB read and ~3.2 s. Temp + rename
- * means a reader sees the old index or the new one, never half of either. Mode 0600 because the
- * file holds transcript text (it was 0644).
+ * Read every shard in `dir`. A missing dir, a non-`.json` name (an orphaned temp) or an unreadable
+ * shard contributes nothing: the next refresh re-reads that transcript.
  */
-export async function persistIndex(
-  file: string,
-  index: TranscriptIndexEntry[]
-): Promise<boolean> {
+export async function loadShards(dir: string): Promise<TranscriptIndexEntry[]> {
+  let names: string[]
   try {
-    await writeFileAtomic(file, JSON.stringify(index), { mode: 0o600 })
-    return true
+    names = await fs.promises.readdir(dir)
   } catch {
-    return false // best-effort: the caller keeps the index dirty and tries again next refresh
+    return []
   }
+  const out: TranscriptIndexEntry[] = []
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue
+    try {
+      const e = JSON.parse(await fs.promises.readFile(path.join(dir, name), 'utf8'))
+      if (e && typeof e.transcriptPath === 'string' && typeof e.sessionId === 'string') out.push(e)
+    } catch {
+      /* skip */
+    }
+  }
+  return out
+}
+
+/**
+ * Write the shard of each key present in `index` and delete the shard of each key absent from it.
+ * Resolves to the keys whose write/delete did not land (never throws).
+ *
+ * One file per transcript so a refresh rewrites only what changed: the whole index stringified at
+ * once was ~45 MB of synchronous work on the main thread. Each shard goes through temp + rename
+ * (a reader sees the old shard or the new one) at 0600, because it holds transcript text.
+ */
+export async function persistShards(
+  dir: string,
+  index: TranscriptIndexEntry[],
+  keys: Iterable<string>
+): Promise<Set<string>> {
+  const byPath = new Map(index.map((e) => [e.transcriptPath, e]))
+  const failed = new Set<string>()
+  try {
+    await fs.promises.mkdir(dir, { recursive: true })
+  } catch {
+    return new Set(keys)
+  }
+  for (const key of keys) {
+    const file = path.join(dir, shardFileName(key))
+    const e = byPath.get(key)
+    try {
+      if (e) await writeFileAtomic(file, JSON.stringify(e), { mode: 0o600 })
+      else await fs.promises.rm(file, { force: true })
+    } catch {
+      failed.add(key)
+    }
+  }
+  return failed
+}
+
+async function loadIndex(): Promise<void> {
+  const dir = indexDirPath()
+  const legacy = legacyIndexFilePath()
+  if (!fs.existsSync(dir) && fs.existsSync(legacy)) {
+    entries = loadPersistedIndex(legacy)
+    pending = await persistShards(dir, entries, entries.map((e) => e.transcriptPath))
+    await fs.promises.rm(legacy, { force: true }).catch(() => {})
+    return
+  }
+  entries = await loadShards(dir)
 }
 
 // One refresh at a time. A cold scan of a large tree can outlast the interval, and two overlapping
-// runs would race their persists (and the `dirty` flag) as well as reading every file twice.
+// runs would race their persists (and the `pending` set) as well as reading every file twice.
 let refreshing: Promise<void> | undefined
 /** Rescan and persist if owed — what launch and the 5-minute timer run. A call while a refresh is
  *  in flight joins it rather than starting a second scan. */
@@ -164,10 +223,9 @@ export function refreshTranscriptIndex(): Promise<void> {
 }
 
 async function refreshOnce(): Promise<void> {
+  await loaded
   const scan = await scanTranscripts()
   const { toRead, keep } = planRefresh(entries, scan)
-  // Only persist when the index actually changed (new/updated entries or dropped ones).
-  const changed = toRead.length > 0 || keep.length !== entries.length
   const fresh: TranscriptIndexEntry[] = [...keep]
   for (const f of toRead) {
     const text = await readTail(f.transcriptPath)
@@ -181,9 +239,12 @@ async function refreshOnce(): Promise<void> {
       text: body
     })
   }
+  // Owed shards: every re-read entry, and every prior entry the scan dropped.
+  const keptPaths = new Set(keep.map((e) => e.transcriptPath))
+  for (const f of toRead) pending.add(f.transcriptPath)
+  for (const e of entries) if (!keptPaths.has(e.transcriptPath)) pending.add(e.transcriptPath)
   entries = fresh
-  if (changed) dirty = true
-  if (dirty) dirty = !(await persistIndex(indexFilePath(), entries))
+  if (pending.size) pending = await persistShards(indexDirPath(), entries, pending)
 }
 
 export function searchTranscripts(query: string): TranscriptHit[] {
@@ -195,11 +256,11 @@ export function searchTranscripts(query: string): TranscriptHit[] {
 
 export function initTranscriptIndex(getAccounts?: () => ClaudeAccount[]): void {
   accountsGetter = getAccounts
-  entries = loadPersistedIndex(indexFilePath())
+  loaded = loadIndex().catch(() => {})
   // Collect the legacy ownerless `<file>.tmp` shape once it is a day old. A pid-bearing temp left by
   // a crash inside writeFileAtomic is deliberately NOT collected (fs-atomic cannot prove its writer
   // dead across PID namespaces), so such an orphan stays until removed by hand.
-  void sweepStaleTempFiles(indexFilePath())
+  void sweepStaleTempFiles(legacyIndexFilePath())
   void refreshTranscriptIndex()
   timer = setInterval(() => void refreshTranscriptIndex(), TRANSCRIPT_INDEX_REFRESH_MS)
   if (timer.unref) timer.unref()
