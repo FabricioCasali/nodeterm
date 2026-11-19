@@ -346,6 +346,20 @@ const REQUEUE_ON: ReadonlySet<AgentMessageOutcome['kind']> = new Set(
 
 const TRANSIENT_RETRY_MS = [1500, 3000, 6000] as const
 
+/** How long after a flush met an unreadable pane the queue is re-offered. The target is IDLE (that
+ *  is why the flush ran), so no further `done` will come and the entry would sit until its TTL
+ *  dropped it (PAR-238: a task queued at 10:31:19, flushed into an unreadable pane at 10:34:10,
+ *  expired at 10:36:19 with its target idle the whole time). Above the ssh probe's 15 s child reap
+ *  (pane-probe.ts), so retries never overlap a probe still running — which is why this refusal
+ *  does not take the short transient backoff. */
+export const PANE_UNREADABLE_RETRY_MS = 20_000
+
+function requeueDelayMs(outcome: AgentMessageOutcome): number | undefined {
+  if (outcome.kind === 'rateLimited') return outcome.retryAfterMs
+  if (outcome.kind === 'targetPaneUnreadable') return PANE_UNREADABLE_RETRY_MS
+  return undefined
+}
+
 export class DeliveryQueue {
   private readonly queues = new Map<string, QueueEntry[]>()
   private readonly flushing = new Set<string>()
@@ -464,6 +478,9 @@ export class DeliveryQueue {
         const entry = list[0]
         if (this.deps.now() - entry.enqueuedAt >= entry.ttlMs) {
           await this.expire(nodeId, entry)
+          // Held past its TTL because the target is still mid-turn (`holdWhileBusy`): a timer
+          // nudge is not that turn's end, so there is nothing to deliver yet.
+          if (this.queues.get(nodeId)?.[0] === entry) return
           continue
         }
         // Take it off before delivering: a re-entrant idle event (deliver can await a real round-trip)
@@ -489,7 +506,7 @@ export class DeliveryQueue {
         if (REQUEUE_ON.has(outcome.kind)) {
           // Not ready yet (busy again, still unverified, or rate-limited): keep it, TTL counting from
           // its ORIGINAL enqueue, and stop draining — the target is evidently not idle after all.
-          this.requeueFront(nodeId, entry, outcome.kind === 'rateLimited' ? outcome.retryAfterMs : undefined)
+          this.requeueFront(nodeId, entry, requeueDelayMs(outcome))
           return
         }
         // Terminal: delivered, or a refusal waiting will not fix (notPermitted from a revoked grant,

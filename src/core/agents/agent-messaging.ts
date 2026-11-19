@@ -322,9 +322,7 @@ export function setDeliveryQueue(q: DeliveryQueue | null): void {
   deliveryQueue = q
 }
 
-/** How long after a queued flush met an unreadable pane the queue is re-offered. Above the ssh
- *  probe's 15 s child reap (pane-probe.ts), so retries never overlap a probe still running. */
-export const PANE_UNREADABLE_RETRY_MS = 20_000
+export { PANE_UNREADABLE_RETRY_MS } from './delivery-queue'
 
 /** The board-log author for a queue-level record (an app action, not a person's) — the same stamp
  *  `recordDelivery` uses. */
@@ -408,14 +406,6 @@ export function createDeliveryQueue(
         // re-offer it when the window ends (see `DeliveryQueue.retryAfter`).
         if (qreq.verb === 'board-comment' && outcome.kind === 'rateLimited')
           queue.retryAfter(qreq.targetNodeId, outcome.retryAfterMs + BOARD_RETRY_SLACK_MS)
-        // An unreadable pane is the same kind of wait: the target is IDLE (that is why this flush
-        // ran), so no further `done` will come to re-offer the entry, and it would sit until its
-        // TTL dropped it (PAR-238: a task queued at 10:31:19, flushed into an unreadable pane at
-        // 10:34:10, expired at 10:36:19 with its target idle the whole time). Re-offered on a
-        // timer instead — one pending nudge per target, bounded by the TTL, and far apart enough
-        // that the ssh hazard in pane-probe.ts (a probe's child outliving its deadline) cannot stack.
-        if (outcome.kind === 'targetPaneUnreadable')
-          queue.retryAfter(qreq.targetNodeId, PANE_UNREADABLE_RETRY_MS)
         return outcome
       },
       // The trace leg: ring always, board log when the TARGET's owning project is resolvable. A board

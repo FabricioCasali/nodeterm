@@ -63,7 +63,7 @@ describe('agent-operation verbs', () => {
     expect(SESSION_HOST_FEATURES).not.toContain('terminateOwnerV1')
     expect(SESSION_HOST_FEATURES).not.toContain('writeDetachedV1')
     expect(SESSION_HOST_FEATURES).toEqual([
-      'geometry', 'shutdown', 'sessionDetails', 'watch-attach', 'captureVisible', 'paneCwd'
+      'guardedMessageEnvelopeV1', 'geometry', 'shutdown', 'sessionDetails', 'watch-attach', 'captureVisible', 'paneCwd'
     ])
   })
 })

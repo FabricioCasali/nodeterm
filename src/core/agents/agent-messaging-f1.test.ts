@@ -21,7 +21,10 @@ function harness() {
     paneOwner: async () => owner,
     sendEnvelope: sent,
     hasLiveSession: (id) => id !== 'sender' || senderExists,
-    mirrorEntry: (id) => ({ state: id === 'worker' || senderBusy ? 'working' : 'done', stateVerified: true, updatedAt: Date.now() }),
+    // The worker's status evidence is expired: a turn still observed mid-flight holds its queue past
+    // the TTL (PAR-238), and these cases are about the lapse that does drop the message.
+    mirrorEntry: (id) => ({ state: id === 'worker' || senderBusy ? 'working' : 'done', stateVerified: true, updatedAt: Date.now(),
+      ...(id === 'worker' ? { stateExpired: true } : {}) }),
     projects: () => [{ id: 'p', nodes: [{ id: 'worker', agentId: 'claude' }, ...(senderExists ? [{ id: 'sender', agentId: 'claude' }] : [])] }],
     paneOwnerProject: () => 'p', isRemoteNode: () => false, messagingEnabled: () => enabled,
     callerOwnsTarget: (source, target) => source === 'sender' && target === 'worker',
