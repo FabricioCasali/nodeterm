@@ -215,6 +215,7 @@ describe('PtyManager: separate submit after restart, for envelopes, and never in
   const PLAN = '  Ready to build?\n  → Yes, build locally (b)\n    No, propose changes (p or Esc)\n'
   const APPROVAL = ' Run this command?\n  → Run (once) (y)\n    Skip (esc or n)\n'
   const QUESTION = ' │ Question 1 of 1 │\n │   › [ ] Red │\n │ Space select · Enter next/submit · Esc to skip │\n └────┘\n'
+  const AGY_SURVEY = "How's the CLI experience so far? Help us improve:\n[1] Good [2] Fine [3] Bad [0] Skip\n"
 
   beforeEach(() => {
     initPlatform(fakePlatform())
@@ -333,6 +334,21 @@ describe('PtyManager: separate submit after restart, for envelopes, and never in
 
     it(`${leg}: a cursor envelope meeting a dialog writes nothing and answers 'dialog'`, async () => {
       expect(await envelope('cursor', ssh, async () => PLAN)).toEqual({ ok: 'dialog', shapes: [], files: [] })
+    })
+
+    it(`${leg}: an agy envelope meeting the feedback survey writes nothing and answers 'dialog'`, async () => {
+      expect(await envelope('antigravity', ssh, async () => AGY_SURVEY)).toEqual({ ok: 'dialog', shapes: [], files: [] })
+    })
+
+    it(`${leg}: an agy envelope on a chat screen, or a blind capture, keeps its one paste+Enter`, async () => {
+      for (const screen of [async () => 'idle composer', async () => '', () => Promise.reject(new Error('gone'))]) {
+        execCalls.length = 0
+        expect(await envelope('antigravity', ssh, screen)).toMatchObject({ ok: true, shapes: ['paste+Enter'] })
+      }
+    })
+
+    it(`${leg}: the agy survey reader never gates another agent`, async () => {
+      expect(await envelope('claude', ssh, async () => AGY_SURVEY)).toMatchObject({ ok: true, shapes: ['paste+Enter'] })
     })
   }
 

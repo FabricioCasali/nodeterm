@@ -398,8 +398,8 @@ describe('the hooks.json command (POSIX form)', () => {
 describe.skipIf(!shAvailable)('the POST never holds up the answer', () => {
   it('a stalled endpoint does not delay the script: the POST runs in the background', () => {
     // agy waits for the hook PROCESS to exit before it acts on the decision, and our handler's
-    // timeout is ANTIGRAVITY_HOOK_TIMEOUT (5 s). A foreground POST against an endpoint that accepts
-    // and never answers, plus the bounded fallback walk, measured ~6 s — past that timeout, on
+    // timeout is ANTIGRAVITY_HOOK_TIMEOUT (15 s). A foreground POST against an endpoint that accepts
+    // and never answers, plus the bounded fallback walk, measured ~6 s — a large share of that timeout, on
     // every tool call. The fake curl here stalls for 6 s; the script must be long gone by then,
     // and the POST must still arrive afterwards.
     const r = runScript({ event: 'PreToolUse', curlDelaySec: 6 })
