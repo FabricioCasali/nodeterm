@@ -441,10 +441,10 @@ describe('deliver-on-idle for a board comment', () => {
     let owner: string | undefined = 'p1'
     const deps = fakeDeps({ mirrorEntry: () => busy, paneOwnerProject: () => owner })
     deps.queue = createDeliveryQueue(deps, {
-      schedule: (_ms, fn) => {
-        fire = fn
+      schedule: (ms, fn) => {
+        if (ms === DELIVERY_QUEUE_TTL_MS) fire = fn
         return () => {
-          fire = null
+          if (fire === fn) fire = null
         }
       }
     })
@@ -466,10 +466,10 @@ describe('deliver-on-idle for a board comment', () => {
     let owner: string | undefined = 'p1'
     const deps = fakeDeps({ mirrorEntry: () => busy, paneOwnerProject: () => owner })
     deps.queue = createDeliveryQueue(deps, {
-      schedule: (_ms, fn) => {
-        fire = fn
+      schedule: (ms, fn) => {
+        if (ms === DELIVERY_QUEUE_TTL_MS) fire = fn
         return () => {
-          fire = null
+          if (fire === fn) fire = null
         }
       }
     })

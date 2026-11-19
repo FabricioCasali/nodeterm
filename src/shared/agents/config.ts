@@ -166,7 +166,8 @@ export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
   antigravity: {
     // Google Antigravity CLI. Measured on `agy` 1.2.3 (Windows 11) — docs/antigravity-agent.md.
     label: 'Antigravity',
-    color: '#00a3a3',
+    // Green, and well away from codex's emerald (#10a37f): the old teal read as the same agent.
+    color: '#5db82c',
     launchCmd: 'agy',
     // `agy` has no positional prompt (its usage lists subcommands in that slot), and its
     // interactive-with-prompt flag is `--prompt-interactive`, not copilot's `--interactive`.

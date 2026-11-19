@@ -1,0 +1,109 @@
+{
+  "provenance": "PAR-230 isolated Windows CLI startup captures. No user authentication, existing session, production canvas or shared daemon was used.",
+  "isolation": "Allowlisted OS execution environment; HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/TMP/XDG_* and CLI home overrides point to disposable directories. Working directory is a new empty workspace.",
+  "format": "text: active xterm visible buffer; styled: SerializeAddon.serialize({scrollback:0}), an ANSI replay, not line-oriented tmux capture. Replay through TerminalEmulator before using a line-oriented SGR reader.",
+  "limitations": "Startup dialogs only. The agy preview contains illustrative code and activity labels; these are onboarding artwork, not executed work. An indicated model in that screen is not proof of a running authenticated turn.",
+  "commands": [
+    "claude",
+    "codex --no-daemon",
+    "agy"
+  ],
+  "captures": [
+    {
+      "cli": "claude",
+      "pid": 104944,
+      "startedAt": "2026-11-17T19:52:32.613Z",
+      "args": [],
+      "cols": 100,
+      "rows": 32,
+      "format": "ConPTY -> @xterm/headless visible buffer and SGR serialization",
+      "input": [],
+      "capturedAt": "2026-11-17T19:53:30.725Z",
+      "exited": false,
+      "writes": 8,
+      "label": "initial",
+      "text": "    ░░░   ░░░░░░░░░░                      ███▓░\n   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓\n                                             ░▓▓███▓▓░\n *                                 ░░░░\n                                 ░░░░░░░░\n                               ░░░░░░░░░░░░░░░░\n       █████████                                        *\n      ██▄█████▄██                        *\n       █████████      *\n.......█ █   █ █..........................................\n\n Let's get started.\n\n Choose the text style that looks best with your terminal\n To change this later, run /theme\n\n ❯ ✔ Auto (match terminal)\n     Dark mode\n     Light mode\n     Dark mode (colorblind-friendly)\n     Light mode (colorblind-friendly)\n     Dark mode (ANSI colors only)\n     Light mode (ANSI colors only)\n\n ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n  1  function greet() {\n  2 -  console.log(\"Hello, World!\");                                                                \n  2 +  console.log(\"Hello, Claude!\");                                                               \n  3  }\n ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ \n  Syntax theme: Monokai Extended (ctrl+t to disable)\n",
+      "styled": "\u001b[4C░░░\u001b[3C░░░░░░░░░░\u001b[22C███▓░\r\n\u001b[3C░░░░░░░░░░░░░░░░░░░\u001b[4C\u001b[1m*\u001b[16C\u001b[0m██▓░░\u001b[6C▓\r\n\u001b[45C░▓▓███▓▓░\r\n\u001b[38;2;153;153;153m *\u001b[33C░░░░\r\n \u001b[32C░░░░░░░░\r\n \u001b[30C░░░░░░░░░░░░░░░░\r\n\u001b[6C\u001b[38;2;215;119;87m █████████\u001b[40C\u001b[38;2;153;153;153m*\r\n\u001b[6C\u001b[38;2;215;119;87m██▄█████▄██\u001b[24C\u001b[39;1m*\r\n\u001b[6C\u001b[38;2;215;119;87;22m █████████\u001b[6C\u001b[0m*\r\n.......\u001b[38;2;215;119;87m█\u001b[1C█\u001b[3C█\u001b[1C█\u001b[0m..........................................\r\n\r\n\u001b[1CLet's\u001b[1Cget\u001b[1Cstarted.\r\n\r\n\u001b[1C\u001b[1mChoose\u001b[1Cthe\u001b[1Ctext\u001b[1Cstyle\u001b[1Cthat\u001b[1Clooks\u001b[1Cbest\u001b[1Cwith\u001b[1Cyour\u001b[1Cterminal\r\n\u001b[1C\u001b[38;2;153;153;153;22mTo\u001b[1Cchange\u001b[1Cthis\u001b[1Clater,\u001b[1Crun\u001b[1C/theme\r\n\r\n\u001b[1C\u001b[38;2;177;185;249m❯\u001b[1C\u001b[38;2;78;186;101m✔\u001b[1C\u001b[38;2;177;185;249mAuto\u001b[1C(match\u001b[1Cterminal)\r\n\u001b[5C\u001b[0mDark\u001b[1Cmode\r\n\u001b[5CLight\u001b[1Cmode\r\n\u001b[5CDark\u001b[1Cmode\u001b[1C(colorblind-friendly)\r\n\u001b[5CLight\u001b[1Cmode\u001b[1C(colorblind-friendly)\r\n\u001b[5CDark\u001b[1Cmode\u001b[1C(ANSI\u001b[1Ccolors\u001b[1Conly)\r\n\u001b[5CLight\u001b[1Cmode\u001b[1C(ANSI\u001b[1Ccolors\u001b[1Conly)\r\n\r\n\u001b[1C\u001b[38;2;80;80;80m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\r\n\u001b[1C\u001b[39;2m 1\u001b[2C\u001b[38;2;102;217;239;22mfunction\u001b[1C\u001b[38;2;166;226;46mgreet\u001b[0m()\u001b[1C{\r\n \u001b[38;2;220;90;90;48;2;61;1;0m 2 -  \u001b[38;2;248;248;242mconsole.log(\"Hello, \u001b[48;2;92;2;0mWorld\u001b[48;2;61;1;0m!\");\u001b[59X\u001b[59C\u001b[0m     \r\n \u001b[38;2;80;200;80;48;2;2;40;0m 2 +  \u001b[38;2;248;248;242mconsole.\u001b[38;2;166;226;46mlog\u001b[38;2;248;248;242m(\u001b[38;2;230;219;116m\"Hello, \u001b[48;2;4;71;0mClaude\u001b[48;2;2;40;0m!\"\u001b[38;2;248;248;242m);\u001b[58X\u001b[58C\u001b[0m     \r\n \u001b[2m 3\u001b[0m  }\r\n \u001b[38;2;80;80;80m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ \r\n\u001b[0m  \u001b[38;2;153;153;153mSyntax theme: Monokai Extended (ctrl+t to disable)\u001b[1B\u001b[47C\u001b[0m\u001b[?2004h\u001b[?1004h",
+      "version": "2.1.326",
+      "proof": "Actual isolated Windows ConPTY process; onboarding only. No live hook or active turn was captured."
+    },
+    {
+      "cli": "claude",
+      "pid": 104944,
+      "startedAt": "2026-11-17T19:52:32.613Z",
+      "args": [],
+      "cols": 100,
+      "rows": 32,
+      "format": "ConPTY -> @xterm/headless visible buffer and SGR serialization",
+      "input": [
+        "\r"
+      ],
+      "capturedAt": "2026-11-17T19:57:17.673Z",
+      "exited": false,
+      "writes": 10,
+      "label": "after-theme",
+      "text": "Welcome to Claude Code v2.1.326\n..........................................................\n\n     *                                       █████▓▓░\n                                 *         ███▓░     ░░\n            ░░░░░░                        ███▓░\n    ░░░   ░░░░░░░░░░                      ███▓░\n   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓\n                                             ░▓▓███▓▓░\n *                                 ░░░░\n                                 ░░░░░░░░\n                               ░░░░░░░░░░░░░░░░\n       █████████                                        *\n      ██▄█████▄██                        *\n       █████████      *\n.......█ █   █ █..........................................\n\n Claude Code can be used with your Claude subscription or billed based on API usage through your    \n Console account.\n\n Select login method:\n\n ❯ 1. Claude account with subscription · Individual, Team, or Enterprise\n   2. Anthropic Console account · API usage billing\n   3. 3rd-party platform · Bedrock, Microsoft Foundry, Google Vertex AI\n\n\n\n\n\n\n",
+      "styled": "\u001b[38;2;215;119;87mWelcome to Claude Code \u001b[38;2;153;153;153mv2.1.326\r\n\u001b[0m..........................................................\r\n\r\n     *                                       █████▓▓░\r\n                                 *         ███▓░     ░░\r\n            ░░░░░░                        ███▓░\r\n    ░░░   ░░░░░░░░░░                      ███▓░\r\n   ░░░░░░░░░░░░░░░░░░░    \u001b[1m*\u001b[0m                ██▓░░      ▓\r\n                                             ░▓▓███▓▓░\r\n\u001b[38;2;153;153;153m *                                 ░░░░\r\n                                 ░░░░░░░░\r\n                               ░░░░░░░░░░░░░░░░\r\n\u001b[0m       \u001b[38;2;215;119;87m█████████\u001b[40C\u001b[38;2;153;153;153m*\r\n\u001b[0m      \u001b[38;2;215;119;87m██▄█████▄██\u001b[24C\u001b[39;1m*\r\n\u001b[0m       \u001b[38;2;215;119;87m█████████      \u001b[0m*\r\n.......\u001b[38;2;215;119;87m█ █   █ █\u001b[0m..........................................\r\n\r\n \u001b[1mClaude\u001b[0m \u001b[1mCode\u001b[0m \u001b[1mcan\u001b[0m \u001b[1mbe\u001b[0m \u001b[1mused\u001b[0m \u001b[1mwith\u001b[0m \u001b[1myour\u001b[0m \u001b[1mClaude\u001b[0m \u001b[1msubscription\u001b[0m \u001b[1mor\u001b[0m \u001b[1mbilled\u001b[0m \u001b[1mbased\u001b[0m \u001b[1mon\u001b[0m \u001b[1mAPI\u001b[0m \u001b[1musage\u001b[0m \u001b[1mthrough\u001b[0m \u001b[1myour\u001b[0m    \r\n \u001b[1mConsole\u001b[0m \u001b[1maccount.\r\n\r\n\u001b[0m Select login method:\r\n\r\n \u001b[38;2;177;185;249m❯ \u001b[38;2;153;153;153m1. \u001b[38;2;177;185;249mClaude account with subscription · \u001b[38;2;153;153;153mIndividual, Team, or Enterprise\r\n\u001b[0m   \u001b[38;2;153;153;153m2. \u001b[0mAnthropic Console account · \u001b[38;2;153;153;153mAPI usage billing\r\n\u001b[0m   \u001b[38;2;153;153;153m3. \u001b[0m3rd-party platform · \u001b[38;2;153;153;153mBedrock, Microsoft Foundry, Google Vertex AI\u001b[7B\u001b[28C\u001b[0m\u001b[?2004h\u001b[?1004h",
+      "version": "2.1.326",
+      "proof": "Actual isolated Windows ConPTY process; onboarding only. No live hook or active turn was captured."
+    },
+    {
+      "cli": "codex",
+      "pid": 70564,
+      "startedAt": "2026-11-17T19:53:29.503Z",
+      "args": [
+        "--no-daemon"
+      ],
+      "cols": 100,
+      "rows": 32,
+      "format": "ConPTY -> @xterm/headless visible buffer and SGR serialization",
+      "input": [],
+      "capturedAt": "2026-11-17T19:54:20.167Z",
+      "exited": false,
+      "writes": 42,
+      "label": "initial",
+      "text": "  Welcome to Codex, OpenAI's command-line coding agent\n \n  Choose how you want to use Codex.\n\n> 1. Sign in with ChatGPT\n     Usage included with Plus, Pro, Business, and Enterprise plans\n\n  2. Sign in with Device Code\n     Sign in from another device with a one-time code\n\n  3. Sign in another way\n     Use an API key or another provider\n\n  Press enter to continue\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n ",
+      "styled": "\u001b[?1049h\u001b[H\u001b[2CWelcome\u001b[1Cto\u001b[1C\u001b[1mCodex\u001b[0m,\u001b[1COpenAI's\u001b[1Ccommand-line\u001b[1Ccoding\u001b[1Cagent\r\n \r\n  Choose how you want to use Codex.\r\n\r\n\u001b[36;2m> 1. \u001b[22mSign in with ChatGPT\r\n\u001b[2m     Usage included with Plus, Pro, Business, and Enterprise plans\r\n\r\n\u001b[2C\u001b[0m2.\u001b[1CSign\u001b[1Cin\u001b[1Cwith\u001b[1CDevice\u001b[1CCode\r\n\u001b[2m     Sign in from another device with a one-time code\r\n\r\n\u001b[2C\u001b[0m3.\u001b[1CSign\u001b[1Cin\u001b[1Canother\u001b[1Cway\r\n\u001b[2m     Use an API key or another provider\r\n\r\n  Press \u001b[1;22menter\u001b[22;2m to continue\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\u001b[0m \u001b[98C\u001b[?2004h\u001b[?1004h",
+      "version": "0.169.0",
+      "proof": "Actual isolated Windows ConPTY process; onboarding only. No live hook or active turn was captured."
+    },
+    {
+      "cli": "agy",
+      "pid": 79120,
+      "startedAt": "2026-11-17T19:53:26.773Z",
+      "args": [],
+      "cols": 100,
+      "rows": 32,
+      "format": "ConPTY -> @xterm/headless visible buffer and SGR serialization",
+      "input": [],
+      "capturedAt": "2026-11-17T19:54:20.168Z",
+      "exited": false,
+      "writes": 11,
+      "label": "initial",
+      "text": "Welcome to Antigravity CLI!\n\nChoose your color scheme:        ╭─────────────────────────────────────────────────────────────╮    \n                                 │ > you: add a greeting function                              │    \n  > terminal                     │                                                             │    \n    light                        │   Here's the change:                                        │    \n    solarized light              │                                                             │    \n    colorblind-friendly light    │   3     import \"fmt\"                                        │    \n    dark                         │   4                                                         │    \n    solarized dark               │   5  -  func main() {                                       │    \n    colorblind-friendly dark     │   5  +  func greet(name string) {                           │    \n    tokyo night                  │   6  +      fmt.Printf(\"Hello, %s!\\n\", name)                │    \n                                 │   7     }                                                   │    \n                                 │                                                             │    \n                                 │   ▾ Thought Process                                         │    \n                                 │     I need to add a greeting function. I'll use fmt.Printf. │    \n                                 │   ⚙ tool: write_file main.go                                │    \n                                 │   ◉ task: Implementing greeting                             │    \n                                 │   ✗ error: compilation failed                               │    \n                                 │   ⚠ warning: deprecation warning                            │    \n                                 │   → link: file:///path/to/main.go                           │    \n                                 │   ★ accent: highlighted text                                │    \n                                 │   · dim: press Enter to continue                            │    \n                                 ╰─────────────────────────────────────────────────────────────╯    \n\n    [Next]\n\n  ↑/↓ Navigate · enter Confirm\n                                                                     auto · Gemini 4 Carbon · medium\n\n\n",
+      "styled": "\u001b[?1049h\u001b[HWelcome to \u001b[38;5;69mAntigravity CLI\u001b[0m!\r\n\r\n\u001b[1mChoose your color scheme:\u001b[0m        \u001b[90m╭─────────────────────────────────────────────────────────────╮    \r\n\u001b[33C│ \u001b[34;1m> you: \u001b[0madd a greeting function\u001b[30C\u001b[90m│    \r\n\u001b[0m  > terminal\u001b[21C\u001b[90m│                                                             │    \r\n\u001b[0m    light\u001b[24C\u001b[90m│ \u001b[32;1m  Here's the change:\u001b[40C\u001b[90;22m│    \r\n\u001b[0m    solarized light\u001b[14C\u001b[90m│                                                             │    \r\n\u001b[0m    colorblind-friendly light    \u001b[90m│   3     \u001b[94;1mimport\u001b[0m \u001b[33m\"fmt\"\u001b[40C\u001b[90m│    \r\n\u001b[0m    dark\u001b[25C\u001b[90m│   4                                                         │    \r\n\u001b[0m    solarized dark\u001b[15C\u001b[90m│   5 \u001b[39;48;5;131m \u001b[31m-  \u001b[94;1mfunc\u001b[39;22m \u001b[34mmain\u001b[39m() {\u001b[38X\u001b[38C\u001b[0m \u001b[90m│    \r\n\u001b[0m    colorblind-friendly dark     \u001b[90m│   5 \u001b[39;48;5;65m \u001b[32m+  \u001b[94;1mfunc\u001b[39;22m \u001b[34mgreet\u001b[39m(name \u001b[35mstring\u001b[39m) {\u001b[26X\u001b[26C\u001b[0m \u001b[90m│    \r\n\u001b[0m    tokyo night\u001b[18C\u001b[90m│   6 \u001b[39;48;5;65m \u001b[32m+      \u001b[39mfmt.\u001b[34mPrintf\u001b[39m(\u001b[33m\"Hello, %s!\\n\"\u001b[39m, name)\u001b[15X\u001b[15C\u001b[0m \u001b[90m│    \r\n\u001b[33C│   7     \u001b[0m}\u001b[51C\u001b[90m│    \r\n\u001b[33C│                                                             │    \r\n\u001b[33C│   \u001b[37m▾ Thought Process\u001b[41C\u001b[90m│    \r\n\u001b[33C│     \u001b[37mI need to add a greeting function. I'll use fmt.Printf. \u001b[90m│    \r\n\u001b[33C│   \u001b[33m⚙ tool: \u001b[0mwrite_file main.go\u001b[32C\u001b[90m│    \r\n\u001b[33C│   \u001b[35m◉ task: \u001b[0mImplementing greeting\u001b[29C\u001b[90m│    \r\n\u001b[33C│   \u001b[31m✗ error: \u001b[0mcompilation failed\u001b[31C\u001b[90m│    \r\n\u001b[33C│   \u001b[33m⚠ warning: \u001b[0mdeprecation warning\u001b[28C\u001b[90m│    \r\n\u001b[33C│   \u001b[0m→ link: \u001b[34;4mfile:///path/to/main.go\u001b[27C\u001b[90;24m│    \r\n\u001b[33C│ \u001b[94;1m  ★ accent: \u001b[0mhighlighted text\u001b[32C\u001b[90m│    \r\n\u001b[33C│   · dim: press Enter to continue                            │    \r\n\u001b[33C╰─────────────────────────────────────────────────────────────╯    \r\n\r\n\u001b[0m    \u001b[32;1m[Next]\r\n\r\n\u001b[0m  \u001b[94;1m↑/↓\u001b[90;22m Navigate · \u001b[94;1menter\u001b[90;22m Confirm\r\n\u001b[69C\u001b[33mauto\u001b[39;2m · Gemini 4 Carbon · medium\u001b[24D\u001b[0m\u001b[?2004h\u001b[?1004h",
+      "version": "1.5.10",
+      "proof": "Actual isolated Windows ConPTY process; onboarding only. No live hook or active turn was captured."
+    },
+    {
+      "cli": "agy",
+      "pid": 79120,
+      "startedAt": "2026-11-17T19:53:26.773Z",
+      "args": [],
+      "cols": 100,
+      "rows": 32,
+      "format": "ConPTY -> @xterm/headless visible buffer and SGR serialization",
+      "input": [
+        "\r"
+      ],
+      "capturedAt": "2026-11-17T19:57:55.233Z",
+      "exited": false,
+      "writes": 13,
+      "label": "after-theme",
+      "text": "\n    ▄▀▀▄\n   ▀▀▀▀▀▀\n  ▀▀▀▀▀▀▀▀\n ▄▀▀    ▀▀▄\n▄▀▀      ▀▀▄\n\nTerms of Service & Data Use\n\nAI coding agents are known to have certain security risks, including autonomous code execution, data\nexfiltration, prompt injection and supply chain risks. Ensure that you monitor and verify all       \nactions taken by the agent.\n\n----------------------------------------------------------------------------------------------------\n\n  > [x] Yes, I agree to help improve Antigravity CLI by allowing\n      Google to collect and use my Interactions data,\n      subject to the Google Antigravity CLI Terms of Service\n      and Google Privacy Policy. I understand I can\n      choose to opt out later whenever I want via my\n      settings.\n\n      Links:\n      - Terms of Service: https://antigravity.google/terms\n      - Privacy Policy: https://policies.google.com/privacy\n\n    [Previous]      [Done]\n\n\n  ↑/↓ Navigate · enter Toggle\n                                                                     auto · Gemini 4 Carbon · medium\n",
+      "styled": "\u001b[?1049h\u001b[H\r\n\u001b[4C\u001b[38;5;179m▄\u001b[38;5;208;48;5;208m▀\u001b[38;5;203;48;5;209m▀\u001b[49m▄\r\n\u001b[0m   \u001b[38;5;149;48;5;113m▀\u001b[38;5;143;48;5;107m▀\u001b[38;5;173;48;5;173m▀\u001b[38;5;209;48;5;209m▀\u001b[38;5;203;48;5;167m▀▀\u001b[0m\r\n  \u001b[38;5;107;48;5;113m▀\u001b[38;5;71;48;5;72m▀\u001b[38;5;72;48;5;68m▀\u001b[38;5;67;49m▀\u001b[38;5;103m▀\u001b[38;5;98;48;5;68m▀\u001b[38;5;97;48;5;62m▀\u001b[38;5;132;48;5;97m▀\u001b[0m\r\n \u001b[38;5;78m▄\u001b[48;5;74m▀\u001b[38;5;73m▀\u001b[0m    \u001b[38;5;68;48;5;69m▀▀\u001b[49m▄\r\n\u001b[38;5;75m▄\u001b[38;5;79;48;5;75m▀\u001b[38;5;75;49m▀      \u001b[38;5;69m▀\u001b[48;5;69m▀\u001b[49m▄\r\n\r\n\u001b[39;1mTerms of Service & Data Use\r\n\r\n\u001b[0mAI coding agents are known to have certain security risks, including autonomous code execution, data\r\nexfiltration, prompt injection and supply chain risks. Ensure that you monitor and verify all       \r\nactions taken by the agent.\r\n\r\n----------------------------------------------------------------------------------------------------\r\n\r\n  > [x] Yes, I agree to help improve Antigravity CLI by allowing\r\n\u001b[6CGoogle to collect and use my Interactions data,\r\n\u001b[6Csubject to the Google Antigravity CLI Terms of Service\r\n\u001b[6Cand Google Privacy Policy. I understand I can\r\n\u001b[6Cchoose to opt out later whenever I want via my\r\n\u001b[6Csettings.\r\n\r\n\u001b[6CLinks:\r\n\u001b[6C- Terms of Service: https://antigravity.google/terms\r\n\u001b[6C- Privacy Policy: https://policies.google.com/privacy\r\n\r\n\u001b[4C\u001b[34;1m[Previous]\u001b[0m      \u001b[32;1m[Done]\r\n\r\n\r\n\u001b[0m  \u001b[94;1m↑/↓\u001b[90;22m Navigate · \u001b[94;1menter\u001b[90;22m Toggle\r\n\u001b[69C\u001b[33mauto\u001b[39;2m · Gemini 4 Carbon · medium\u001b[0m\u001b[?2004h\u001b[?1004h",
+      "version": "1.5.10",
+      "proof": "Actual isolated Windows ConPTY process; onboarding only. No live hook or active turn was captured."
+    }
+  ]
+}

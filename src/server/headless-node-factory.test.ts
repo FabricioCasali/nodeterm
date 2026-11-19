@@ -276,6 +276,49 @@ describe('HeadlessNodeFactory', () => {
     fs.rmSync(dataDir, { recursive: true, force: true })
   })
 
+  it.each(['agent', 'terminal'] as const)('PAR-230 T12 %s explicit title survives publication and a fresh store load', async (verb) => {
+    const params = { title: 'ARQ ORQ-78', ...(verb === 'agent' ? { agent: 'codex', prompt: 'brief' } : { cmd: 'echo brief' }) }
+    const reply = verb === 'agent'
+      ? await factory.openAgent('term-source', params, true)
+      : await factory.openTerminal('term-source', params, true)
+    expect(reply.ok, JSON.stringify(reply)).toBe(true)
+    const id = (reply.result as { id: string }).id
+    expect(published.find((node) => node.id === id)).toMatchObject({ title: 'ARQ ORQ-78', titleAuto: false })
+    const restored = (await new WorkspaceStore().load({ sideline: false })).projects[0].nodes.find((node) => node.id === id)
+    expect(restored).toMatchObject({ title: 'ARQ ORQ-78', titleAuto: false })
+  })
+
+  it.each(['agent', 'terminal'] as const)('PAR-230 T12 %s count numbers each explicit title and disables auto-title', async (verb) => {
+    const params = { title: 'ARQ ORQ-78', count: '2', ...(verb === 'agent' ? { agent: 'codex', prompt: 'brief' } : { cmd: 'echo brief' }) }
+    const reply = verb === 'agent'
+      ? await factory.openAgent('term-source', params, true)
+      : await factory.openTerminal('term-source', params, true)
+    expect(reply.ok, JSON.stringify(reply)).toBe(true)
+    const created = (await store.load({ sideline: false })).projects[0].nodes.filter((node) => !['term-source', 'term-owned', 'term-upstream'].includes(node.id))
+    expect(created).toHaveLength(2)
+    expect(new Set(created.map((node) => node.title)).size).toBe(2)
+    for (const [index, node] of created.entries()) {
+      expect(node.title).toContain('ARQ ORQ-78')
+      expect(node.title).toContain(String(index + 1))
+      expect(node.titleAuto).toBe(false)
+    }
+  })
+
+  it('PAR-230 T09/T20 Server accepts model and prompt-file together through its real factory', async () => {
+    const briefFile = path.join(projectDir, "brief ' com espaço.md")
+    fs.writeFileSync(briefFile, 'Ação "literal" $env:HOME `tick')
+    const reply = await factory.openAgent('term-source', {
+      agent: 'codex', model: 'gpt-5', 'prompt-file': briefFile, 'run-now': ''
+    }, true)
+    expect(reply.ok, JSON.stringify(reply)).toBe(true)
+    expect(pty.creates).toHaveLength(1)
+    // (The intent also carries whatever starting mode the project resolves to.)
+    expect(published[0].launchIntent).toMatchObject({
+      intent: { kind: 'agent', action: 'start', agentId: 'codex', model: 'gpt-5' },
+      promptFile: briefFile
+    })
+  })
+
   it('creates a terminal PTY, persists both workspace index and project file, and publishes it', async () => {
     const reply = await factory.openTerminal(
       'term-source',
@@ -1651,7 +1694,7 @@ describe('HeadlessNodeFactory', () => {
     expect(reply.result).toMatchObject({ failed: [id], deliveredIds: [], reasons: { [id]: 'cancelled' } })
   })
 
-  it('line-too-long says Run now fails the same way and to shorten the prompt: --prompt-file is not a flag here (#925)', async () => {
+  it('line-too-long says Run now fails the same way and to shorten the inline prompt (#925)', async () => {
     // A canonical-mode tty drops everything past its cap, so the echo never matches the command.
     const write = pty.writeHeadless.bind(pty)
     vi.spyOn(pty, 'writeHeadless').mockImplementation((key, data) =>
@@ -1695,11 +1738,12 @@ describe('HeadlessNodeFactory', () => {
     expect(node?.pendingLaunch).toMatchObject({ manualOnly: true })
   })
 
-  it('--prompt-file is not an open-agent flag on the Server Edition (the reply above relies on it)', async () => {
-    const reply = await factory.openAgent('term-source', { agent: 'claude', 'prompt-file': '/tmp/brief.md' }, true)
-    expect(reply.ok).toBe(false)
-    expect(reply.error).toMatch(/prompt-file/)
-    expect(pty.creates).toEqual([])
+  it('PAR-230 F2 accepts a readable --prompt-file on the Server Edition', async () => {
+    const briefFile = path.join(projectDir, 'brief.md')
+    fs.writeFileSync(briefFile, 'Ação "literal"')
+    const reply = await factory.openAgent('term-source', { agent: 'claude', 'prompt-file': briefFile }, true)
+    expect(reply.ok, JSON.stringify(reply)).toBe(true)
+    expect(pty.creates).toHaveLength(1)
   })
 
   it('accepts --run-now on open verbs as a no-op: server opens are already immediate (#925)', async () => {

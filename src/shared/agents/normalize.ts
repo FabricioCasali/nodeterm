@@ -87,6 +87,8 @@ export interface NormalizedAgentEvent {
   // concurrent parent picker cannot hide their approval tickets. The canvas keys the approve/deny
   // buttons off `pendingId`, which is now absent on a question. */
   askKind?: 'question' | 'approval'
+  /** Core's preserved ask when a concurrent hook describes another request. */
+  effectiveAsk?: { kind: 'question' | 'approval'; since: number; id?: string; detail?: string; sessionId?: string }
   /** blocked (Claude PermissionRequest with a held hook) only: the answer-file ticket PLUS the tool
    *  being asked about, so a surface can tell a plan (ExitPlanMode) or question (AskUserQuestion)
    *  hold from an ordinary permission and offer the right controls (a structured
@@ -133,6 +135,20 @@ export interface NormalizedAgentEvent {
   /** The async SUBAGENTS among `backgroundTaskIds` (`liveBackgroundSubagentIds`) — the only
    *  background work plain `--after` holds on. Present exactly when `backgroundTaskIds` is. */
   backgroundSubagentIds?: string[]
+  /**
+   * A tool's "still working" reassertion (antigravity's ordinary `PostToolUse`): it may START
+   * showing work the node missed (a lost turn-start hook), but it is not a turn boundary and
+   * must never END anything — not a pending question, not a turn that already stopped with
+   * background work alive. The shells drop it in those states before anything records it
+   * (`reaffirmIsStale`, core/agent-status-mirror.ts).
+   */
+  reaffirm?: true
+  /**
+   * The model the CLI itself named for THIS event's session (antigravity's `modelName`). It lets
+   * a card name the model before any token usage exists, and it is the event's own fact — never
+   * another node's last report.
+   */
+  model?: string
   /** Host-observed start time for display-only renderer reload replay. */
   subagentStartedAt?: number
   /** Host-observed time of the subagent's last transcript chunk, replayed with the start so a
@@ -323,8 +339,10 @@ export function normalizeClaude(env: RawHookEnvelope): NormalizedAgentEvent | nu
 
   if (ev === 'PreToolUse' || ev === 'PostToolUse') {
     if (tool === 'AskUserQuestion' && p.tool_use_id) {
+      const questions = readQuestions(p.tool_input)
       return ev === 'PreToolUse'
-        ? { ...base, kind: 'state', state: 'waiting', questionId: p.tool_use_id }
+        ? { ...base, kind: 'state', state: 'waiting', questionId: p.tool_use_id,
+            ...(questions ? { lastMessage: questions.map((q) => q.question).join('\n') } : {}) }
         : { ...base, kind: 'state', state: 'working', answeredQuestionId: p.tool_use_id }
     }
     if (SUBAGENT_TOOLS.has(tool)) {
@@ -554,8 +572,12 @@ export function normalizeCodex(env: RawHookEnvelope): NormalizedAgentEvent | nul
       ...(question ? { lastMessage: question } : {})
     }
   }
-  // SessionStart + tool events keep the node "working".
-  if (ev === 'SessionStart' || ev === 'PreToolUse' || ev === 'PostToolUse') {
+  // A session opening is not a turn: a codex started with no prompt sits at its composer, and
+  // calling that `working` left it WORKING until a first turn that might never come (PAR-174).
+  // Like claude's, it is a session boundary; the first UserPromptSubmit is what starts work.
+  if (ev === 'SessionStart') return { ...base, kind: 'session', sessionPhase: 'start' }
+  // Tool events keep the node "working".
+  if (ev === 'PreToolUse' || ev === 'PostToolUse') {
     return { ...base, kind: 'state', state: 'working' }
   }
   // Under codex's own auto-reviewer (`approvals_reviewer = "auto_review"`) nobody is asked; the
@@ -1004,10 +1026,11 @@ export function normalizeGrok(env: RawHookEnvelope): NormalizedAgentEvent | null
 interface AntigravityPayload {
   nodeterm_hook_event?: unknown
   conversationId?: unknown
+  modelName?: unknown
   fullyIdle?: unknown
   terminationReason?: unknown
   invocationNum?: unknown
-  toolCall?: { name?: unknown } | null
+  toolCall?: { name?: unknown; args?: { questions?: unknown } } | null
 }
 
 /**
@@ -1035,7 +1058,12 @@ const antigravityToolName = (p: AntigravityPayload): string | undefined => {
  *    returns to the user. Keeping `state: 'working'` left the card stuck on `RUNNING` and blocked
  *    `send` delivery for the life of any background process. Instead, `fullyIdle === false` stamps
  *    `backgroundTaskIds` (just like Claude's `Stop` with a live `Bash(run_in_background: true)`) so
- *    Eco hibernation and bulk restart do not kill the CLI while a background process runs; when a
+ *    Eco hibernation and bulk restart do not kill the CLI while a background process runs — and
+ *    `backgroundSubagentIds`, the inventory plain `--after` holds on, because for agy that work
+ *    IS the turn's unfinished part (a dependent released on this `done` started on half a result).
+ *    `fullyIdle === true` states an EMPTY inventory, which is what releases the hold; a payload
+ *    without the field states nothing. `list` and the cards read the same fact as WORKING
+ *    (background). When a
  *    background task finishes and wakes the agent, `agy` fires a new `PreInvocation` (`invocationNum: 0`)
  *    which transitions back to `working` (`newTurn: true`).
  *
@@ -1043,8 +1071,10 @@ const antigravityToolName = (p: AntigravityPayload): string | undefined => {
  *    `PostToolUse` do not alternate: a whole invocation can open and close between them (measured:
  *    63 s between the pair while a question sat on screen), and a BACKGROUND tool's `PostToolUse`
  *    can land in the middle of a pending question. So only the ask tool's own `PostToolUse` clears
- *    the question (→ `working`); every other tool's `PostToolUse` says nothing we did not already
- *    know and maps to null, which keeps a finished background ping from wiping a live NEEDS YOU.
+ *    the question (→ `working`). Every other tool's `PostToolUse` only REASSERTS activity
+ *    (`reaffirm`): it lights a node whose turn-start hook was lost, and the shells drop it while
+ *    a question is pending or after a `Stop` that left background work, so a finished background
+ *    ping can neither wipe a live NEEDS YOU nor relight a stopped turn.
  *    Correlating on `stepIdx` exactly would need state across events; naming the tool gives the
  *    same answer for the one open question `agy` can have, without it.
  *
@@ -1069,7 +1099,9 @@ export function normalizeAntigravity(env: RawHookEnvelope): NormalizedAgentEvent
   const p = env.payload as AntigravityPayload
   const ev = typeof p.nodeterm_hook_event === 'string' ? p.nodeterm_hook_event : undefined
   const sessionId = typeof p.conversationId === 'string' ? p.conversationId : undefined
-  const base = { nodeId: env.nodeId, agentId: env.agentId, sessionId }
+  const model = typeof p.modelName === 'string' && p.modelName.trim() && p.modelName.length <= 200
+    ? p.modelName.trim() : undefined
+  const base = { nodeId: env.nodeId, agentId: env.agentId, sessionId, ...(model ? { model } : {}) }
 
   if (ev === 'PreInvocation') {
     return { ...base, kind: 'state', state: 'working', ...(p.invocationNum === 0 ? { newTurn: true } : {}) }
@@ -1077,22 +1109,27 @@ export function normalizeAntigravity(env: RawHookEnvelope): NormalizedAgentEvent
   if (ev === 'PreToolUse') {
     const tool = antigravityToolName(p)
     const asks = tool !== undefined && ANTIGRAVITY_ASK_TOOLS.has(tool)
-    return { ...base, kind: 'state', state: asks ? 'waiting' : 'working' }
+    const questions = p.toolCall?.args?.questions
+    const detail = asks && Array.isArray(questions)
+      ? questions.flatMap((q) => q && typeof q.question === 'string' ? [q.question] : []).join('\n') : ''
+    return { ...base, kind: 'state', state: asks ? 'waiting' : 'working',
+      ...(detail ? { lastMessage: detail } : {}) }
   }
   if (ev === 'PostToolUse') {
     const tool = antigravityToolName(p)
     if (tool !== undefined && ANTIGRAVITY_ASK_TOOLS.has(tool)) {
       return { ...base, kind: 'state', state: 'working' }
     }
-    return null
+    return { ...base, kind: 'state', state: 'working', reaffirm: true }
   }
   if (ev === 'Stop') {
+    const background = p.fullyIdle === false ? ['agy-bg'] : p.fullyIdle === true ? [] : undefined
     return {
       ...base,
       kind: 'state',
       state: 'done',
       ...(p.terminationReason === 'ERROR' ? { errored: true } : {}),
-      ...(p.fullyIdle === false ? { backgroundTaskIds: ['agy-bg'] } : {})
+      ...(background ? { backgroundTaskIds: background, backgroundSubagentIds: [...background] } : {})
     }
   }
   return null

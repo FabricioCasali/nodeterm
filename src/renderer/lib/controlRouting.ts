@@ -13,7 +13,11 @@
 // wrong canvas answering. Resolve the OWNING project instead, then travel to it (or, for a verb
 // that reads and changes nothing, answer straight out of its serialized nodes).
 
-import { canControlCanvas, type AgentId } from '@shared/agents/config'
+import { canControlCanvas, capabilityAgentId, type AgentId } from '@shared/agents/config'
+import { claudeFolderTrustVisible } from '@shared/agents/claude-screen'
+import { CONTROL_AGENT_LABELS, controlAskText } from '@shared/control-verbs'
+import type { AgentNodeStatus } from '../state/agentStatus'
+import { antigravityBackgroundWork } from './kanbanStatusChips'
 import { formatIssueRef } from '@shared/github-issue-ref'
 import { formatPrWaits, normalizePrWaitHold } from '@shared/pr-wait'
 import {
@@ -41,6 +45,22 @@ import {
 } from '@shared/project-capability-consent'
 
 /** The little the routing needs to know about a project (a structural subset of `Project`). */
+/**
+ * `--title` on an open verb: give the node the caller's explicit name and stop the agent's own
+ * session name from replacing it (`titleAuto: false`, on a terminal too, so the name survives a
+ * later agent start in it). A verb that opens several numbers them (`<title> 1`, `<title> 2`),
+ * like the default titles are numbered. No title = the node exactly as it was built.
+ */
+export function withExplicitTitle<T extends { data: { title: string; titleAuto?: boolean } }>(
+  node: T,
+  title: string | undefined,
+  index: number,
+  count: number
+): T {
+  if (!title) return node
+  return { ...node, data: { ...node.data, title: count > 1 ? `${title} ${index + 1}` : title, titleAuto: false } }
+}
+
 export interface ControlProject {
   id: string
   closed?: boolean
@@ -200,7 +220,7 @@ export function answerBrowserResolve(
  *  (`n.type` is the persisted `kind`, `n.data.title` the persisted `title`). */
 export function storedNodeListing(
   nodes: readonly StoredNode[],
-  statuses: StatusById & Record<string, { dropped?: boolean } | undefined> = {},
+  statuses: StatusById & Record<string, Pick<AgentNodeStatus, 'dropped' | 'lifecycle' | 'pendingAsk' | 'backgroundTaskAt' | 'agentId'> | undefined> = {},
   deliveries: Record<string, LaunchDelivery | undefined> = {},
   now: number = Date.now(),
   /** Every station's latest task report (`report-outcome`, core's store mirrored). */
@@ -240,7 +260,7 @@ export function storedNodeListing(
     // Every agent row names its state: an unlabelled row used to mean idle, waiting on a person, or
     // not an agent at all, so an orchestrator read a station stuck on a permission prompt as finished.
     const launchState = controlLaunchState(!!n.pendingLaunch, deliveries[n.id] ?? ((n.pendingLaunch as { manualOnly?: boolean } | undefined)?.manualOnly ? { kind: 'failed', attempts: 1, at: 0 } : undefined), status, prExpired, successState) ??
-      (n.agentId ? agentRowState(status?.state) : undefined)
+      (n.agentId ? agentRowState(status?.state, antigravityBackgroundWork(status)) : undefined)
     // A session started on an issue is told so on its OWN row, so `list` is enough for an agent to
     // learn it is bound (and which card to move). Only a reference `formatIssueRef` vouches for.
     const issue = formatIssueRef(n.issueRef)
@@ -278,6 +298,11 @@ export function storedNodeListing(
       ...(status?.lastTurnError ? { lastTurnErrored: true } : {}),
       ...(status?.lastTurnInterrupted && !status.lastTurnError ? { lastTurnInterrupted: true } : {}),
       ...(launchState ? { launchState } : {}),
+      ...(launchState === 'needs-you' && status?.pendingAsk ? {
+        askKind: status.pendingAsk.kind,
+        askDetail: status.pendingAsk.detail,
+        askMinutes: Math.floor(Math.max(0, now - status.pendingAsk.since) / 60_000)
+      } : {}),
       ...(launchState === 'queued' && prHold && !prHold.invalid ? { prWait: formatPrWaits(prHold) } : {}),
       ...(successWait ? { successWait } : {}),
       ...(handedOver.some((d) => holdReason(handovers[d]) === 'work')
@@ -298,23 +323,23 @@ export function storedNodeListing(
 }
 
 /** An agent row with no launch or drop to report: its live state, in the canvas badge's words. */
-function agentRowState(state: string | undefined): 'idle' | 'needs-you' | 'unconfirmed' {
-  if (state === 'done') return 'idle'
+function agentRowState(
+  state: string | undefined,
+  background = false
+): 'idle' | 'working-background' | 'needs-you' | 'unconfirmed' {
+  if (state === 'done') return background ? 'working-background' : 'idle'
   if (state === 'waiting' || state === 'blocked') return 'needs-you'
   return 'unconfirmed'
 }
 
 const launchLabels = {
-  idle: 'IDLE',
-  'needs-you': 'NEEDS YOU',
+  ...CONTROL_AGENT_LABELS,
   queued: 'QUEUED',
   failed: 'LAUNCH FAILED',
   stalled: 'QUEUED (terminal not ready)',
   starting: 'STARTING',
   'brief-missing': 'HELD (its prompt file no longer exists; run it with `run` to start without it)',
   dropped: 'DROPPED',
-  working: 'WORKING',
-  unconfirmed: 'AGENT STATUS UNCONFIRMED',
   expired: 'EXPIRED (PR wait deadline passed; run it with `run`)',
   'success-expired': 'EXPIRED (success wait deadline passed; run it with `run`)',
   'waiting-success': 'WAITING FOR SUCCESS',
@@ -334,13 +359,15 @@ function rowGeometryText(n: ReturnType<typeof storedNodeListing>[number]): strin
 /** `list`'s text answer. `geometry` (`list --geometry on`) adds each node's place and size; off by
  *  default so the line an agent reads most stays short. */
 export function controlListingText(
-  rows: ReturnType<typeof storedNodeListing>,
+  rows: Array<ReturnType<typeof storedNodeListing>[number] & { dialogDetail?: string }>,
   opts: { geometry?: boolean } = {}
 ): string {
   return rows.map((n) => `${n.id} [${n.kind}] ${n.title}` +
     (opts.geometry ? rowGeometryText(n) : '') +
     (n.issue ? ` — issue ${n.issue}` : '') +
     (n.launchState ? ` — ${launchLabels[n.launchState]}` : '') +
+    (n.dialogDetail ? ` ${controlAskText('dialog', n.dialogDetail)}` :
+      n.askKind ? ` ${controlAskText(n.askKind, n.askDetail, n.askMinutes)}` : '') +
     (n.prWait ? ` — waits on ${n.prWait}` : '') +
     (n.successWait ? ` — needs success from: ${n.successWait}` : '') +
     (n.handoverWait ? ` — waiting for ${n.handoverWait} to finish the work handed to it` : '') +
@@ -350,4 +377,21 @@ export function controlListingText(
     (n.lastTurnErrored ? ' — LAST TURN ERRORED' : '') +
     (n.lastTurnInterrupted ? ' — LAST TURN INTERRUPTED' : '')
   ).join('\n')
+}
+
+export async function controlListingDialogs(
+  rows: ReturnType<typeof storedNodeListing>,
+  nodes: readonly Pick<StoredNode, 'id' | 'agentId'>[],
+  capture: (nodeId: string) => Promise<string>
+): Promise<Array<ReturnType<typeof storedNodeListing>[number] & { dialogDetail?: string }>> {
+  const result: Array<ReturnType<typeof storedNodeListing>[number] & { dialogDetail?: string }> = []
+  for (const row of rows) {
+    const agentId = nodes.find((n) => n.id === row.id)?.agentId
+    let trust = false
+    if (agentId && capabilityAgentId(agentId as AgentId) === 'claude') {
+      try { trust = claudeFolderTrustVisible(await capture(row.id)) } catch { /* No current screen evidence. */ }
+    }
+    result.push(trust ? { ...row, launchState: 'needs-you', dialogDetail: 'folder-trust' } : row)
+  }
+  return result
 }

@@ -46,13 +46,20 @@ means — and what you may assume when writing a feature — is three tiers, not
   clearly gated off — a feature that throws `EACCES`/`EPERM` on Windows because nobody checked is a
   bug, not an accepted limitation.
 - **Agent launch lines are POSIX source; a Windows-native pane never gets one typed if it can
-  be avoided.** A prompt-bearing builtin agent node carries `data.launchIntent` (bound to its exact
-  `initialCommand`, never serialized); on a local win32 session-host pane whose host recorded a
-  `pwsh`/`windows-powershell`/`cmd` dialect, the launch writer executes it via `pty:execute-launch`
-  (`core/launch-intent-execute.ts` → `prepareAgentLaunch` → `sessionHostExecuteLaunch`). Every
-  other pane answers `unsupported-shell` and keeps the typed line byte-identical. Only a
-  pre-delivery refusal may fall back to typing; `delivery-failed` never does. Details:
-  docs/windows-session-host.md, "Agent launches in a Windows-native shell".
+  be avoided.** A prompt-bearing agent node (builtin or custom, with or without a per-node model)
+  carries `data.launchIntent`, bound to its exact `initialCommand`. It is MACHINE-LOCAL like the
+  `pendingLaunch` it rides beside: saved only while that exact launch is still pending (so a cold
+  project and an off-screen `--run-now` keep it), and stripped wherever a held launch is stripped —
+  the shared project file, an import, a relay peer (`shared/node-exec.ts`). On a local win32
+  session-host pane whose host recorded a `pwsh`/`windows-powershell`/`cmd` dialect, the mounted
+  launch writer AND the headless launcher execute it via `PtyManager.executeLaunch`
+  (`core/launch-intent-execute.ts` → `prepareAgentLaunch` → `sessionHostExecuteLaunch`). A pane
+  the channel does not apply to (tmux, SSH, a POSIX shell on Windows, a batch-shim-only agent)
+  answers `typedLineSafe` and keeps the typed line byte-identical. **Every other refusal is
+  final:** an invalid request, a missing prompt file, an unavailable agent or a host that cannot
+  launch leaves the launch held for Run now — the POSIX line is never typed into a Windows-native
+  shell behind a refusal. Details: docs/windows-session-host.md, "Agent launches in a
+  Windows-native shell".
 - **Run configurations (launch.json run node) are gated off for process launches on a Windows core**
   — the launcher is a POSIX `sh` script stopped and hot-reloaded by POSIX signals. The core's
   `gateEntriesForPlatform` marks those entries unsupported with `RUN_WINDOWS_REASON` (browser
@@ -2793,6 +2800,30 @@ started a moment ago (`--run-now`, `run`) that has not posted its first hook —
 ordinary TTL: a retry cannot help before that hook, and its first verified `done` flushes the queue.
 Both shells wire `heldLaunch`.
 
+Queued messages also progress without another `done`: one timer and one in-flight attempt per target,
+FIFO, original TTL and claim-before-effect persistence. Transient refusals use a 1.5/3/6-second backoff
+(a tuning hypothesis, not a measured Windows probe budget); a rate refusal uses `retryAfterMs`.
+`ptyPaneProbeDeps` shares an unfinished probe until it settles, so a timeout cannot stack subprocesses.
+Expiring, draining or stopping the queue cancels its nudge. Partial/uncertain writes are terminal.
+Expired/discarded send/reply requests notify their original sender with an app-authored reason; no
+payload is copied and notice failures cannot generate more notices. The sender's current ownership,
+grant and state still gate that delivery; failure to notify is recorded, never called delivered.
+
+`nodeterm capture-pane --node <id> [--lines N]` reads only the currently visible screen through the
+shared core handler registered by Desktop and Server. It requires verified identity and a unique
+same-project target. Omission preserves the capture; N selects the last N visible lines. It creates
+no session and touches no keyboard/focus. An unavailable backend returns a read error; an actually
+empty screen succeeds. Direct native PTY and released sessions without a visible-capture route
+remain explicitly unavailable.
+
+Both editions list pending approval/question detail with the age of that session's request. Reasserted
+hooks retain its age; replacement/resolution clears it. Folder trust is read from Claude's current
+screen and shown as `NEEDS YOU [dialog: folder-trust]`, without synthesizing a hook or changing state.
+The existing `pty:capture` bridge accepts `visibleOnly`; this read never falls back to scrollback or
+turns an unavailable backend into a successful empty screen. Relay tabs reuse the WebSocket builder.
+Visible-only responses carry a `visibleCapture` marker. Clients reject an older host's unmarked
+string response rather than interpreting its recent history as a current-screen capture.
+
 **A board comment that @mentions a session is a message from a PERSON** (`@shared/board-comment`,
 `deliverBoardCommentFromUi` in `core/agents/agent-messaging.ts`). The comment composer's @ picker
 inserts an id-based token `@[label](node:<id>)` (the id is the authority, the label only a fallback
@@ -2808,10 +2839,8 @@ finding; both scenarios are tests); a comment mentions at most `BOARD_COMMENT_ME
 `FANOUT_PER_TURN` sessions and is refused whole above it; a pair-limited board comment is QUEUED
 rather than refused (`BOARD_QUEUE_ON` — an agent retries, a person could only post again; the
 flush re-runs the limiter) AND re-offered on a timer when the window ends
-(`DeliveryQueue.retryAfter`, armed at enqueue and at every `rateLimited` re-queue, one pending nudge
-per target): the queue otherwise flushes only on the target's `done`, and a window ending emits
-nothing — a session already idle, or whose `done` landed inside the window, left the comment to
-expire at the TTL; and the envelope reads `from: board comment by <author>` with no node id
+(`DeliveryQueue.retryAfter`, one pending nudge per target). Timed retries and `done` share the same
+serialized drain; the envelope reads `from: board comment by <author>` with no node id
 and `reply-to: none (…)` (`BOARD_COMMENT_REPLY_TO`; both agent-facing bodies render it from the
 constants). An agent node TITLED like that is labelled `node titled "…"` in its own `from:` line, so
 it cannot pass as a person. The body is the comment with each token turned into the `@<name>` its author saw
@@ -3453,7 +3482,26 @@ its agent status" under Hosted team relay.
   believed to be a parked agent. Resume reuses the hibernation wake closure unchanged, which
   re-reads the pane and refuses anything that is not a shell. Chip on the node header, the kanban
   card and the card modal; Desktop and Server Edition identical; relay tabs answer `null` and are
-  never judged. **A second thing this catches, unplanned:** in the same sweep 9 of 149 panes sat at a
+  never judged. **The core measures too (`core/agent-liveness.ts`, PAR-175):** the renderer rule
+  above needs a mounted, watched node and refuses codex/antigravity outright, so a station opened
+  off screen that never started, or a Codex that left its pane, read as healthy for ever. The
+  station-notice sweep now probes (`paneOwner(…, { resolveUnmounted: true })`, never a spawn or
+  an attach) the launches this core delivered and the verified sessions of agents with NO
+  SessionEnd hook. Its conclusions live on the status mirror as a transient `lifecycle`
+  (`launch-failed` | `dropped`), which `list`, the cards and the relay snapshot read. The
+  refusals are again the feature: `shell` is said only about the ROOT shell standing alone (a
+  child shell of the CLI, an unreadable probe or another generation prove nothing);
+  `launch-failed` additionally needs the launch's own completion receipt (written by the
+  invocation's `finally`), because a shell still starting the CLI looks exactly like one that
+  failed to — time alone never fails a launch; a hibernated node, or one whose program the app
+  itself just ended, is suppressed; and any later hook withdraws the conclusion. For codex and
+  antigravity a deliberate `/quit` therefore reads DROPPED as well: nothing distinguishes it, and
+  a pane with no CLI in it is what the label says. Related, same batch: a Codex `SessionStart` is a
+  session boundary, not `working` (a Codex opened with no prompt used to read WORKING until a
+  first turn), and the Windows codex hook wrapper has NO env gate — under Codex's shared
+  app-server the hook is the daemon's child and carries neither `NODETERM_NODE_ID` nor
+  `CODEX_THREAD_ID`, so gating on them dropped every event; `codex.sh` resolves the node from
+  the payload's `session_id` and is the only place that decides. **A second thing this catches, unplanned:** in the same sweep 9 of 149 panes sat at a
   bare shell because a cold-restore `--resume` had answered *"No conversation found with session
   ID"* — the persisted `sessionId` outlived its transcript. The chip surfaces those too, but the
   Resume it offers still replays that dead id — but cold restore no longer creates the state: it
@@ -6019,14 +6067,12 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     retry, reassign or END a workflow, so a forgeable event is not evidence. 15 min because the
     human already got NEEDS YOU + a notification; an orchestrator reassigning seconds before the
     user answers doubles the work.
-  - **A permission prompt is NEVER a trigger, and that is a measurement, not caution.** On the main
-    thread Claude paints its dialog CONCURRENTLY with our held hook (docs/hook-reply-approvals.md),
-    and an approval given in the pane fires nothing until the approved tool FINISHES — so neither
-    `blocked` nor a `pendingId` can tell "unanswered" from "approved, twenty-minute build running",
-    and a notice there invites the orchestrator to close a working station. A question can be told
-    apart: its answer is a tool result, and the mirror's `pendingQuestion` is held across unrelated
-    traffic until it arrives. The monitor reads it through `pendingQuestionOf` (required dep)
-    rather than re-deriving it.
+  - **Approval confirmation gets an informational reminder after 15 minutes.** `blocked` and a
+    pending ticket cannot distinguish an unanswered native prompt from an approved tool still
+    running. `approval-unconfirmed` therefore says confirmation is missing, never that the human
+    failed to approve, and includes no close/reassign actions. Both shells consult the mirror's
+    open ask; resolution or verified resumed work suppresses the reminder. Question reminders
+    continue to use the correlated `pendingQuestionOf` fact.
   - **Once per episode, re-armed ONLY by a successful turn** — a turn that started after the notice
     and ended `done` with no error, no interruption and not the idle-prompt rescue — and the re-arm
     clears every fact the episode was about (error, DROPPED, question), or the next sweep re-fires
@@ -6044,11 +6090,14 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     "the other end of the rope" can be a sibling that opened nothing. The open verbs therefore
     STAMP `data.openedBy` where they draw the opener's rope (`connect` for the live paths —
     addAndConnect, verify, spawn-team — plus the off-canvas and cold-open writes; pure helper
-    `lib/stationOpener.ts`), and `stationRecipient` requires BOTH: `openedBy` names a canvas-capable
+    `lib/stationOpener.ts`), and notice resolution requires BOTH: `openedBy` names a canvas-capable
     agent node in the same (single) project, AND that node's OPENER rope to the station still
     exists — never a `ctrl-after-` wait rope (deleting the rope detaches the station). Never a bridge-linked node. `openedBy` is git-shared,
     so `safeOpenedBy` (`isSafeNodeId`) runs at both serializer seams, and a duplicate drops it. A
     node opened before this build has no `openedBy` and is never attributed (no guessing).
+    `StationLineage` retains observed closed ancestors reachable from live stations. It skips a
+    closed parent to the first live ancestor, rejects cycles and cross-project/duplicate identities,
+    and tracks live link revocation. This cache is process-local and grants no control/mutation rights.
   - **Server Edition: the creator LEDGER is the recipient rule** (`stationRecipientFromOwner` over
     `factory.openerOf`) — only stations opened during the current server run, the same creator rule
     as every other verb there; a restart clears it.
@@ -11144,8 +11193,8 @@ What a restart MEANS, per fact — decided beside each fact, stated in its heade
   - **Never replayed into a pane**: a board comment (only the local user, typing in THIS app, may
     trigger one — a message read back off disk must not speak as a person) and an app-composed
     station notice; both, and a body over 256 KB (written without it), are expired at restore so
-    their row / sender still hears the end. Not flushed at boot: the first flush waits for the
-    target's next `done`.
+    their row / sender still hears the end. Restored entries schedule a timed retry and also wake
+    on the target's next `done`; each attempt rechecks the gates within the original TTL.
   - Threat model, stated: the file is as trustworthy as the per-node token files beside it — a
     same-user process can write either. A forged `send` entry still runs every gate at flush.
 - **Station report** (`core/station-outcome-store.ts`, `OUTCOME_FACT`): stored with the station's
@@ -11460,3 +11509,19 @@ partial/unknown delivery, with no resend. The SessionStart idle rescue latch sto
 agent and receive time; foreign/missing idle identity never creates proof or changes the
 renderer-visible session. These boundaries have behavioral regressions in
 `core/windows-delivery-safety.test.ts` and the mirror/client suites.
+
+Claude's verified `idle_prompt` may recover inferred done only within the same current session,
+with a current hook revision/token and no pending question, approval or input. The core pins that
+state proof per attempt; it never changes the mirror to pass the idle gate. An internal fourth
+`sendEnvelope` argument checks the visible composer before paste and checks the exact sanitized
+draft plus the pinned state again before Enter. Backend owner/generation checks remain mandatory.
+Desktop forwards it to PtyManager; Server uses that same path only when guarded and retains its
+ordinary settled-envelope adapter otherwise. Unsupported backends refuse before paste.
+
+The host's additive `guardedMessageEnvelopeV1` uses prepare/commit/cancel on the already-proven
+socket with `captureVisible`. No callback crosses JSON. Prepare reserves one slot per generation,
+rechecks owner and empty composer, pastes and returns a nonce plus the settled visible frame.
+Commit consumes that socket-bound nonce before awaiting probes and sends Enter only after fresh
+process/composer checks. Cancel/socket close/session exit invalidate it without editing text.
+Lost prepare/commit replies after transmission remain partial; never reconnect, fall back or
+offer the body again. Normal `messageEnvelopeV1` remains compatible; other inferred CLIs stay refused.

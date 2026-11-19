@@ -43,6 +43,21 @@
 // block that reads this set for its `confirmBusy()` refusal. Not destructive in the literal sense —
 // a settings change is reversible — but it can GRANT a capability, and one dialog at a time is the
 // rule for every dialog an agent can raise. Its `--get` reads and never reaches the confirm.
+import { oneLine } from './one-line'
+
+export const CONTROL_AGENT_LABELS = {
+  idle: 'IDLE', working: 'WORKING', 'needs-you': 'NEEDS YOU', unconfirmed: 'AGENT STATUS UNCONFIRMED',
+  // Process liveness (core/agent-liveness.ts): the launch returned without a CLI / the CLI is gone.
+  failed: 'LAUNCH FAILED', dropped: 'DROPPED',
+  // The turn ended but the CLI's own inventory says work is still running (antigravity).
+  'working-background': 'WORKING (background)'
+} as const
+
+export function controlAskText(kind: 'approval' | 'question' | 'dialog', detail?: string, minutes?: number): string {
+  return kind === 'dialog' ? `[dialog: ${oneLine(detail ?? '')}]`
+    : `[${kind} ${minutes ?? 0}m${detail ? `: ${oneLine(detail)}` : ''}]`
+}
+
 export const DESTRUCTIVE_VERBS: ReadonlySet<string> = new Set([
   'write',
   'close',

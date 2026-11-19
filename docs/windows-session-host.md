@@ -119,23 +119,41 @@ select a local executable. See
 The renderer's agent launch line is POSIX source (`'it'\''s'`, `"$(cat '<file>')"`). PowerShell
 breaks on the apostrophe, Windows PowerShell 5.1 drops embedded double quotes before the CLI sees
 them, and cmd.exe splits a single-quoted prompt into separate arguments. So a prompt-bearing
-builtin agent node also carries a semantic `data.launchIntent` (`shared/agents/launch-intent.ts`),
-bound to its exact typed line and never serialized. When the launch writer is about to type that
-line into a **local session-host pane on a win32 core**, it calls `pty:execute-launch` instead
-(`renderer/terminal/launch-intent.ts` → `core/launch-intent-execute.ts`): the core resolves the
-agent executable against the session's spawn PATH (native image, then `.ps1`; a `.cmd`-only
-install is refused), reads a `--prompt-file` itself (whitespace flattened to one argument, exactly
-what `"$(cat …)"` yields in PowerShell), encodes argv for the dialect the HOST recorded for that
-generation (`launchDialect` on the attach result; set at spawn only for `pwsh`/`powershell`/`cmd`),
-and delivers through the host's exactly-once launch ledger.
+agent node also carries a semantic `data.launchIntent` (`shared/agents/launch-intent.ts`),
+bound to its exact typed line. It is machine-local and persisted only beside the pending launch
+it describes, so a cold project and an off-screen `--run-now` still have it. When that line is
+about to be typed into a **local session-host pane on a win32 core** — by the mounted launch
+writer (`renderer/terminal/launch-intent.ts`) or by the headless launcher
+(`core/headless-launch.ts`) — `PtyManager.executeLaunch` runs instead
+(`core/launch-intent-execute.ts`): the core resolves the agent executable against the session's
+spawn PATH (native image, then `.ps1`), reads a `--prompt-file` itself (whitespace flattened to
+one argument, exactly what `"$(cat …)"` yields in PowerShell), encodes argv for the dialect the
+HOST recorded for that generation (`launchDialect` on the attach result; set at spawn only for
+`pwsh`/`powershell`/`cmd`), and delivers through the host's exactly-once launch ledger.
+
+A brief too long for one command line (CreateProcessW caps a line at 32,767 characters) is not
+truncated: a PowerShell-script entry point reads it from the prompt file inside its own process,
+as data. A native entry point has no such path — its whole command line is capped by the OS — and
+is refused, never cut.
+
+Each delivered launch also writes a completion receipt when its invocation returns to the shell
+(`try { … } finally { … }` around the invocation, into a core-private file named by the launch
+id). The liveness monitor (`core/agent-liveness.ts`) reads it: a launch whose shell is back, with
+no CLI in its process tree AND a receipt, is reported LAUNCH FAILED.
 
 Rules that keep this safe:
 - Every other pane (tmux, SSH, Zellij, plain shell, Git Bash/WSL, any POSIX core) answers
-  `unsupported-shell` before anything is read, and the typed line is used, byte-identical.
-- A refusal made before the host is asked falls back to the typed line; `delivery-failed` (or a
-  lost reply) does NOT — the launch stays held for an explicit Run now, never typed twice.
-- Excluded from the intent (legacy line only): resumes, custom agents, launch-command overrides,
-  per-node models, SSH nodes. A resume line holds only flag words and a validated id.
+  `unsupported-shell` with `typedLineSafe` before anything is read, and the typed line is used,
+  byte-identical. So does an agent whose only entry point is a `.cmd`/`.bat` shim: the planner
+  cannot encode for a second cmd parse, and that install has always been launched by its line.
+- Every other refusal is final — invalid request, missing prompt file, unavailable agent, a host
+  that cannot launch, `delivery-failed`, a lost reply. The launch stays held for an explicit Run
+  now; the POSIX line is never typed into a Windows-native shell behind a refusal.
+- Excluded from the intent (legacy line only): resumes, launch-command overrides, SSH nodes, and
+  a custom agent whose launch COMMAND holds an `${env:…}` expansion or shell syntax. A custom
+  agent is named by id only; the core resolves its current machine-local record: the program, the
+  base harness's grammar, and its `args` — split, `${env:…}`-expanded per token against the
+  core's environment (`customAgentArgv`, the typed line's own rule) and encoded as argv.
 - `pty:execute-launch` is host-only for relay peers (`shared/host-control.ts`).
 
 ### The IPty-shim (why the integration is this small)
@@ -176,12 +194,25 @@ long-lived connection (no positional-FIFO fragility, unlike this app's tmux cont
 | `ping`                           | (liveness probe used during the startup race) | full |
 | `attachExisting {watch: true}`   | `attach-session -E -f ignore-size,read-only` (a live link watcher's client) | feature `watch-attach`: subscribes with NO geometry claim and no pause ticket, refuses `write`/`resize` from that connection, never spawns; on an already-attached connection it withdraws the claim (its last voting subscriber left) |
 | `captureVisible`                 | `capture-pane -p -e` + `display-message '#{cursor_x} #{cursor_y}'` | feature `captureVisible`: visible rows of the ACTIVE buffer only (never history), viewport cursor, `altScreen` — a live link's keyframe |
+| `messageEnvelopePrepareV1` | guarded paste without Enter | feature `guardedMessageEnvelopeV1`: Claude only; validates owner/generation and empty visible composer; returns `not-pasted` or `pasted` with a preparation id and visible frame (null when unproven) |
+| `messageEnvelopeCommitV1` | separately guarded Enter | consumes the preparing socket's id once, revalidates process/birth/generation and exact sanitized draft; returns `{submitted}` |
+| `messageEnvelopeCancelV1` | invalidate preparation | same socket and id only; returns `{cancelled}`, never clears or edits the composer |
 | `paneCwd`                        | `display-message -p '#{pane_current_path}'` | feature `paneCwd`: the cwd the pane last REPORTED (OSC 7 / 9;9 / 633, parsed by `cwd-report.ts`), null until one arrives — never the spawn cwd |
 
-The last three are **negotiated at hello** (`SESSION_HOST_FEATURES`) like `geometry`/`shutdown`: the
+These additive features are **negotiated at hello** (`SESSION_HOST_FEATURES`) like `geometry`/`shutdown`: the
 client never sends one to a host that did not advertise it (an older, long-lived host keeps serving
 everything else and is never replaced for them). Without them: a live link viewer of a node this app
 does not hold is refused (`join-only`), there is no keyframe (R36), and `paneCwd` is null.
+
+Guarded messaging requires the existing authenticated socket to have negotiated both
+`guardedMessageEnvelopeV1` and `captureVisible`. The client runs the core callbacks locally around
+prepare; the host independently rechecks the actual visible composer/process before each write.
+One active preparation belongs to one session object/generation and one socket, including across
+clients. Cancel, socket closure and process exit invalidate it. Prepare never sends Enter, and
+commit cannot replay a consumed/cancelled id or inherit one from a replaced generation. No timer,
+durable preparation or alternate executor is involved. An older host refuses before any byte;
+normal `messageEnvelopeV1` remains usable. A lost reply after prepare transmission or any failure
+after paste returns conservative partial delivery, without reconnect, fallback or body retry.
 
 **Not implemented — deliberately out of scope for this pass:**
 

@@ -38,7 +38,7 @@ import { normalizeNodeIcon } from '@shared/node-icon'
 import { normalizeIssueRef, type IssueRef } from '@shared/github-issue-ref'
 import { isSafeNodeId } from '@shared/safe-id'
 import { openerByTarget, recordedOpenerOf } from '../lib/teamProgress'
-import { normalizePendingLaunch } from '@shared/pending-launch-shape'
+import { normalizeHeldLaunchIntent, normalizePendingLaunch } from '@shared/pending-launch-shape'
 import { normalizeTerminalFontSize } from '../terminal/terminal-font-zoom'
 import { RUN_NODE_ID, normalizeRunConfig, runNodeTitle, type RunNodeConfig } from '@shared/run-config'
 import { normalizeRunBrowserConfig } from '@shared/run-preview'
@@ -953,6 +953,7 @@ export function createAgentNode(
     agentId,
     command: initialCommand,
     launchCmdOverride,
+    ...(customAgent ? { customAgent } : {}),
     model,
     remote: !!ssh,
     resume: resumeSessionId !== undefined,
@@ -3017,6 +3018,11 @@ export function nodeStatesToFlow(states: CanvasNodeState[]): CanvasNode[] {
         // Same seam rule again: the launch loop iterates `after`, and a PR wait decides when a
         // command is typed into a pane. An unreadable hold becomes one that waits for ▶.
         pendingLaunch: normalizePendingLaunch(n.pendingLaunch),
+        // Never without the pending launch it describes: a stale or mismatched one is dropped.
+        ...((): { launchIntent?: HeldLaunchIntent } => {
+          const held = normalizeHeldLaunchIntent(n.launchIntent, normalizePendingLaunch(n.pendingLaunch))
+          return held ? { launchIntent: held } : {}
+        })(),
         ssh: n.ssh,
         sshRemoteTmux: n.sshRemoteTmux,
         sshFs: n.sshFs,
@@ -3120,6 +3126,12 @@ export function flowToNodeStates(nodes: CanvasNode[], retainInitialCommand = tru
         pendingLaunch: normalizePendingLaunch(n.data.pendingLaunch) ?? (retainInitialCommand && n.data.initialCommand
           ? { after: [], command: n.data.initialCommand, attempted: false }
           : undefined),
+        // Machine-local, like the held launch: saved only while that exact launch is still
+        // pending, so a delivered or edited launch leaves no execution intent behind.
+        ...((): { launchIntent?: HeldLaunchIntent } => {
+          const held = normalizeHeldLaunchIntent(n.data.launchIntent, normalizePendingLaunch(n.data.pendingLaunch))
+          return held ? { launchIntent: held } : {}
+        })(),
         ssh: n.data.ssh,
         sshRemoteTmux: n.data.sshRemoteTmux,
         sshFs: n.data.sshFs,
@@ -3195,6 +3207,7 @@ export function applyMutationToFlow(nodes: CanvasNode[], m: CanvasMutation): Can
       shell: prev.data.shell,
       // Ours, unless the core vouched for this copy — then it is authoritative, a clear included.
       pendingLaunch: trustLaunch ? incoming.data.pendingLaunch : prev.data.pendingLaunch,
+      launchIntent: trustLaunch ? incoming.data.launchIntent : prev.data.launchIntent,
       ...(incoming.data.ssh && prev.data.ssh?.extraArgs
         ? {
             ssh: {

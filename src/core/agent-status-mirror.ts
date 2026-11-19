@@ -56,6 +56,7 @@ export const IDENTITY_EXPIRE_MS = 30 * 24 * 60 * 60_000
 export const WRITE_DEBOUNCE_MS = 300
 
 export interface MirrorEntry {
+  pendingAsk?: { kind: 'approval' | 'question'; since: number; id?: string; detail?: string }
   /** Tickets introduced concurrently with a picker, retained until reply or explicit reset. */
   concurrentApprovalIds?: string[]
   /** Live question identity, independent of the short-lived display stash. */
@@ -188,6 +189,29 @@ export interface MirrorEntry {
    * state commit.
    */
   stateExpired?: true
+  /**
+   * Core's process-liveness conclusion about this node (core/agent-liveness.ts): its launch never
+   * produced a CLI, or its CLI left the pane without a SessionEnd. Runtime-only (not in
+   * `buildFile`'s allowlist — a claim about a pane must not survive a restart) and never an agent
+   * event: it does not touch `state` or `updatedAt`. Read it through `nodeLifecycle`, which
+   * drops it as soon as anything newer is asserted about the node.
+   */
+  lifecycle?: { state: 'launch-failed' | 'dropped'; at: number }
+  /**
+   * The node's last turn ended (`done`) with background work still alive, per the CLI's own
+   * inventory (`backgroundTaskIds` non-empty). Cleared by the next `working`, a session boundary,
+   * or a `done` whose inventory is empty; a `done` with NO inventory leaves it as it was (absent
+   * is unknown, not none). Runtime-only. `list` reads it as WORKING (background) for antigravity.
+   */
+  backgroundWork?: true
+}
+
+/** The lifecycle conclusion that still stands for `entry`: none once a later hook has spoken. */
+export function nodeLifecycle(
+  entry: Readonly<MirrorEntry> | undefined
+): 'launch-failed' | 'dropped' | undefined {
+  const l = entry?.lifecycle
+  return l && entry.updatedAt <= l.at ? l.state : undefined
 }
 
 /** This host's Server-Edition install metadata (spec: server-update). Written by the installer
@@ -568,6 +592,16 @@ function reduceEffectiveEntry(
     proof: boolean,
     idleAfterSessionStart = false
   ): void => {
+    const needsYou = state === 'blocked' || state === 'waiting'
+    if (needsYou) {
+      const kind = state === 'waiting' ? 'question' : 'approval'
+      const id = kind === 'question' ? ev.questionId ?? next.pendingQuestion?.toolUseId : ev.pendingId
+      const previous = prev?.pendingAsk
+      const same = previous?.kind === kind && (!ev.sessionId || ev.sessionId === prev?.sessionId) &&
+        (!id || previous.id === id)
+      next.pendingAsk = { kind, since: same ? previous.since : now,
+        id: id ?? (same ? previous.id : undefined), detail: ev.lastMessage ?? (same ? previous.detail : undefined) }
+    } else delete next.pendingAsk
     next.state = state
     next.updatedAt = now
     next.stateVerified = proof
@@ -1670,7 +1704,7 @@ export function recordAgentEvent(rawEvent: NormalizedAgentEvent): NormalizedAgen
     // Broadcast no state proof either: a renderer must not show this stale done as fresh.
     return { nodeId, kind: 'state', agentId: prev?.sessionStarted?.agentId ?? ev.agentId, sessionId: prev?.sessionId }
   }
-  const next = reduceEffectiveEntry(prev, ev, now)
+  const next = withBackgroundWork(reduceEffectiveEntry(prev, ev, now), ev)
   state.set(nodeId, next)
   const questionAnswered = !!prev?.pendingQuestion && !next.pendingQuestion &&
     ev.sessionId === prev.pendingQuestion.sessionId && ev.answeredQuestionId === prev.pendingQuestion.toolUseId
@@ -1704,18 +1738,19 @@ export function recordAgentEvent(rawEvent: NormalizedAgentEvent): NormalizedAgen
   let out = ev
   if (next.pendingQuestion && prev?.pendingQuestion && next.state) {
     if (ev.kind !== 'state' && ev.kind !== 'session') return ev
+    const effectiveAsk = next.pendingAsk ? { ...next.pendingAsk, sessionId: next.sessionId } : undefined
     // A concurrent permission is independent of the held picker. Publish its ticket/card,
     // but keep the parent's waiting badge and question correlation until its own answer.
     if (ev.pendingId && ev.state === 'blocked' && ev.askKind === 'approval') {
       produceInboxFromState(nodeId, ev, prevState, 'blocked', now, true)
       scheduleWrite()
-      return { ...ev, state: next.state, sessionId: next.sessionId }
+      return { ...ev, state: next.state, sessionId: next.sessionId, effectiveAsk }
     }
     scheduleWrite()
     // Broadcast the same held state to Desktop, Server, canvas/board and the phone.
     return { ...ev, kind: 'state', state: next.state, sessionId: next.sessionId,
       verified: ev.verified, newTurn: undefined, interrupted: undefined,
-      askKind: 'question', pendingId: undefined }
+      askKind: 'question', pendingId: undefined, effectiveAsk }
   }
   if (ev.kind === 'state' && ev.state === 'done' && next.awaitingInput && next.state === 'waiting') {
     out = { ...ev, state: 'waiting' }
@@ -2120,6 +2155,75 @@ export function setNodeSessionName(nodeId: string, name: string): boolean {
  * idleness) or one reported at boot before any hook event of this run — exactly when the flag
  * matters most. Clearing an unknown id stays a no-op.
  */
+/** Fold the event's background inventory into the entry (see `MirrorEntry.backgroundWork`). */
+function withBackgroundWork(next: MirrorEntry, ev: NormalizedAgentEvent): MirrorEntry {
+  let want = next.backgroundWork
+  if (ev.kind === 'session' || next.state !== 'done') want = undefined
+  else if (ev.kind === 'state' && ev.state === 'done' && Array.isArray(ev.backgroundTaskIds))
+    want = ev.backgroundTaskIds.length > 0 ? true : undefined
+  if (want === next.backgroundWork) return next
+  const out = { ...next }
+  if (want) out.backgroundWork = true
+  else delete out.backgroundWork
+  return out
+}
+
+/**
+ * Should a tool's reassertion (`NormalizedAgentEvent.reaffirm`) be dropped before anything records
+ * or broadcasts it? Yes while the node waits on a person (only the ask's own answer ends that),
+ * and after a turn that stopped with background work alive (its late tool pings are that work, not
+ * a new turn — relighting it would leave WORKING with nothing to end it).
+ */
+export function reaffirmIsStale(ev: NormalizedAgentEvent): boolean {
+  if (ev?.reaffirm !== true) return false
+  const e = state.get(ev.nodeId)
+  return e?.state === 'waiting' || e?.state === 'blocked' || (e?.state === 'done' && e.backgroundWork === true)
+}
+
+const lifecycleListeners = new Set<() => void>()
+
+/** Told whenever a node's lifecycle conclusion is set or withdrawn (each shell pushes the list). */
+export function onNodeLifecycleChange(cb: () => void): () => void {
+  lifecycleListeners.add(cb)
+  return () => lifecycleListeners.delete(cb)
+}
+
+/** Every node with a standing lifecycle conclusion — what a renderer draws and `list` names. */
+export function nodeLifecycles(): Record<string, 'launch-failed' | 'dropped'> {
+  const out: Record<string, 'launch-failed' | 'dropped'> = {}
+  for (const [id, e] of state) {
+    const l = nodeLifecycle(e)
+    if (l) out[id] = l
+  }
+  return out
+}
+
+/**
+ * Record (or withdraw) the liveness monitor's conclusion — its only writer. Like the hibernation
+ * flag it creates a minimal entry for an unknown node: a launch that failed never posted a hook,
+ * so the mirror has nothing for it yet. Never bumps `updatedAt` and never schedules a write.
+ */
+export function setNodeLifecycle(nodeId: string, lifecycle: 'launch-failed' | 'dropped' | undefined): void {
+  if (typeof nodeId !== 'string' || !nodeId || nodeId.length > 128) return
+  const e = state.get(nodeId)
+  if (lifecycle) {
+    const at = Math.max(Date.now(), e?.updatedAt ?? 0)
+    state.set(nodeId, e ? { ...e, lifecycle: { state: lifecycle, at } } : { updatedAt: at, lifecycle: { state: lifecycle, at } })
+  } else {
+    if (!e?.lifecycle) return
+    const next = { ...e }
+    delete next.lifecycle
+    state.set(nodeId, next)
+  }
+  for (const cb of lifecycleListeners) {
+    try {
+      cb()
+    } catch {
+      // A listener's failure is its own.
+    }
+  }
+}
+
 export function setNodeHibernated(nodeId: string, on: boolean): void {
   if (typeof nodeId !== 'string' || !nodeId || nodeId.length > 128) return
   const e = state.get(nodeId)

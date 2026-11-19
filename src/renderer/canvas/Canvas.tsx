@@ -397,8 +397,10 @@ import {
   offScreenRefusal,
   sourceIsControlCapable,
   storedNodeListing,
+  controlListingDialogs,
   controlListingText,
   answerBrowserResolve,
+  withExplicitTitle,
   type BrowserResolveProject
 } from '../lib/controlRouting'
 import {
@@ -821,6 +823,7 @@ import type {
   CanvasNodeState,
   ClosedSessionEntry,
   GitApi,
+  HeldLaunchIntent,
   HostedSessionApi,
   NodeKind,
   PendingLaunch,
@@ -13395,6 +13398,13 @@ export function Canvas() {
       // refuse gets their refusal and never makes the host look up a project's board.
       const issueOpen = verb === 'open-agent' || verb === 'open-claude'
       const openVerb = verb === 'open-terminal' || issueOpen
+      // `--title` (the three open verbs): an explicit node name, applied on every open path below
+      // (`withExplicitTitle`). A blank one is refused before anything is created.
+      const openTitle = openVerb && args.title !== undefined ? oneLine(args.title) : undefined
+      if (openVerb && args.title !== undefined && !openTitle) {
+        reply({ ok: false, error: `${verb}: --title needs a name` })
+        return
+      }
       const issuePre: IssueFlagResult = issueOpen
         ? await resolveIssueFlagForCall(
             {
@@ -14050,7 +14060,7 @@ export function Canvas() {
             const h = (node.height as number) ?? 440
             if (i === 0) tgBase = nextFreePosition(tgPlacedNodes, { width: w, height: h })
             node.position = { x: tgBase.x + i * (w + 60) - w / 2, y: tgBase.y - h / 2 }
-            tgMade.push(node)
+            tgMade.push(withExplicitTitle(node, openTitle, i, tgCount))
           }
           const tgIds = tgMade.map((n) => n.id)
           const tgWhat = tgIsTerminal ? 'terminal' : tgAgentId
@@ -14289,7 +14299,11 @@ export function Canvas() {
           if (!needsLiveCanvas(verb)) {
             // Stored nodes carry their persisted geometry, which the listing turns into each row's
             // place and size (nothing off screen was measured — see lib/nodeGeometry).
-            const rows = storedNodeListing(projects.find((p) => p.id === route.projectId)?.nodes ?? [], useAgentStatus.getState().byId, useLaunchDelivery.getState().byId, Date.now(), useStationOutcomes.getState().byId, useStationHandovers.getState().byId)
+            const listedNodes = projects.find((p) => p.id === route.projectId)?.nodes ?? []
+            const rows = await controlListingDialogs(
+              storedNodeListing(listedNodes, useAgentStatus.getState().byId, useLaunchDelivery.getState().byId, Date.now(), useStationOutcomes.getState().byId, useStationHandovers.getState().byId),
+              listedNodes, (id) => api.pty.capture(id, false, true)
+            )
             reply({
               ok: true,
               result: rows,
@@ -14460,7 +14474,7 @@ export function Canvas() {
               : 0
             const coldMade: CanvasNode[] = []
             for (let i = 0; i < coldCount; i++) {
-              const built = coldTerminal
+              const coldBuilt = coldTerminal
                 ? createTerminalNode(coldNodes.length + i, coldCwd, undefined, args.cmd, coldSsh)
                 : bindIssue(
                     createAgentNode(
@@ -14483,6 +14497,7 @@ export function Canvas() {
               // is vacuously ready, so a node with no deps fires on that project's first view.
               // The brief file rides the held launch, so delivery — whenever this project is next
               // viewed — checks it is still there before typing.
+              const built = withExplicitTitle(coldBuilt, openTitle, i, coldCount)
               const armed = withLaunchBrief(armForColdOpen(built), openPrompt.promptFile)
               const held = armed.data.pendingLaunch as PendingLaunch | undefined
               // The cold twin of `connect`: this node's opener rope is appended below, so the
@@ -15091,12 +15106,16 @@ export function Canvas() {
             const st = useAgentStatus.getState().byId
             // Geometry is the MEASURED size on the live canvas (`liveNodeGeometry`), the persisted one
             // only for a node React Flow has not measured yet.
-            const list = storedNodeListing(nodesRef.current.map((n) => ({
+            const listedNodes = nodesRef.current.map((n) => ({
               id: n.id, kind: n.type, title: n.data.title as string,
               pendingLaunch: n.data.pendingLaunch, agentId: n.data.agentId as string | undefined,
               issueRef: n.data.issueRef,
               geometry: liveNodeGeometry(n, nodesRef.current)
-            })), st, useLaunchDelivery.getState().byId, Date.now(), useStationOutcomes.getState().byId, useStationHandovers.getState().byId)
+            }))
+            const list = await controlListingDialogs(
+              storedNodeListing(listedNodes, st, useLaunchDelivery.getState().byId, Date.now(), useStationOutcomes.getState().byId, useStationHandovers.getState().byId),
+              listedNodes, (id) => api.pty.capture(id, false, true)
+            )
             reply({ ok: true, result: list, message: controlListingText(list, { geometry: listGeometryRequested(args) }) })
             return
           }
@@ -15139,12 +15158,17 @@ export function Canvas() {
             const openBatch = createControlOpenBatch()
             const make = (i: number): CanvasNode => {
               const node = armAfter(
-                createTerminalNode(
-                  nodesRef.current.length + i,
-                  termCwd,
-                  placeBelow(i),
-                  args.cmd,
-                  sshFor(termCwd)
+                withExplicitTitle(
+                  createTerminalNode(
+                    nodesRef.current.length + i,
+                    termCwd,
+                    placeBelow(i),
+                    args.cmd,
+                    sshFor(termCwd)
+                  ),
+                  openTitle,
+                  i,
+                  count
                 ),
                 after ?? [],
                 intoGroupId
@@ -15272,7 +15296,7 @@ export function Canvas() {
             const issueNodes: CanvasNode[] = []
             const make = (i: number): CanvasNode => {
               const node = armAfter(
-                createAgentNode(
+                withExplicitTitle(createAgentNode(
                   agentId,
                   nodesRef.current.length + i,
                   agentCwd,
@@ -15289,7 +15313,7 @@ export function Canvas() {
                   // so an unsupported agent's command line stays byte-identical.
                   args.model,
                   openPrompt.promptFile
-                ),
+                ), openTitle, i, count),
                 after ?? [],
                 intoGroupId,
                 openPrompt.promptFile
@@ -19025,7 +19049,8 @@ export function Canvas() {
         markDirty
       }
       const deps = {
-        launch: (req: { ptyOptions: PtyCreateOptions; command: string }) => api.pty.launchHeadless(req),
+        launch: (req: { ptyOptions: PtyCreateOptions; command: string; launchIntent?: HeldLaunchIntent }) =>
+          api.pty.launchHeadless(req),
         savePending: (nodeId: string, pending: PendingLaunch | undefined) =>
           savePendingAnywhere(env, project.id, nodeId, pending),
         markStarting: (id: string) => useLaunchDelivery.getState().markStarting(id),

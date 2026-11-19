@@ -11,7 +11,7 @@
 // Fields this build does not know are KEPT, so saving from this build does not erase a field a
 // newer build wrote.
 
-import type { PendingLaunch } from './types'
+import type { HeldLaunchIntent, PendingLaunch } from './types'
 import { normalizePrWaitHold } from './pr-wait'
 import { normalizeSuccessWaitHold } from './station-outcome'
 
@@ -27,6 +27,28 @@ const KNOWN = new Set([
   'afterSuccess',
   'promptFile'
 ])
+
+/**
+ * The semantic twin of a held launch, kept only while it describes the EXACT pending command. A
+ * hand-edited or stale value yields none, and the node keeps its typed line. Shape only: the core
+ * re-validates the intent itself at execution.
+ */
+export function normalizeHeldLaunchIntent(
+  value: unknown,
+  pending: { command: string } | undefined
+): HeldLaunchIntent | undefined {
+  if (!pending || !value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const v = value as Record<string, unknown>
+  if (v.command !== pending.command) return undefined
+  const intent = v.intent as Record<string, unknown> | null | undefined
+  if (!intent || typeof intent !== 'object' || Array.isArray(intent) || intent.kind !== 'agent') return undefined
+  if (v.promptFile !== undefined && typeof v.promptFile !== 'string') return undefined
+  return {
+    command: pending.command,
+    intent: intent as unknown as HeldLaunchIntent['intent'],
+    ...(typeof v.promptFile === 'string' ? { promptFile: v.promptFile } : {})
+  }
+}
 
 export function normalizePendingLaunch(value: unknown): PendingLaunch | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined

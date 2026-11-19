@@ -13,6 +13,7 @@
  *    surviving a restart (or a saved view carrying it) shows a board that is wrong before anyone
  *    has looked at it, so the chips live in component state and nowhere else.
  */
+import { capabilityAgentId } from '@shared/agents/config'
 import type { AgentNodeStatus } from '../state/agentStatus'
 
 export type StatusChip = 'running' | 'needs' | 'unread'
@@ -22,6 +23,22 @@ export const STATUS_CHIPS: ReadonlyArray<{ id: StatusChip; label: string }> = [
   { id: 'needs', label: 'Needs you' },
   { id: 'unread', label: 'Unread' }
 ]
+
+/**
+ * Antigravity only (PAR-177): the turn ended (`done`) and the CLI's own inventory said work is
+ * still running (`Stop` with `fullyIdle: false` stamps `backgroundTaskAt`; the next turn clears
+ * it). Claude and Codex keep their existing background semantics — only the Eco/restart exemption.
+ */
+export function antigravityBackgroundWork(
+  status: Pick<AgentNodeStatus, 'state' | 'backgroundTaskAt' | 'agentId'> | undefined
+): boolean {
+  return (
+    status?.state === 'done' &&
+    status.backgroundTaskAt !== undefined &&
+    !!status.agentId &&
+    capabilityAgentId(status.agentId) === 'antigravity'
+  )
+}
 
 export type CardBadge = 'dropped' | 'running' | 'needs' | 'paused' | 'sleeping'
 
@@ -36,6 +53,8 @@ export function cardBadge(kind: string, status: AgentNodeStatus | undefined): Ca
   if (kind === 'sticky' || !status) return null
   if (status.dropped) return 'dropped'
   if (status.state === 'working') return 'running'
+  // Antigravity: a turn that ended with background work alive is not an idle card (PAR-177).
+  if (antigravityBackgroundWork(status)) return 'running'
   if (status.state === 'waiting' || status.state === 'blocked') return 'needs'
   if (status.paused) return 'paused'
   if (status.hibernated) return 'sleeping'

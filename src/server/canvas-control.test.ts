@@ -22,7 +22,7 @@ import {
 import { fakePlatform, type FakePlatform } from '../core/platform-fake'
 import { initPlatform, resetPlatformForTests } from '../core/platform'
 import type { PtyManager } from '../core/pty-manager'
-import type { WorkspaceStore } from '../core/workspace-store'
+import { WorkspaceStore } from '../core/workspace-store'
 import { IPC } from '../shared/ipc'
 import { DEFAULT_SETTINGS, type Project, type Settings, type Workspace } from '../shared/types'
 import { initServerCanvasControl, type ServerCanvasControl } from './canvas-control'
@@ -103,6 +103,40 @@ describe('initServerCanvasControl', () => {
     resetNodeTokenFilesForTests()
     resetPlatformForTests()
     fs.rmSync(dataDir, { recursive: true, force: true })
+  })
+
+  it.each(['open-agent', 'open-claude', 'open-terminal'])('PAR-230 T12/T20 %s routes an explicit title through Server control and persists it', async (verb) => {
+    const store = new WorkspaceStore()
+    await store.save({ version: 2, activeProjectId: 'p1', projects: [{
+      id: 'p1', name: 'Project', color: '#888', cwd: dataDir,
+      viewport: { x: 0, y: 0, zoom: 1 }, nodes: [{
+        id: 'source', kind: 'terminal', title: 'Source', color: '#888', agentId: 'claude',
+        position: { x: 0, y: 0 }, size: { width: 640, height: 440 }, group: null
+      }]
+    }] })
+    const pty = {
+      ...headlessShell(),
+      createHeadless: vi.fn(async () => ({ sessionId: 'test-session', fresh: true, persistent: true })),
+      paneCommand: vi.fn(async () => 'bash'),
+      destroySession: vi.fn(async () => undefined),
+      paneOwner: vi.fn(async () => null), sendText: vi.fn(async () => true),
+      hasLiveSession: () => true, sessionExists: async () => true, paneProbeTimeoutMs: () => 2000
+    } as unknown as PtyManager
+    runtime = await initServerCanvasControl({
+      workspaceStore: store, ptyManager: pty, settings: () => ({ ...DEFAULT_SETTINGS }),
+      boardLog: { append: async () => false },
+      cliCaps: async () => ({ version: null, autoPermissionMode: false, fullscreenTui: false, sessionIdFlag: false }),
+      codexSharedIdentity: async () => false,
+      codexCaps: async () => ({ approvalValues: null, noDaemon: null })
+    })
+    const reply = await runtime.handler({ verb, nodeId: 'source', verified: true, args: {
+      title: 'ARQ ORQ-78', ...(verb === 'open-terminal' ? { cmd: 'echo brief' } : { prompt: 'brief' }),
+      ...(verb === 'open-agent' ? { agent: 'codex' } : {})
+    } })
+    expect(reply.ok, JSON.stringify(reply)).toBe(true)
+    const id = (reply.result as { id: string }).id
+    const node = (await new WorkspaceStore().load({ sideline: false })).projects[0].nodes.find((node) => node.id === id)
+    expect(node).toMatchObject({ title: 'ARQ ORQ-78', titleAuto: false })
   })
 
   it('installs only under temp data when integrations are gated, and enforces messaging switch off', async () => {
@@ -190,7 +224,7 @@ describe('initServerCanvasControl', () => {
     expect(shimBody).toContain('NODETERM_CANVAS_CONTROL')
     expect(shimBody).toContain('CODEX_THREAD_ID')
     expect(shimBody).toContain(path.join(dataDir, 'codex-thread-nodes'))
-    expect(fs.statSync(shim).mode & 0o111).not.toBe(0)
+    if (process.platform !== 'win32') expect(fs.statSync(shim).mode & 0o111).not.toBe(0)
 
     const opened = await runtime.handler({
       verb: 'open-agent',

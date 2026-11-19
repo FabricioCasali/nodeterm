@@ -1,4 +1,7 @@
 import type { TextDeliveryResult } from '../shared/text-delivery'
+import { envelopeGuardAllows, type EnvelopeGuard } from '../shared/agents/message-readiness'
+import { sanitizePasteText } from './paste-injection'
+import type { MessageEnvelopePreparation } from '../session-host/protocol'
 // The Electron-main-side client for the session host: one long-lived connection per app process,
 // auto-spawning the host on first use and restoring every live local attachment before allowing
 // ordinary traffic through a replacement connection.
@@ -1911,7 +1914,39 @@ export class SessionHostClient {
     } catch { return false }
   }
 
-  async messageEnvelope(name: string, envelope: string, expected: PaneOwner): Promise<boolean> {
+  async messageEnvelope(name: string, envelope: string, expected: PaneOwner, guard?: EnvelopeGuard): Promise<boolean> {
+    if (guard) {
+      const socket = this.socket
+      if (!socket || socket.destroyed || !this.hostFeatures.has('guardedMessageEnvelopeV1') ||
+          !this.hostFeatures.has('captureVisible')) return false
+      let sent = false
+      let preparationId: string | undefined
+      const cancel = async (): Promise<void> => {
+        if (!preparationId) return
+        try {
+          await this.requestOnSocket(socket, { cmd: 'messageEnvelopeCancelV1', name, preparationId })
+        } catch { /* a lost socket cancels its preparations on the host */ }
+      }
+      try {
+        const screen = await this.requestOnSocket<CaptureVisibleResult>(socket, { cmd: 'captureVisible', name })
+        if (!envelopeGuardAllows(guard.beforePaste, screen?.screen ?? null)) return false
+        const prepared = await this.requestOnSocket<MessageEnvelopePreparation>(socket,
+          { cmd: 'messageEnvelopePrepareV1', name, envelope: sanitizePasteText(envelope), expected, agentId: 'claude' },
+          undefined, () => { sent = true }, MESSAGE_ENVELOPE_REQUEST_TIMEOUT_MS)
+        if (prepared.kind === 'not-pasted') return false
+        preparationId = prepared.preparationId
+        if (!envelopeGuardAllows(guard.beforeSubmit, prepared.screen?.screen ?? null)) {
+          await cancel()
+          return true
+        }
+        await this.requestOnSocket(socket, { cmd: 'messageEnvelopeCommitV1', name, preparationId },
+          undefined, undefined, MESSAGE_ENVELOPE_REQUEST_TIMEOUT_MS)
+        return true
+      } catch {
+        await cancel()
+        return sent
+      }
+    }
     try {
       return (
         (await this.request<boolean>(

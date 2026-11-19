@@ -41,6 +41,13 @@ import type { WakeContext } from '../terminal/wake-identity'
  * session into its own namespaced key without touching this file.
  */
 export interface AgentNodeStatus {
+  pendingAsk?: {
+    kind: 'approval' | 'question'
+    detail?: string
+    since: number
+    id?: string
+    sessionId?: string
+  }
   /** Live activity; undefined = idle/unknown. */
   state?: AgentState
   /**
@@ -190,6 +197,21 @@ export interface AgentNodeStatus {
    * it can still see.
    */
   dropped?: boolean
+  /**
+   * Core's process-liveness conclusion for this node (core/agent-liveness.ts), mirrored from the
+   * host: its launch returned without a CLI (`launch-failed`), or its CLI left the pane without
+   * a SessionEnd (`dropped` — which also raises `dropped` above, so every DROPPED surface shows
+   * it). Core measured it for nodes this window may not even have mounted, so a local pane check
+   * cannot withdraw it; core does, and so does any hook event (a live CLI fired it).
+   * TRANSIENT, like `dropped`.
+   */
+  lifecycle?: 'launch-failed' | 'dropped'
+  /**
+   * The model this node's CLI last named in a hook of its own session (antigravity). Shown where
+   * the context meter shows a model, before any token usage exists. TRANSIENT: a claim about a
+   * running session, re-stated by its next hook.
+   */
+  model?: string
   /**
    * This node's CLI announced its own exit (any SessionEnd hook: `/exit`, `/quit`,
    * Ctrl+D) and nothing has started a session since.
@@ -357,7 +379,8 @@ export interface AgentStatusStore {
     verified?: boolean,
     errored?: boolean,
     held?: HeldPermission,
-    interrupted?: boolean
+    interrupted?: boolean,
+    ask?: { kind?: 'approval' | 'question'; detail?: string; id?: string; sessionId?: string; since?: number }
   ): void
   /**
    * Subscribe to EVERY hook event `setState` records for node `id` — same-state ones included, and
@@ -396,6 +419,10 @@ export interface AgentStatusStore {
   /** Record (or withdraw) the verdict that this node's CLI died unannounced. Transient; see
    *  `dropped`. Cheap to call repeatedly — it bails when the flag already reads that way. */
   setDropped(id: string, on: boolean): void
+  /** Replace core's lifecycle conclusions whole (the host pushes the full map, never a delta). */
+  setLifecycles(map: Readonly<Record<string, 'launch-failed' | 'dropped'>>): void
+  /** Record the model the node's own session last named. Transient; bails when unchanged. */
+  setModel(id: string, model: string): void
   /** Record (or withdraw) that this node's CLI announced its exit. Transient; see `sessionEnded`.
    *  Bails when the flag already reads that way. */
   setSessionEnded(id: string, on: boolean): void
@@ -775,7 +802,7 @@ export function createAgentStatusSession(
         return s.activeId === id ? { activeId: null } : s
       }),
 
-    setState: (id, state, agentId, newTurn, pendingId, verified, errored, held, interrupted) => {
+    setState: (id, state, agentId, newTurn, pendingId, verified, errored, held, interrupted, ask) => {
       set((s) => {
         const prev = s.byId[id] ?? EMPTY
         const now = Date.now()
@@ -805,12 +832,29 @@ export function createAgentStatusSession(
           state !== 'blocked' || (pendingId ?? prev.pendingId) === prev.pendingId
         // Same for a NEW held request (a held picker re-asserts `waiting`, where pendingId is absent).
         const needsYou = state === 'blocked' || state === 'waiting'
+        const askKind = ask?.kind ?? (state === 'blocked' ? 'approval' : 'question')
+        const askId = ask?.id ?? pendingId ?? held?.pendingId
+        const previousAsk = prev.pendingAsk
+        const sameAsk = needsYou && previousAsk?.kind === askKind &&
+          (!ask?.sessionId || !previousAsk.sessionId || ask.sessionId === previousAsk.sessionId) &&
+          (!askId || askId === previousAsk.id) &&
+          (askId !== undefined || ask?.detail === undefined || ask.detail === previousAsk.detail)
+        const pendingAsk = needsYou ? {
+          kind: askKind, since: ask?.since ?? (sameAsk ? previousAsk.since : now),
+          detail: ask?.detail ?? (sameAsk ? previousAsk.detail : undefined),
+          id: askId ?? (sameAsk ? previousAsk.id : undefined),
+          sessionId: ask?.sessionId ?? prev.sessionId
+        } : undefined
+        const sameAskDetails = previousAsk?.kind === pendingAsk?.kind &&
+          previousAsk?.detail === pendingAsk?.detail && previousAsk?.since === pendingAsk?.since &&
+          previousAsk?.id === pendingAsk?.id && previousAsk?.sessionId === pendingAsk?.sessionId
         const sameHeld = !needsYou || !held || held.pendingId === prev.held?.pendingId
         if (
           prev.state === state &&
           (agentId === undefined || prev.agentId === agentId) &&
           samePendingWhileBlocked &&
           sameHeld &&
+          sameAskDetails &&
           !turnErrorMoves &&
           !turnInterruptMoves
         ) {
@@ -854,6 +898,7 @@ export function createAgentStatusSession(
         // clock is stamped (the same-state fast path above deliberately does not touch it —
         // see `lastEventAt`).
         const next = { ...prev, state, stateAt: now, lastEventAt: now, lastSeen: { at: now, state } }
+        next.pendingAsk = pendingAsk
         // Written on the same edge the state is — the evidence describes THIS transition, and an
         // absent argument is not evidence.
         next.stateVerified = verified === true
@@ -936,6 +981,7 @@ export function createAgentStatusSession(
         // (a late Stop POST would undo a hibernation we just performed), but it absolutely does
         // disprove "this pane has no CLI in it". Nothing is saved — the flag is transient.
         if (prev.dropped) next.dropped = undefined
+        if (prev.lifecycle) next.lifecycle = undefined
         // Same reasoning: a state transition is fired by a live CLI, so "it exited" no longer holds.
         if (prev.sessionEnded) next.sessionEnded = undefined
         const byId = { ...s.byId, [id]: next }
@@ -979,7 +1025,7 @@ export function createAgentStatusSession(
       set((s) => {
         const prev = s.byId[id] ?? EMPTY
         if (prev.sessionId === sessionId) return s
-        const byId = { ...s.byId, [id]: { ...prev, sessionId } }
+        const byId = { ...s.byId, [id]: { ...prev, sessionId, pendingAsk: undefined } }
         save(byId)
         return { byId }
       }),
@@ -1110,9 +1156,41 @@ export function createAgentStatusSession(
         // the overwhelmingly common call is "still fine, still fine" — and a fresh entry object
         // each time would re-render the node (and the minimap) for no news.
         if (!!prev.dropped === on) return s
+        // Core's own process proof stands until core (or a hook) withdraws it: this window's pane
+        // check only speaks for the nodes and agents it can measure.
+        if (!on && prev.lifecycle === 'dropped') return s
         // Transient: cleared by dropping the key, and NO `save()` — see the field comment. An entry
         // holding nothing else durable must not be conjured onto disk by a pane reading.
         return { byId: { ...s.byId, [id]: { ...prev, dropped: on ? true : undefined } } }
+      }),
+
+    setModel: (id, model) =>
+      set((s) => {
+        const prev = s.byId[id] ?? EMPTY
+        if (prev.model === model) return s
+        return { byId: { ...s.byId, [id]: { ...prev, model } } }
+      }),
+
+    setLifecycles: (map) =>
+      set((s) => {
+        let byId = s.byId
+        const ids = new Set([...Object.keys(map), ...Object.keys(s.byId).filter((id) => s.byId[id]?.lifecycle)])
+        for (const id of ids) {
+          const prev = byId[id] ?? EMPTY
+          const want = Object.hasOwn(map, id) ? map[id] : undefined
+          if (prev.lifecycle === want) continue
+          // Transient, like `dropped`: no `save()`.
+          const wasCoreDropped = prev.lifecycle === 'dropped'
+          byId = {
+            ...byId,
+            [id]: {
+              ...prev,
+              lifecycle: want,
+              dropped: want === 'dropped' ? true : wasCoreDropped ? undefined : prev.dropped
+            }
+          }
+        }
+        return byId === s.byId ? s : { byId }
       }),
 
     setSessionEnded: (id, on) =>

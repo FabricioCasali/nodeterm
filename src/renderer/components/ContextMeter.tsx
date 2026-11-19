@@ -9,7 +9,7 @@ import { barFillPercent, contextFillColor, contextPillText, formatModelLabel, fo
  * Per-Claude-node context-window meter. A small header pill (mini-bar + "NN%") that toggles
  * a popover with token figures and model. Renders nothing until the session has usage data.
  */
-export function ContextMeter({ sessionId, nodeId, remote = false, agentId, fromLaunchId = false }: {
+export function ContextMeter({ sessionId, nodeId, remote = false, agentId, fromLaunchId = false, fallbackModel }: {
   sessionId: string | null
   nodeId?: string
   remote?: boolean
@@ -17,6 +17,10 @@ export function ContextMeter({ sessionId, nodeId, remote = false, agentId, fromL
   /** `sessionId` is the node's persisted launch id, not a hook-confirmed one
    *  (lib/transcriptSession.ts): the popover says so, since it may be an older session. */
   fromLaunchId?: boolean
+  /** The model the session's own hooks named (`AgentNodeStatus.model`): shown as the model
+   *  label when no usage has been read yet, or when the usage record names no model. Never a
+   *  percentage — there is none to show without token figures. */
+  fallbackModel?: string
 }): JSX.Element | null {
   const scoped = remote && !!agentId && capabilityAgentId(agentId) === 'codex'
   // A copied rollout has the same session id on two hosts. SSH Codex observations belong
@@ -38,14 +42,24 @@ export function ContextMeter({ sessionId, nodeId, remote = false, agentId, fromL
     return () => window.removeEventListener('mousedown', onDown)
   }, [open])
 
-  if (!usage || hiddenByUser) return null
+  if (hiddenByUser) return null
+  if (!usage) {
+    const label = formatModelLabel(fallbackModel ?? null)
+    return label ? (
+      <div className="ctx-meter nodrag">
+        <span className="ctx-pill ctx-pill--model-only" title="Model in use — no context usage read yet">
+          <span className="ctx-pill__model">{label}</span>
+        </span>
+      </div>
+    ) : null
+  }
   // The NUMBER honours the used/remaining/tokens display setting; the bar and its color stay
   // keyed to context FILL, so the severity colors keep meaning the same thing in every mode
   // (issue #78).
   const pillText = contextPillText(usage.usedTokens, usage.windowTokens, usage.usedPercent, percentMode)
   const color = contextFillColor(usage.usedPercent)
   const estimated = usage.windowSource === 'estimate'
-  const modelLabel = formatModelLabel(usage.model)
+  const modelLabel = formatModelLabel(usage.model ?? fallbackModel ?? null)
 
   return (
     <div className="ctx-meter nodrag" ref={ref}>

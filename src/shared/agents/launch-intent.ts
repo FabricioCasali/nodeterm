@@ -7,13 +7,15 @@
 // only from a SEMANTIC request, never by re-parsing the typed line. This builds that request.
 //
 // It is built only where it is a faithful description of the legacy line. Anything the core
-// planner does not model — a launch-command override, a per-node model, a custom agent (its own
-// args / ${env:…} expansion / baseAgent inheritance), a remote node, a resume — yields NO intent,
-// and such a node keeps its legacy line on every surface. A launch with no prompt yields none
-// either: without a prompt the legacy line holds only bare flag words and validated ids, which
-// every Windows shell already parses the same way.
+// planner does not model — a launch-command override, a custom agent whose launch command holds
+// an ${env:…} expansion or shell syntax, a remote node, a resume — yields NO intent, and such a
+// node keeps its legacy line on every surface. A custom agent is named by id only: the core
+// resolves its CURRENT machine-local record (launch command, base harness, `args`), so no launch
+// material ever rides the intent. A launch with no prompt
+// yields none either: without a prompt the legacy line holds only bare flag words and validated
+// ids, which every Windows shell already parses the same way.
 
-import type { HeldLaunchIntent } from '../types'
+import type { CustomAgent, HeldLaunchIntent } from '../types'
 import {
   AGENT_CONFIG,
   hasPermissionMode,
@@ -27,6 +29,8 @@ export interface HeldLaunchInputs {
   /** The exact legacy line this intent stands in for. */
   command: string
   launchCmdOverride?: string
+  /** The custom agent's current record, when `agentId` is a custom id and the caller has it. */
+  customAgent?: Pick<CustomAgent, 'launchCmd' | 'args'>
   model?: string
   /** An SSH / relay node: its shell is on another machine, never a local session host. */
   remote: boolean
@@ -41,8 +45,16 @@ export interface HeldLaunchInputs {
 
 export function heldLaunchIntentFor(inputs: HeldLaunchInputs): HeldLaunchIntent | undefined {
   if (inputs.resume || inputs.remote) return undefined
-  if (!Object.hasOwn(AGENT_CONFIG, inputs.agentId)) return undefined
-  if (inputs.launchCmdOverride?.trim() || inputs.model) return undefined
+  if (inputs.launchCmdOverride?.trim()) return undefined
+  if (!Object.hasOwn(AGENT_CONFIG, inputs.agentId)) {
+    // A custom agent: one this machine has a record for (ids are free-form), or a `custom:` id.
+    if (!inputs.customAgent && !inputs.agentId.startsWith('custom:')) return undefined
+    // An ${env:…} expansion or shell syntax in the launch COMMAND: the core planner takes a plain
+    // program there, so such an agent keeps its typed line rather than be refused. (`args` are
+    // modelled: the planner expands and encodes them itself.)
+    if (/[;&|<>()$`]/u.test(inputs.customAgent?.launchCmd ?? '')) return undefined
+  }
+  const model = inputs.model?.trim()
   const promptFile = inputs.promptFile?.trim()
   // Collapsed exactly like the legacy line collapses it (`assembleLaunchCommand`).
   const prompt = promptFile ? undefined : inputs.initialPrompt?.replace(/\s+/g, ' ').trim()
@@ -61,7 +73,8 @@ export function heldLaunchIntentFor(inputs: HeldLaunchInputs): HeldLaunchIntent 
         : {}),
       ...(inputs.mintedSessionId && mintsSessionId(inputs.agentId)
         ? { newSessionId: inputs.mintedSessionId }
-        : {})
+        : {}),
+      ...(model ? { model } : {})
     },
     ...(promptFile ? { promptFile } : {})
   }

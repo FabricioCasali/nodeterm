@@ -58,6 +58,8 @@ export function applyAgentEvent(
   const an = nodes ? nodes.getState() : null
   switch (e.kind) {
     case 'state': {
+      // The session's own model, when its CLI names one (antigravity) — see AgentNodeStatus.model.
+      if (e.model) cs.setModel(e.nodeId, e.model)
       // An `idle` done (the CLI went quiet at its prompt — see normalize) is a RESCUE for a
       // node stuck on `working` after an Esc that ran no turn-end hook. It may ONLY move a
       // working node: blocked/waiting is also "idle at the prompt", and clearing it there
@@ -77,7 +79,9 @@ export function applyAgentEvent(
           e.verified,
           e.errored,
           e.held,
-          recordsTurnInterrupt(e)
+          recordsTurnInterrupt(e),
+          e.effectiveAsk ?? { kind: e.askKind, detail: e.lastMessage, sessionId: e.sessionId,
+            id: e.questionId ?? e.pendingId ?? e.held?.pendingId }
         )
       // Claude's Stop names the BACKGROUND tasks still running (async subagents, nested ones,
       // background shells). A background subagent that ends its turn while its own work runs

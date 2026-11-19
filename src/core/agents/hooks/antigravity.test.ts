@@ -467,15 +467,13 @@ describe('the Windows wrapper (content)', () => {
       if (line === 'if not defined NT_SH goto :nt_drain') continue
       expect(w).toContain(line)
     }
-    // Pinned bytes of the codex wrapper as it was before the probe lines were shared, plus the
-    // deliberate no-nodeterm-env early exit added since.
+    // Pinned bytes of the codex wrapper as it was before the probe lines were shared. No env gate:
+    // under the shared app-server a codex hook has no NODETERM_*/CODEX_THREAD_ID (PAR-174).
     expect(codex).toBe(
       [
         '@echo off',
         'rem Managed by nodeterm (agent-hooks). Regenerated on every app launch; edits are lost.',
         'setlocal EnableExtensions',
-        // The no-nodeterm-env early exit: a codex run outside nodeterm drains without a shell.
-        'if not defined NODETERM_NODE_ID if not defined CODEX_THREAD_ID goto :nt_drain',
         'set "NT_SCRIPT=%~dp0codex.sh"',
         'if not exist "%NT_SCRIPT%" goto :nt_drain',
         'set "NT_SH="',

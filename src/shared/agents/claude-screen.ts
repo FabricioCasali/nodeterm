@@ -108,6 +108,12 @@ export function claudeScreenBlocksInput(s: ClaudeScreen): boolean {
   return s.kind === 'dialog' || s.kind === 'no-prompt'
 }
 
+export function claudeFolderTrustVisible(screen: string): boolean {
+  const state = readClaudeScreen(screen)
+  return state.kind === 'dialog' && state.text.includes('Accessing workspace:') &&
+    state.text.includes('Yes, I trust this folder')
+}
+
 /**
  * Is Claude Code's composer EMPTY right now? Read from a STYLED capture (`capture-pane -e`): the one
  * fact the plain text cannot carry is the placeholder. MEASURED on Claude Code 2.1.301 (fullscreen

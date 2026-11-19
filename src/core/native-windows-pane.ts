@@ -1,4 +1,5 @@
 import type { TextDeliveryResult } from '../shared/text-delivery'
+import { envelopeGuardAllows, type EnvelopeGuard } from '../shared/agents/message-readiness'
 import { randomUUID } from 'crypto'
 import { TerminalEmulator } from '../session-host/terminal-emulator'
 import { readWindowsConsoleOwner, sameNativeProcess } from '../session-host/windows-pane-owner'
@@ -52,7 +53,7 @@ export class NativeWindowsPane {
     return this.alive && this.screen.bracketedPasteRequested()
   }
 
-  async sendEnvelope(envelope: string, expected?: PaneOwner): Promise<boolean> {
+  async sendEnvelope(envelope: string, expected?: PaneOwner, guard?: EnvelopeGuard): Promise<boolean> {
     if (!envelope || !expected || !(await this.pasteAware())) return false
     // Re-check the exact process immediately before typing. A replacement with the same
     // PID but a different OS birth time, or a shell returned to the console, refuses.
@@ -64,8 +65,12 @@ export class NativeWindowsPane {
     return pasteThenSubmitWhenSettled(text, {
       capture: async () => (this.alive ? this.capture(false) : null),
       paste: async () => {
-        if (!this.alive || !(await this.pasteAware())) return false
         try {
+          if (!this.alive || (guard && !sameNativeProcess(expected, await this.owner())) || !(await this.pasteAware())) return false
+          if (guard) {
+            await this.tail
+            if (!this.alive || !this.screen.bracketedPasteRequested() || !envelopeGuardAllows(guard.beforePaste, this.screen.captureVisible().screen)) return false
+          }
           this.proc.write(`\x1b[200~${text}\x1b[201~`)
           return true
         } catch { return false }
@@ -73,6 +78,10 @@ export class NativeWindowsPane {
       submit: async () => {
         try {
           if (!sameNativeProcess(expected, await this.owner()) || !(await this.pasteAware()) || !this.alive) return
+          if (guard) {
+            await this.tail
+            if (!this.alive || !this.screen.bracketedPasteRequested() || !envelopeGuardAllows(guard.beforeSubmit, this.screen.captureVisible().screen)) return
+          }
           this.proc.write('\r')
         } catch { /* paste landed; receipt reports stalled */ }
       }

@@ -97,13 +97,16 @@ describe('antigravity: an errored turn is retired by the next execution', () => 
   it("a background tool's late PostToolUse neither retires the error nor releases the dependent", () => {
     apply(hook('Stop', { fullyIdle: true, terminationReason: 'ERROR' }))
     vi.advanceTimersByTime(DONE_HOLDOFF_MS + 1000)
-    // A background tool's late PostToolUse says nothing (null) and must not release anything.
+    // A tool's late PostToolUse only reasserts activity (PAR-177): it is not a turn boundary, so it
+    // retires no error and releases nothing.
     const post = normalizeAntigravity({
       nodeId: UP,
       agentId: 'antigravity',
       payload: { nodeterm_hook_event: 'PostToolUse', toolCall: { name: 'run_command' } }
     })
-    expect(post).toBeNull()
+    expect(post).toMatchObject({ state: 'working', reaffirm: true })
+    expect(post?.newTurn).toBeUndefined()
+    apply(post!)
     expect(fires()).toBe(false)
   })
 })

@@ -64,6 +64,7 @@ export async function serverEditionControlHandler({ verb }: { verb: string }): P
 }
 
 export interface ServerEditionControlActions {
+  list?(sourceNodeId: string, args: Record<string, string>): Promise<ServerControlReply>
   openProject(
     sourceNodeId: string,
     args: Record<string, string>,
@@ -112,9 +113,11 @@ export interface ServerEditionControlActions {
 }
 
 const SERVER_V1_VERBS: ReadonlySet<string> = new Set([
+  'list',
   'open-project',
   'open-terminal',
   'open-agent',
+  'open-claude',
   'close',
   'link',
   'group',
@@ -174,12 +177,19 @@ export function createServerEditionControlHandler(actions: ServerEditionControlA
     }
 
     switch (command.verb) {
+      case 'list':
+        return actions.list ? actions.list(nodeId, command.args) : {
+          ok: false, error: CONTROL_UNSUPPORTED_ERROR, message: unsupportedServerVerbMessage(verb)
+        }
       case 'open-project':
         return actions.openProject(nodeId, command.args, verified)
       case 'open-terminal':
         return actions.openTerminal(nodeId, command.args, verified)
       case 'open-agent':
         return actions.openAgent(nodeId, command.args, verified)
+      case 'open-claude':
+        // The desktop's shorthand for `open-agent --agent claude`, with the same flags.
+        return actions.openAgent(nodeId, { ...command.args, agent: 'claude' }, verified)
       case 'close':
         return actions.close(nodeId, command.args, verified)
       case 'link':

@@ -105,6 +105,29 @@ its terminals and refuses the extension; never restart it automatically or fall 
 Message dispatch publishes pending canvas edits before main resolves scope, without overwriting
 an unresolved file conflict. See `docs/windows-session-host.md`.
 
+Inferred Claude idle is messageable only with a verified current-session event, current hook
+identity/token, and a guarded backend. Keep the per-attempt checks before paste (empty visible
+composer) and before Enter (exact sanitized envelope, unchanged state/session/process). Do not
+promote the mirror or accept readiness from callers. Both shells forward the same internal guard.
+The host negotiates `guardedMessageEnvelopeV1`: prepare pastes without Enter; commit consumes a
+socket/generation-bound preparation once; cancel only invalidates it. Use the established socket,
+without reconnect/fallback. After a potential paste, uncertainty is partial and must never resend.
+
+Queued messages recheck the full gate chain on idle events and timed retries. Keep one attempt per
+target, the original TTL, and claim-before-effect persistence. Transient retries use the current
+1.5/3/6-second backoff; rate limits use their returned deadline. Coalesce unfinished pane probes:
+the caller's probe timeout does not terminate the backend work. Never retry a partial or uncertain write.
+App-authored failure notices must exclude the original payload and cannot recursively report their own
+failure. A disabled messaging grant still prevents typing a notice; record that failure explicitly.
+
+`capture-pane --node <id> [--lines N]` is a verified, same-project visible-screen read. Both shells
+register `createCapturePaneControlHandler`. Never launch or attach a session, read scrollback, change
+focus, or treat an unavailable backend as an empty successful capture. N is a positive decimal integer.
+
+Approval reminders say that confirmation is missing: a native approval can precede the next hook.
+They offer no close/reassign actions. Notice ancestry survives a parent closing only through observed
+links in the same project; Server ancestry comes from its runtime creator ledger, not shared files.
+
 **Windows pane probes:** never start a `powershell.exe` per probe. Pane-command and console-owner
 reads go through the per-process probe worker (`session-host/windows-probe-worker.ts`), which falls
 back to the one-shot script (absolute `powershellExe()` path) only when it cannot answer. Coalesce

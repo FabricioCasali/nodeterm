@@ -4,7 +4,7 @@
 // Headless starts are local-only: a remote (SSH) node is refused here, before any claim
 // (`remote-unsupported`, the primary fence), and `headlessPtyOptions` sets `requireRemote` for an
 // SSH-project node as core's belt behind it.
-import type { CanvasNodeState, PendingLaunch, Project, PtyCreateOptions } from '@shared/types'
+import type { CanvasNodeState, HeldLaunchIntent, PendingLaunch, Project, PtyCreateOptions } from '@shared/types'
 import type { HeadlessLaunchFailure, HeadlessLaunchResult } from '@shared/headless-launch'
 import { HEADLESS_COLS, HEADLESS_ROWS, localNodePtyOptions } from '@shared/node-pty-options'
 import { countOpenProjects, decideOpen, type ProjectLimitState } from '@shared/project-limit'
@@ -131,7 +131,11 @@ export function shouldUnhideForHeadlessStart(
 }
 
 export interface HeadlessStartDeps {
-  launch(req: { ptyOptions: PtyCreateOptions; command: string }): Promise<HeadlessLaunchResult>
+  launch(req: {
+    ptyOptions: PtyCreateOptions
+    command: string
+    launchIntent?: HeldLaunchIntent
+  }): Promise<HeadlessLaunchResult>
   /** Persist `pending` (undefined = cleared) on the node wherever it lives NOW; true = on disk. */
   savePending(nodeId: string, pending: PendingLaunch | undefined): Promise<boolean>
   markStarting(nodeId: string): void
@@ -170,7 +174,9 @@ export async function startHeadless(
     try {
       result = await deps.launch({
         ptyOptions: headlessPtyOptions(project, node),
-        command: original.command
+        command: original.command,
+        // Only the twin of this exact line; core re-validates it against the live session.
+        ...(node.launchIntent?.command === original.command ? { launchIntent: node.launchIntent } : {})
       })
     } catch {
       result = { outcome: 'failed', reason: 'spawn-failed' }

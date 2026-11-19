@@ -105,6 +105,8 @@ export type SessionHostRequest =
   | { id: number; cmd: 'messageOwnerV1'; name: string }
   | { id: number; cmd: 'messagePasteReadyV1'; name: string }
   | { id: number; cmd: 'messageEnvelopeV1'; name: string; envelope: string; expected: PaneOwner }
+  | { id: number; cmd: 'messageEnvelopePrepareV1'; name: string; envelope: string; expected: PaneOwner; agentId: 'claude' }
+  | { id: number; cmd: 'messageEnvelopeCommitV1' | 'messageEnvelopeCancelV1'; name: string; preparationId: string }
   /** End the proven agent process tree (`expected`, from `messageOwnerV1`) without touching the
    *  console root. Result: `TerminateOwnerResult`. Additive like the messaging extension: an older
    *  live host answers `unknown command`, which the client reports as unsupported. */
@@ -230,6 +232,7 @@ export interface AttachResult {
 }
 /** Additive, independently negotiated capabilities (see the `hello` request). */
 export type SessionHostFeature =
+  | 'guardedMessageEnvelopeV1'
   | 'geometry'
   | 'shutdown'
   | 'sessionDetails'
@@ -237,6 +240,7 @@ export type SessionHostFeature =
   | 'captureVisible'
   | 'paneCwd'
 export const SESSION_HOST_FEATURES: readonly SessionHostFeature[] = [
+  'guardedMessageEnvelopeV1',
   'geometry',
   'shutdown',
   'sessionDetails',
@@ -244,6 +248,10 @@ export const SESSION_HOST_FEATURES: readonly SessionHostFeature[] = [
   'captureVisible',
   'paneCwd'
 ]
+
+export type MessageEnvelopePreparation =
+  | { kind: 'not-pasted' }
+  | { kind: 'pasted'; preparationId: string; screen: CaptureVisibleResult | null }
 
 /** `result` of a successful `shutdown`: the session names whose process trees were ended. The
  *  host exits right after this reply is flushed. A shutdown that could not confirm every kill

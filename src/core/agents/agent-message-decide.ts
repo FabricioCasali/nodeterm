@@ -230,7 +230,7 @@ export interface Proceed {
  *  - any `done` whose evidence was `stateVerified: false` — handled EARLIER, by the three identity
  *    refusals, because an unprovable identity is the more permanent fact.
  */
-function idleRefusal(e: MirrorEntry | undefined): AgentMessageOutcome | null {
+function idleRefusal(e: MirrorEntry | undefined, guardedInferred = false): AgentMessageOutcome | null {
   if (!e) return { kind: 'targetNotIdleUnknown', reason: 'no status has ever been posted for this node' }
   if (e.restored)
     return {
@@ -246,7 +246,7 @@ function idleRefusal(e: MirrorEntry | undefined): AgentMessageOutcome | null {
   if (e.state === undefined)
     return { kind: 'targetNotIdleUnknown', reason: 'the node is between sessions (no current state)' }
   if (e.state !== 'done') return { kind: 'targetBusy', state: e.state }
-  if (e.idleInferred)
+  if (e.idleInferred && !guardedInferred)
     return {
       kind: 'targetNotIdleUnknown',
       reason: 'the last `done` was inferred from the CLI going idle at its prompt, which a node ' +
@@ -355,7 +355,8 @@ export function decidePreProbe(
     | 'target'
     | 'tokenFilePresent'
     | 'targetIsRemote'
-  >
+  >,
+  guardedInferred = false
 ): AgentMessageOutcome | null {
   if (f.notPermitted) return { kind: 'notPermitted', reason: f.notPermitted }
   // SELF-SEND, and it is a backstop rather than the only guard.
@@ -374,7 +375,7 @@ export function decidePreProbe(
   // ahead of anything that touches a pane. See FIRST_PAID_DECISION.
   const identity = identityRefusal(f)
   if (identity) return identity
-  return idleRefusal(f.target)
+  return idleRefusal(f.target, guardedInferred)
 }
 
 /**
@@ -383,8 +384,8 @@ export function decidePreProbe(
  * The sequence below IS `DECISION_ORDER`, and the ordering test walks it by clearing one fact at a
  * time — asserted by RUNNING this function, never by reading its source.
  */
-export function decideDelivery(f: DeliveryFacts): AgentMessageOutcome | Proceed {
-  const cheap = decidePreProbe(f)
+export function decideDelivery(f: DeliveryFacts, guardedInferred = false): AgentMessageOutcome | Proceed {
+  const cheap = decidePreProbe(f, guardedInferred)
   if (cheap) return cheap
   // Gate 1, in two honest halves — and BOTH refuse, because the one thing neither may do is admit
   // a pane we could not read. This gate must stay FAIL-CLOSED: `sendEnvelope` types bytes plus an

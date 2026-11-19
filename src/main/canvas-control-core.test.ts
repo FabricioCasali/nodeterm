@@ -796,7 +796,7 @@ describe('parseControlRequest', () => {
     expect(yesAt).toBeGreaterThan(-1)
     expect(noAt).toBeGreaterThan(yesAt)
     const yesSection = body.slice(yesAt, noAt)
-    const noSection = body.slice(noAt, body.indexOf('\n', noAt + 200) === -1 ? undefined : body.length)
+    const noSection = body.slice(noAt, body.indexOf('\n', noAt))
     for (const [kind, retryable] of Object.entries(RETRYABLE)) {
       const word = new RegExp(`\\b${kind}\\b`)
       expect(word.test(retryable ? yesSection : noSection), `${kind} in its group`).toBe(true)
@@ -881,8 +881,8 @@ describe('parseControlRequest', () => {
       expect(section).toContain(`\`${STATION_NOTICE_FROM} (<station id>)\``)
       expect(section).toMatch(/quotes nothing the station produced/)
       expect(section).toContain(`you hear after ${Math.round(STATION_QUESTION_NOTICE_MS / 60_000)} minutes`)
-      // …and the honest limit: a permission prompt is never a notice.
-      expect(section).toMatch(/A PERMISSION prompt[\s\S]*is never a notice/)
+      expect(section).toMatch(/A PERMISSION prompt[\s\S]*informational confirmation reminder/)
+      expect(section).toContain('failure actions DO NOT apply')
       // The Server Edition's ownership rule, in the same words it keeps for every verb.
       expect(section).toMatch(/stations you opened during this server run/)
     }

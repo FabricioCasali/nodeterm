@@ -49,8 +49,7 @@ describe('executeHeldLaunch', () => {
     ['no held intent', { held: () => undefined }],
     ['an intent for a different line', { held: () => other }],
     ['a tmux pane', { sessionHost: false }],
-    ['a relay tab', { source: 'relay' }],
-    ['a surface without the channel', { executeLaunch: undefined }]
+    ['a relay tab', { source: 'relay' }]
   ]
   it.each(fallbacks)('falls back without any IPC for %s', async (_n, extra) => {
     const { d, executeLaunch, hostPlatform } = deps(extra)
@@ -65,12 +64,18 @@ describe('executeHeldLaunch', () => {
     expect(executeLaunch).not.toHaveBeenCalled()
   })
 
+  it('PAR-230 F2 refuses a Windows surface without the native launch channel', async () => {
+    const { d, executeLaunch } = deps({ executeLaunch: undefined })
+    expect(await executeHeldLaunch(COMMAND, d)).toBe('cancelled')
+    expect(executeLaunch).not.toHaveBeenCalled()
+  })
+
   it('never falls back after a delivery that may have reached the pane', async () => {
     const thrown = deps({ executeLaunch: async () => { throw new Error('ipc') } })
     expect(await executeHeldLaunch(COMMAND, thrown.d)).toBe('cancelled')
     expect(outcomeForLaunchResult({ ok: false, reason: 'delivery-failed', message: '' })).toBe('cancelled')
     for (const reason of ['invalid-intent', 'agent-unavailable', 'unsupported-shell', 'session-unavailable'] as const) {
-      expect(outcomeForLaunchResult({ ok: false, reason, message: '' })).toBe('fallback')
+      expect(outcomeForLaunchResult({ ok: false, reason, message: '' })).toBe('cancelled')
     }
   })
 })

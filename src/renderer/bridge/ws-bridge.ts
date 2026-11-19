@@ -27,7 +27,7 @@ import {
   E_DISCONNECTED,
   type RpcMessage
 } from '../../shared/rpc'
-import { IPC } from '../../shared/ipc'
+import { IPC, visibleCaptureText } from '../../shared/ipc'
 import type { ChatPromptResult, EmptyPromptResult } from '../../shared/text-delivery'
 import type { GitHubControlApi, GitHubIssuesApi } from '../../shared/github-issues'
 import {
@@ -89,7 +89,7 @@ import type { LaunchIntentExecutionResult } from '../../shared/types'
 import type { WhiteboardFile, WhiteboardSaveResult } from '../../shared/whiteboard'
 import { fitsOneWsFrame } from '../../shared/ws-frame'
 import { buildStubApi, unsupported } from './stubs'
-import { sanitizeStationNotices } from '@shared/station-notice'
+import { sanitizeStationLifecycles, sanitizeStationNotices } from '@shared/station-notice'
 import { sanitizeOutcomeRecords } from '@shared/station-outcome'
 import { sanitizeHandoverRecords } from '@shared/station-handover'
 import type {
@@ -283,8 +283,12 @@ export function buildRealApi(
     // No server handler — degrade gracefully (never reject the boot path).
     generateName: () => Promise.resolve(AI_NAMING_UNAVAILABLE),
     generateGroupName: () => Promise.resolve(AI_NAMING_UNAVAILABLE),
-    capture: (persistKey, full) =>
-      client.request(IPC.ptyCapture, persistKey, full).catch(() => '') as Promise<string>,
+    capture: (persistKey, full, visibleOnly) =>
+      client.request(IPC.ptyCapture, persistKey, full, visibleOnly)
+      .then((result) => visibleOnly ? visibleCaptureText(result) : result).catch((error) => {
+        if (visibleOnly) throw error
+        return ''
+      }) as Promise<string>,
     // Documented degrade, not a stub with a hole in it: SSH PROJECTS are desktop-only (the whole
     // `sshProject` surface is `U(...)`-stubbed here), so no browser session ever holds a remote
     // ControlMaster to attach early over. `false` = "never attach early" = the pre-feature wait,
@@ -791,7 +795,12 @@ export function buildStationNoticeApi(
           cb(sanitizeStationNotices(views))) as Listener),
       reportDropped: (nodeId, dropped) => {
         void client.request(IPC.stationNoticeDropped, nodeId, dropped).catch(() => undefined)
-      }
+      },
+      lifecycle: () =>
+        (client.request(IPC.stationLifecycleList) as Promise<unknown>).then(sanitizeStationLifecycles, () => ({})),
+      onLifecycle: (cb) =>
+        client.subscribe(IPC.stationLifecycleChanged, ((map: unknown) =>
+          cb(sanitizeStationLifecycles(map))) as Listener)
     }
   }
 }

@@ -87,6 +87,9 @@ export type AgentLaunchIntent =
       permissionMode?: AgentPermissionMode
       /** Optional provider id minted for this first launch; never reused as a resume id. */
       newSessionId?: string
+      /** Per-node model override. The core applies it through the agent's base harness and
+       *  ignores it for a harness with no model flag, exactly as the legacy line does. */
+      model?: string
     }
   | {
       kind: 'agent'
@@ -119,7 +122,16 @@ export type LaunchIntentFailureReason =
 /** Opaque execution outcome. It must never contain a rendered command, executable, or argv. */
 export type LaunchIntentExecutionResult =
   | { ok: true }
-  | { ok: false; reason: LaunchIntentFailureReason; message: string }
+  | {
+      ok: false
+      reason: LaunchIntentFailureReason
+      message: string
+      /** Set only when this channel does not apply to the session at all (not a local Windows
+       *  session-host pane, or a shell that is not Windows-native): nothing was read or typed and
+       *  the legacy typed line is the right launch there. Every other refusal is final — typing
+       *  the POSIX line into a Windows-native shell after a refusal is never a recovery. */
+      typedLineSafe?: true
+    }
 
 /**
  * `pty:execute-launch` request (`PtyApi.executeLaunch`). `launchId` is a fresh UUID v4 per
@@ -137,7 +149,9 @@ export interface LaunchIntentRequest {
 /**
  * A semantic launch held beside a terminal node's legacy typed line (`data.launchIntent`). Bound
  * to the EXACT `command` it was assembled with: a writer delivering any other line (a manual Run
- * now of an edited command, a resume) never uses it. Live node data only — never serialized.
+ * now of an edited command, a resume) never uses it. Machine-local like the `PendingLaunch` it
+ * rides beside: persisted only while that exact launch is still pending, and stripped wherever a
+ * held launch is stripped (shared project file, import, relay) — see @shared/node-exec.
  */
 export interface HeldLaunchIntent {
   command: string
@@ -608,6 +622,9 @@ export interface CanvasNodeState {
   clearEnv?: boolean
   /** Set while this node is armed but not yet launched — see PendingLaunch. */
   pendingLaunch?: PendingLaunch
+  /** The semantic twin of `pendingLaunch.command` (see HeldLaunchIntent). Present only beside a
+   *  pending launch for that exact command, under the same machine-local trust rule. */
+  launchIntent?: HeldLaunchIntent
   /**
    * Claude-only: managed account this node runs on (CLAUDE_CONFIG_DIR injection).
    * Resolved once at node creation (explicit pick → project default → system default)
@@ -1380,8 +1397,8 @@ export interface PtyApi {
   generateName(persistKey: string, cwd: string, accountId?: string): Promise<GitResult>
   /** Suggest a group title from its member terminals' recent output via the configured AI agent. */
   generateGroupName(memberKeys: string[], cwd: string): Promise<GitResult>
-  /** Capture a terminal session's output as text. `full` grabs the entire scrollback. */
-  capture(persistKey: string, full?: boolean): Promise<string>
+  /** `full` reads scrollback. `visibleOnly` reads the current screen and rejects an unavailable backend. */
+  capture(persistKey: string, full?: boolean, visibleOnly?: boolean): Promise<string>
   /**
    * Seconds since this node's tmux session was created, measured on the machine that holds it, or
    * `null` when that cannot be told (no session, no tmux, an unreadable host, a garbled answer).
@@ -1445,6 +1462,8 @@ export interface PtyApi {
   launchHeadless(req: {
     ptyOptions: PtyCreateOptions
     command: string
+    /** The semantic twin of `command`, when the node holds one (see HeldLaunchIntent). */
+    launchIntent?: HeldLaunchIntent
   }): Promise<import('./headless-launch').HeadlessLaunchResult>
   /** Kernel truth about a node's pane — its root pid, tty, tmux pane id and the full argv of its
    *  foreground process group — so a caller can ask WHO owns the pane rather than what tmux calls
@@ -4929,6 +4948,10 @@ export interface NodeTerminalApi {
     list(): Promise<import('./station-notice').StationNoticeView[]>
     onChanged(cb: (views: import('./station-notice').StationNoticeView[]) => void): () => void
     reportDropped(nodeId: string, dropped: boolean): void
+    /** Core's process-liveness conclusions (node id → state), and their pushes. Optional: a relay
+     *  tab and an older bridge have none, and the renderer then keeps only its own verdict. */
+    lifecycle?(): Promise<import('./station-notice').StationLifecycleMap>
+    onLifecycle?(cb: (map: import('./station-notice').StationLifecycleMap) => void): () => void
   }
   /** Station task outcomes (`report-outcome`, src/core/station-outcome-store.ts): what each station
    *  reported about its own task (durable across a restart) — what a `--after-success` wait reads. Desktop and

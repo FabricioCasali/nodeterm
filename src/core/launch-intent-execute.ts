@@ -11,13 +11,15 @@
 // The gate is deliberately the narrowest one that closes the bug: a local session-host session on
 // a win32 core whose host recorded a Windows-native dialect (pwsh / windows-powershell / cmd) at
 // spawn. Everything else — tmux, Zellij, SSH, a plain shell, any POSIX core, Git Bash, WSL — is
-// answered `unsupported-shell` before anything is read or typed, and the renderer keeps typing its
-// legacy line, byte-identical to before.
+// answered `unsupported-shell` with `typedLineSafe` before anything is read or typed, and the
+// caller keeps typing its legacy line, byte-identical to before.
 //
-// Failure split (the renderer acts on it): every refusal that happens BEFORE the host is asked is a
-// "nothing was typed" answer the caller may safely fall back from. Only a host-side failure is
-// `delivery-failed`, which the caller must NOT retry as a typed line — part of the launch may
-// already be in the pane.
+// Failure split (the caller acts on it): only that "this channel does not apply here" answer may
+// be followed by the typed line. Once the pane IS a Windows-native shell every refusal is final —
+// an invalid request, a missing prompt file, an unavailable agent, a host that cannot launch — and
+// the launch stays held for an explicit Run now: the POSIX line is exactly what such a shell
+// mis-parses, so typing it after a refusal would not be a fallback. A host-side failure is
+// `delivery-failed`; part of the launch may already be in the pane.
 
 import fs from 'fs'
 import path from 'path'
@@ -157,6 +159,13 @@ export interface LaunchIntentDeps {
   execute(name: string, launchId: string, plan: PreparedAgentLaunch): Promise<ExecuteLaunchResult>
   /** The session-host's "this host cannot launch at all" error — nothing was typed. */
   isProtocolIncompatible(error: unknown): boolean
+  /** The host's environment, for a custom agent's `${env:…}` args. */
+  env?(): Record<string, string | undefined>
+  /** A core-private path for this launch's completion receipt (see
+   *  `AgentLaunchTrustedContext.completionReceipt`), or undefined where none can be kept. */
+  completionReceipt?(launchId: string): string | undefined
+  /** The launch reached the host: `launchId` is now an attempt the liveness monitor may watch. */
+  onExecuted?(launch: { name: string; launchId: string; agentId: string; receipt?: string }): void
 }
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
@@ -173,6 +182,11 @@ const MESSAGES: Record<LaunchIntentFailureReason, string> = {
 
 function refuse(reason: LaunchIntentFailureReason): LaunchIntentExecutionResult {
   return { ok: false, reason, message: MESSAGES[reason] }
+}
+
+/** The channel does not apply to this session: the legacy typed line is its launch. */
+function notThisChannel(): LaunchIntentExecutionResult {
+  return { ok: false, reason: 'unsupported-shell', message: MESSAGES['unsupported-shell'], typedLineSafe: true }
 }
 
 /**
@@ -196,11 +210,11 @@ export async function executeLaunchIntent(
 ): Promise<LaunchIntentExecutionResult> {
   if (!target) return refuse('session-unavailable')
   if (deps.platform !== 'win32' || !target.sessionHost || target.remote) {
-    return refuse('unsupported-shell')
+    return notThisChannel()
   }
   const dialect = target.launchDialect
   if (dialect !== 'pwsh' && dialect !== 'windows-powershell' && dialect !== 'cmd') {
-    return refuse('unsupported-shell')
+    return notThisChannel()
   }
   if (!isRecord(request) || !isRecord(request.intent)) return refuse('invalid-intent')
   if (typeof request.launchId !== 'string' || !UUID_V4.test(request.launchId)) {
@@ -209,6 +223,7 @@ export async function executeLaunchIntent(
   if (!target.agentId) return refuse('agent-unavailable')
 
   let intent = request.intent as AgentLaunchIntent
+  let promptSourceFile: string | undefined
   if (request.promptFile !== undefined) {
     const file = request.promptFile
     if (
@@ -228,10 +243,13 @@ export async function executeLaunchIntent(
       return refuse('invalid-intent')
     }
     intent = { ...intent, prompt: promptFromFileText(text) }
+    promptSourceFile = file.trim()
   }
 
   let plan: PreparedAgentLaunch
+  let receipt: string | undefined
   try {
+    receipt = deps.completionReceipt?.(request.launchId)
     const custom = deps.customAgents().find((c) => c.id === target.agentId)
     const codex = await deps.codexCaps()
     plan = await prepareAgentLaunch(intent, dialect, {
@@ -242,14 +260,24 @@ export async function executeLaunchIntent(
         resolveWindowsAgentExecutable(executable, target.pathValue, deps.exists),
       windowsPowerShellPath: windowsPowerShellPath(deps.systemRoot, deps.exists),
       codexApprovalValues: codex.approvalValues,
-      codexNoDaemon: codex.noDaemon
+      codexNoDaemon: codex.noDaemon,
+      ...(promptSourceFile ? { promptSourceFile } : {}),
+      ...(receipt ? { completionReceipt: receipt } : {}),
+      ...(deps.env ? { env: deps.env() } : {})
     })
   } catch (error) {
+    // A batch-shim-only install keeps the typed line it has always been launched with.
+    if (error instanceof AgentLaunchPreparationError && error.typedLineOnly) return notThisChannel()
     return refuse(error instanceof AgentLaunchPreparationError ? error.code : 'invalid-intent')
   }
 
   try {
     await deps.execute(target.name, request.launchId, plan)
+    try {
+      deps.onExecuted?.({ name: target.name, launchId: request.launchId, agentId: target.agentId, ...(receipt ? { receipt } : {}) })
+    } catch {
+      // Bookkeeping only: the launch itself was delivered.
+    }
     return { ok: true }
   } catch (error) {
     // A host that cannot run a launch at all (protocol v1) refuses before writing anything.

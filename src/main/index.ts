@@ -1,4 +1,5 @@
 import { registerUpdatePrepIpc } from './update-prep'
+import { createCapturePaneControlHandler } from '../core/capture-pane-control'
 import { installOpenLinks } from './open-link-wiring'
 import { nodetermUrlFromArgv } from '../shared/open-link'
 import { createRemoteContextEnsure } from '../core/remote-context-ensure'
@@ -112,12 +113,13 @@ import {
   registerStationHandoverIpc
 } from '../core/station-handover'
 import { afterSuccessFlagRefusal } from '../shared/station-outcome'
-import { stationRecipient } from '../shared/station-notice'
+import { StationLineage } from '../shared/station-notice'
 import type { RemoteLogExec } from '../core/board-log'
-import type { PtyCreateOptions, TranscriptPresence } from '../shared/types'
+import type { HeldLaunchIntent, PtyCreateOptions, TranscriptPresence } from '../shared/types'
 import { boardLogRemotePath } from '../core/board-log'
 import { PtyManager } from '../core/pty-manager'
 import { desktopHeadlessRequest, launchHeadless } from '../core/headless-launch'
+import { createStationLiveness } from '../core/agent-liveness'
 import { WorkspaceStore } from '../core/workspace-store'
 import type { CardLabelEdit } from '../core/project-kanban-write'
 import { WorkspaceWatcher } from '../core/workspace-watcher'
@@ -257,6 +259,11 @@ import {
   nodeSessionName,
   workingNodes,
   mirrorEntry,
+  mirrorEntries,
+  reaffirmIsStale,
+  nodeLifecycles,
+  onNodeLifecycleChange,
+  setNodeLifecycle,
   pendingTicketsFor,
   openAskFor,
   nodesForAgentSession
@@ -303,7 +310,7 @@ import { applyCursorRaw, cursorContextParse, readCursorContextSource, releaseCur
 import { GROK_CHAT_HISTORY_FILE } from '../core/agents/grok-paths'
 import { createGrokSubagentFormatter } from '../core/grok-subagent-format'
 import { geminiContextParse } from '../core/gemini-session'
-import { antigravityContextParse, rememberAntigravityModel } from '../core/antigravity-session'
+import { antigravitySessionContextParse, rememberAntigravityModel } from '../core/antigravity-session'
 import { codexContextParse, codexContextModel } from '../core/codex-session'
 import { createCodexSubagentFormatter } from '../core/codex-subagent-format'
 import { codexHome } from '../core/usage/codex-usage'
@@ -660,7 +667,9 @@ const workspaceWatcher = new WorkspaceWatcher({
     })
   }
 })
+const stationLineage = new StationLineage()
 workspaceStore.onPersist = () => {
+  stationLineage.observe(workspaceStore.persistedCanvases())
   workspaceWatcher.sync()
   refreshNodeTokens()
   // A node the store now provably holds nowhere (a delete, the canvas authority's op) ends its links.
@@ -1855,9 +1864,10 @@ app.whenReady().then(async () => {
     return generateGroupName(contents, localNamingCwd(memberKeys, cwd), settingsStore.get())
   })
 
-  corePlatform.handle(IPC.ptyCapture, (persistKey: string, full?: boolean) =>
-    ptyManager.captureSession(persistKey, full)
-  )
+  corePlatform.handle(IPC.ptyCapture, async (persistKey: string, full?: boolean, visibleOnly?: boolean) => {
+    const screen = await ptyManager.captureSession(persistKey, full, visibleOnly)
+    return visibleOnly === true ? { visibleCapture: true, screen } : screen
+  })
 
   // The early-attach gate (see PtyManager.remoteSessionConfirmed). Registered here rather than in
   // core's shared pty block because only the desktop shell has SSH projects at all; the browser
@@ -1882,7 +1892,7 @@ app.whenReady().then(async () => {
   // stands behind that fence as a belt.
   corePlatform.handle(
     IPC.ptyLaunchHeadless,
-    (req: { ptyOptions: PtyCreateOptions; command: string }) =>
+    (req: { ptyOptions: PtyCreateOptions; command: string; launchIntent?: HeldLaunchIntent }) =>
       launchHeadless(ptyManager, desktopHeadlessRequest(req))
   )
 
@@ -2272,7 +2282,8 @@ app.whenReady().then(async () => {
   // src/core/agents/agent-messaging.ts for the whole map.
   const messagingDeps: AgentMessagingDeps = {
     ...ptyPaneProbeDeps(ptyManager),
-    sendEnvelope: (id, envelope, expected) => ptyManager.sendEnvelope(id, envelope, expected),
+    sendEnvelope: (id, envelope, expected, guard) => ptyManager.sendEnvelope(id, envelope, expected, guard),
+    envelopeGuardSupported: (id) => ptyManager.envelopeGuardSupported(id),
     envelopePasteReady: (id) => ptyManager.envelopePasteReady(id),
     // Attached OR released-but-running: see AgentMessagingDeps.hasLiveSession.
     hasLiveSession: (id) => ptyManager.sessionExists(id),
@@ -2338,24 +2349,45 @@ app.whenReady().then(async () => {
   // every one of its gates, the per-project `agentMessaging` switch included.
   // Shared with `report-outcome --notify-opener` (#1356): same recipient, same delivery.
   const stationOpener = {
-    recipientFor: (id: string) => stationRecipient(workspaceStore.persistedCanvases(), id),
+    recipientFor: (id: string) => {
+      const canvases = workspaceStore.persistedCanvases()
+      stationLineage.observe(canvases)
+      return stationLineage.recipient(canvases, id)
+    },
     deliver: (notice: Parameters<typeof deliverStationNotice>[0]) =>
       deliverStationNotice(notice, messagingDeps)
   }
+  messagingDeps.noticeRecipientFor = (id) => stationOpener.recipientFor(id)?.recipientNodeId
   const stationNotices = new StationNoticeMonitor({
     now: () => Date.now(),
     recipientFor: stationOpener.recipientFor,
-    // The mirror's correlated, unanswered question — the one fact that says a station is really
-    // waiting on a human (station-notice.ts: permission prompts are not a trigger).
     pendingQuestionOf: (id) => mirrorEntry(id)?.pendingQuestion?.toolUseId,
+    pendingApprovalOf: (id) => openAskFor(id)?.kind === 'approval',
     appendBoardLog: (projectId, entry) => appendBoardLogVia(boardLogRouter, projectId, entry),
     deliver: stationOpener.deliver,
     publish: (views) => sendToMain(IPC.stationNoticeChanged, views),
     // The memoized index scan, not `getNode` (which re-parses a project file per call): the sweep
     // asks this for every node it tracks.
-    exists: (id) => workspaceStore.projectIdsForNode(id).length > 0
+    exists: (id) => workspaceStore.projectIdsForNode(id).length > 0,
+    // Process liveness for launches and tracked sessions, on screen or not (core/agent-liveness.ts).
+    // A remote node is left out: its pane is read over the project's ssh link, and one read per
+    // node per sweep is not a cost this monitor may add to that link.
+    liveness: createStationLiveness({
+      now: () => Date.now(),
+      launches: () => ptyManager.launchAttemptsSnapshot(),
+      mirrorEntries: () =>
+        mirrorEntries().filter(
+          ([id]) => !ptyManager.sshRemoteForNode(id) && workspaceStore.sshProjectIdForNode(id) === undefined
+        ),
+      paneOwner: (id, opts) => ptyManager.paneOwner(id, opts),
+      customAgents: () => settingsStore.get().customAgents,
+      deliberateExitAt: (id) => ptyManager.deliberateExitAt(id),
+      setLifecycle: setNodeLifecycle
+    })
   })
+  onNodeLifecycleChange(() => sendToMain(IPC.stationLifecycleChanged, nodeLifecycles()))
   stationNotices.start()
+  messagingDeps.noticeCurrent = (id, at) => stationNotices.isCurrentNotice(id, at)
   // A queued notice's final outcome (flushed or expired) comes back here, so its chip never says
   // "queued" about a message that has since landed or lapsed.
   messagingDeps.onQueuedResult = (req, outcome) => stationNotices.onQueuedResult(req, outcome)
@@ -3096,7 +3128,7 @@ app.whenReady().then(async () => {
     readSource: readCursorContextSource
   })
   const antigravityContextTail = createContextTail(pushContextUpdate, {
-    parse: antigravityContextParse,
+    parse: antigravitySessionContextParse,
     wholeFile: true
   })
   // Remote (SSH-project) counterparts: a node whose pty runs on a remote host has its Claude
@@ -3479,6 +3511,8 @@ app.whenReady().then(async () => {
   // and the mobile-facing mirror. Named so the deterministic-approval answer handler below can reuse
   // it for the optimistic flip.
   const emitAgentStatus = (e: NormalizedAgentEvent): void => {
+    // A tool's reassertion must not end a pending ask or relight a stopped turn (reaffirmIsStale).
+    if (reaffirmIsStale(e)) return
     // Claude subagent events first become one card per child (claudeSubagents); every other event
     // comes back as itself, so for them this loop runs exactly once, over `e`.
     for (const out of claudeSubagents.apply(e)) {
@@ -4047,7 +4081,7 @@ app.whenReady().then(async () => {
         transcriptPath?: string
         modelName?: string
       }
-      rememberAntigravityModel(p.modelName)
+      rememberAntigravityModel(p.modelName, p.conversationId)
       const transcriptPath = safeTranscriptPath(p.transcriptPath)
       if (p.conversationId && transcriptPath) {
         antigravityContextTail.track(p.conversationId, transcriptPath)
@@ -4622,7 +4656,11 @@ app.whenReady().then(async () => {
         : { ok: false, error: result.error, message: result.message }
     )
   }
-  hookServer.setControlHandler(async ({ verb, nodeId, args, verified, onLateAnswer }) => {
+  hookServer.setControlHandler(createCapturePaneControlHandler({
+    projects: () => workspaceStore.persistedCanvases(),
+    sessionOf: (nodeId) => ptyManager.sessionOfNode(nodeId),
+    captureVisible: (sessionId) => ptyManager.captureVisible(sessionId)
+  }, async ({ verb, nodeId, args, verified, onLateAnswer }) => {
     // When the request ARRIVED — before a `write` / `run` typed anything. The hand-over tracker
     // stamps the new work with it, so a turn the typed text starts is always later.
     const requestAt = Date.now()
@@ -4821,7 +4859,7 @@ app.whenReady().then(async () => {
       { onLate: onLateAnswer, finish: finishAnswer }
     )
     return result
-  })
+  }))
   initMediaProtocol()
 
   // Context Link reads happen HERE, on the desktop, which is what lets a remote (SSH-project)

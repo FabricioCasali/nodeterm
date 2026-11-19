@@ -96,7 +96,7 @@ describe('delivery queue across a restart', () => {
     expect(b.queued).toHaveLength(1) // replayed, so "work pending" is rebuilt
     expect(b.queue.depth('st1')).toBe(1)
     // The TTL is what is LEFT, not a fresh five minutes.
-    expect(b.timers.filter((t) => !t.cancelled).map((t) => t.ms)).toEqual([DELIVERY_QUEUE_TTL_MS - 60_000])
+    expect(b.timers.filter((t) => !t.cancelled).map((t) => t.ms)).toEqual([DELIVERY_QUEUE_TTL_MS - 60_000, 1500])
     await b.queue.onTargetIdle('st1')
     expect(b.delivered.map((r) => r.body)).toEqual(['next task'])
     expect(b.saved()).toEqual([])

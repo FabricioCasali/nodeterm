@@ -51,8 +51,12 @@ import { buildWindowsHookWrapper } from './windows-hook-wrapper'
 export { WINDOWS_SH_CANDIDATES, windowsShProbeBatch } from './windows-hook-wrapper'
 
 /**
- * The variables codex.sh needs to do anything: its gate needs NODETERM_NODE_ID, its
- * thread-identity prelude needs CODEX_THREAD_ID. With neither, the script drains and exits 0.
+ * The variables a codex hook run INSIDE the node's pane carries. They are NOT a gate for the
+ * wrapper: under codex's shared app-server (the daemon every node's TUI talks to) the hook process
+ * is the daemon's child and has neither — the only thread id it has is the payload's leading
+ * `session_id`, which codex.sh's identity prelude resolves to the node. A wrapper that drained
+ * when both were unset therefore dropped EVERY event of a daemon-backed session on Windows: no
+ * WORKING, no IDLE, for the life of the node (PAR-174).
  */
 export const CODEX_SESSION_ENV = ['NODETERM_NODE_ID', 'CODEX_THREAD_ID'] as const
 
@@ -61,7 +65,8 @@ export const CODEX_WINDOWS_WRAPPER_FILE = 'codex-hook.cmd'
 
 /** The batch wrapper's content: `codex.sh`, found beside the wrapper, run by the first POSIX shell. */
 export function buildCodexWindowsWrapper(): string {
-  // The script's own gate, answered before paying for a shell: with neither variable set,
-  // codex.sh can only drain stdin and exit 0 (see buildWindowsHookWrapper's `skipUnlessAnyEnv`).
-  return buildWindowsHookWrapper('codex.sh', 'codex', { skipUnlessAnyEnv: CODEX_SESSION_ENV })
+  // No env gate here: codex.sh is the one place that decides whether an event belongs to a
+  // nodeterm session (payload thread → node), and it still drains and exits 0 for one that does
+  // not. The cost is a shell per event for a codex run outside nodeterm.
+  return buildWindowsHookWrapper('codex.sh', 'codex')
 }

@@ -451,13 +451,19 @@ export function normalizedAgentModel(agentId: AgentId, model: string | undefined
   return value
 }
 
-/** Append a safely quoted model flag only for harnesses whose CLI grammar supports it. */
-export function withAgentModel(cmd: string, agentId: AgentId, model: string | undefined): string {
+/** The value `--model` takes for this agent, or null when its harness has no model flag. The one
+ *  rule shared by the typed line (`withAgentModel`) and the core planner's argv. */
+export function agentModelArg(agentId: AgentId, model: string | undefined): string | null {
   const value = normalizedAgentModel(agentId, model)
-  if (!value) return cmd
+  if (!value) return null
   // COPILOT_PROVIDER_MODEL_ID/WIRE_MODEL describe the provider; Copilot still requires a startup
   // selection via --model or COPILOT_MODEL. Use a flag so an in-place restart also selects it in
   // an existing shell. Match the internal id above, keeping the gateway prefix in WIRE_MODEL only.
-  const modelId = capabilityAgentId(agentId) === 'copilot' ? copilotModelParts(value).modelId : value
-  return `${cmd} --model ${shellSingleQuote(modelId)}`
+  return capabilityAgentId(agentId) === 'copilot' ? copilotModelParts(value).modelId : value
+}
+
+/** Append a safely quoted model flag only for harnesses whose CLI grammar supports it. */
+export function withAgentModel(cmd: string, agentId: AgentId, model: string | undefined): string {
+  const modelId = agentModelArg(agentId, model)
+  return modelId ? `${cmd} --model ${shellSingleQuote(modelId)}` : cmd
 }

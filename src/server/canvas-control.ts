@@ -1,4 +1,6 @@
 import fs from 'node:fs'
+import { listControlNodes } from '../core/canvas-control-core'
+import { createCapturePaneControlHandler } from '../core/capture-pane-control'
 import path from 'node:path'
 
 import {
@@ -23,8 +25,14 @@ import { DurableFactFile } from '../core/durable-state'
 import { QUEUE_FACT } from '../core/agents/delivery-queue'
 import { HANDOVER_FACT, StationHandoverTracker } from '../core/station-handover'
 import { stationRecipientFromOwner } from '../shared/station-notice'
+import { createStationLiveness } from '../core/agent-liveness'
 import {
+  mirrorEntries,
+  nodeLifecycles,
+  onNodeLifecycleChange,
+  setNodeLifecycle,
   mirrorEntry,
+  openAskFor,
   nodeState
 } from '../core/agent-status-mirror'
 import type { BoardLogHandlers } from '../core/board-log-handlers'
@@ -220,8 +228,10 @@ export async function initServerCanvasControl(
     ...ptyPaneProbeDeps(deps.ptyManager),
     // Server delivery has no renderer/xterm echo stream. Capture the headless pane instead and
     // separate paste from Enter so a fresh TUI cannot swallow the first submit keystroke.
-    sendEnvelope: (nodeId, envelope) =>
-      sendSettledEnvelope(deps.ptyManager, nodeId, envelope),
+    sendEnvelope: (nodeId, envelope, expected, guard) => guard
+      ? deps.ptyManager.sendEnvelope(nodeId, envelope, expected, guard)
+      : sendSettledEnvelope(deps.ptyManager, nodeId, envelope),
+    envelopeGuardSupported: (nodeId) => deps.ptyManager.envelopeGuardSupported(nodeId),
     // Attached OR released-but-running: see AgentMessagingDeps.hasLiveSession.
     hasLiveSession: (nodeId) => deps.ptyManager.sessionExists(nodeId),
     mirrorEntry,
@@ -266,26 +276,54 @@ export async function initServerCanvasControl(
       stationRecipientFromOwner(
         deps.workspaceStore.persistedCanvases(),
         stationNodeId,
-        factory.openerOf(stationNodeId)
+        factory.openerOf(stationNodeId, deps.workspaceStore.persistedCanvases())
       ),
     deliver: (notice: Parameters<typeof deliverStationNotice>[0]) =>
       deliverStationNotice(notice, messaging)
   }
+  messaging.noticeRecipientFor = (id) => opener.recipientFor(id)?.recipientNodeId
   const stationNotices = new StationNoticeMonitor({
     now: () => Date.now(),
     recipientFor: opener.recipientFor,
     pendingQuestionOf: (nodeId) => mirrorEntry(nodeId)?.pendingQuestion?.toolUseId,
+    pendingApprovalOf: (nodeId) => openAskFor(nodeId)?.kind === 'approval',
     appendBoardLog: (projectId, entry) => deps.boardLog.append(projectId, entry),
     deliver: opener.deliver,
     publish: (views) => platform().broadcast(IPC.stationNoticeChanged, views),
-    exists: (nodeId) => deps.workspaceStore.projectIdsForNode(nodeId).length > 0
+    exists: (nodeId) => deps.workspaceStore.projectIdsForNode(nodeId).length > 0,
+    // Process liveness for launches and tracked sessions (core/agent-liveness.ts) — the same
+    // producer as the desktop. This edition has no renderer to measure a pane, so before this a
+    // server with no tab attached could not report a dead CLI at all.
+    ...(typeof deps.ptyManager.launchAttemptsSnapshot === 'function' && typeof deps.ptyManager.paneOwner === 'function'
+      ? {
+          liveness: createStationLiveness({
+            now: () => Date.now(),
+            launches: () => deps.ptyManager.launchAttemptsSnapshot(),
+            mirrorEntries,
+            paneOwner: (id, opts) => deps.ptyManager.paneOwner(id, opts),
+            customAgents: () => deps.settings().customAgents,
+            deliberateExitAt: (id) => deps.ptyManager.deliberateExitAt(id),
+            setLifecycle: setNodeLifecycle
+          })
+        }
+      : {})
   })
+  const offLifecycle = onNodeLifecycleChange(() =>
+    platform().broadcast(IPC.stationLifecycleChanged, nodeLifecycles())
+  )
+  messaging.noticeCurrent = (id, at) => stationNotices.isCurrentNotice(id, at)
   stationNotices.start()
   messaging.onQueuedResult = (req, outcome) => stationNotices.onQueuedResult(req, outcome)
   // Every listener is wired: bring back what the previous run queued.
   await restoreDeliveryQueue(queue, queueFile)
 
   const actions: ServerEditionControlActions = {
+    list: (sourceNodeId, args) => listControlNodes(sourceNodeId, args, {
+      projects: () => deps.workspaceStore.persistedCanvases(),
+      statusOf: mirrorEntry,
+      capture: (nodeId) => deps.ptyManager.captureSession(nodeId, false, true),
+      now: Date.now
+    }),
     openProject: (sourceNodeId, args, verified) =>
       factory.openProject(sourceNodeId, args, verified),
     openTerminal: (sourceNodeId, args, verified) =>
@@ -357,7 +395,11 @@ export async function initServerCanvasControl(
   // restart clears it, so an owner request or browser view is the only cold-spawn authority.
   await factory.start()
 
-  const baseHandler = createServerEditionControlHandler(actions)
+  const baseHandler = createCapturePaneControlHandler({
+    projects: () => deps.workspaceStore.persistedCanvases(),
+    sessionOf: (nodeId) => deps.ptyManager.sessionOfNode(nodeId),
+    captureVisible: (sessionId) => deps.ptyManager.captureVisible(sessionId)
+  }, createServerEditionControlHandler(actions))
   return {
     // New work typed into a station by `run` withdraws its older outcome report — the "new task"
     // rule in core/station-outcome-store.ts, applied on the answer. (`send` / `reply` go through
@@ -387,6 +429,7 @@ export async function initServerCanvasControl(
       factory.stop()
       queue.resetForTests()
       stationNotices.stop()
+      offLifecycle()
       // Write what the last save window still holds; the next start loads it.
       queueFile.dispose()
       outcomesFile.dispose()

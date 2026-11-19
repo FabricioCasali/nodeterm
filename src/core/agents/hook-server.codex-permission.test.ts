@@ -77,9 +77,9 @@ async function replay(reviewer: string): Promise<(string | undefined)[]> {
 
 describe('hook server + codex permission gate', () => {
   it('auto_review: the node never reads NEEDS YOU', async () => {
-    expect(await replay('auto_review')).toEqual(['working', 'working', 'working', 'working', 'done'])
+    expect(await replay('auto_review')).toEqual([undefined, 'working', 'working', 'working', 'done'])
   })
   it('user reviewer: NEEDS YOU as before', async () => {
-    expect(await replay('user')).toEqual(['working', 'working', 'working', 'waiting', 'working', 'done'])
+    expect(await replay('user')).toEqual([undefined, 'working', 'working', 'waiting', 'working', 'done'])
   })
 })

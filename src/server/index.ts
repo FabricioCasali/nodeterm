@@ -362,9 +362,10 @@ export async function startServer(
   // → transcript-reader.ts) depend on src/main-resident modules and are stubbed by the bridge
   // in Task 8. readScrollback + sendText + paneCommand are already registered inside
   // PtyManager.registerIpc().
-  platform.handle(IPC.ptyCapture, (persistKey: string, full?: boolean) =>
-    ptyManager.captureSession(persistKey, full)
-  )
+  platform.handle(IPC.ptyCapture, async (persistKey: string, full?: boolean, visibleOnly?: boolean) => {
+    const screen = await ptyManager.captureSession(persistKey, full, visibleOnly)
+    return visibleOnly === true ? { visibleCapture: true, screen } : screen
+  })
   // The late cold-start check (PtyCreateResult.freshUnverified). Pure core, and this shell runs on
   // the machine whose tmux it reads, so the answer is as good as the desktop's local one.
   platform.handle(IPC.ptySessionAge, (persistKey: string) => ptyManager.sessionAgeSeconds(persistKey))

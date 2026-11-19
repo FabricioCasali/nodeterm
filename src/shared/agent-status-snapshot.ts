@@ -26,6 +26,8 @@ export interface AgentStatusSnapshotEntry {
    * clock to get the freshness clock (`stateAt`) its stale-working sweep reads.
    */
   ageMs?: number
+  /** The host's standing process-liveness conclusion for the node (see `MirrorEntry.lifecycle`). */
+  lifecycle?: 'launch-failed' | 'dropped'
 }
 
 /** At most this many entries, the newest by the mirror's `updatedAt`. */

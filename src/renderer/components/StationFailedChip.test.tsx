@@ -33,6 +33,22 @@ afterEach(() => {
 })
 
 describe('StationFailedChip', () => {
+  it('keeps failure and approval focus targets distinct in a mixed episode', () => {
+    act(() => useStationNotices.getState().setViews([
+      view({ stationNodeId: 'approval', reason: 'approval-unconfirmed' }), view()
+    ]))
+    const seen: string[] = []
+    const on = (e: Event) => seen.push((e as CustomEvent<{ nodeId: string }>).detail.nodeId)
+    window.addEventListener('nodeterm:focus-node', on)
+    const chips = host.querySelectorAll<HTMLButtonElement>('.chip')
+    expect(chips).toHaveLength(2)
+    expect(chips[0].textContent).toBe('STATION FAILED')
+    expect(chips[1].textContent).toContain('CONFIRMATION')
+    act(() => { chips[0].click(); chips[1].click() })
+    window.removeEventListener('nodeterm:focus-node', on)
+    expect(seen).toEqual(['st1', 'approval'])
+  })
+
   it('shows only on the agent that was told, and says how it was told', () => {
     expect(host.querySelector('.chip')).toBeNull()
     act(() => useStationNotices.getState().setViews([view({ recipientNodeId: 'someone-else' })]))
