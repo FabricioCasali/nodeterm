@@ -1,5 +1,22 @@
 import { describe, expect, it, vi } from 'vitest'
-import { SessionHostSocketRequestQueue } from './socket-request-queue'
+import { SessionHostSocketRequestQueue, usesSessionLane } from './socket-request-queue'
+
+describe('session-host lane membership (PAR-241)', () => {
+  it('keeps the pane probes out of the session lane, so input never waits behind PowerShell', () => {
+    expect(usesSessionLane('paneCommand')).toBe(false)
+    expect(usesSessionLane('messageOwnerV1')).toBe(false)
+  })
+
+  it('keeps every state-changing command ordered', () => {
+    for (const cmd of [
+      'attach', 'attachExisting', 'detach', 'write', 'resize', 'pause', 'resume', 'sendKeys',
+      'sendKeysV2', 'messageEnvelopeV1', 'messagePasteReadyV1', 'terminateOwnerV1',
+      'writeDetachedV1', 'executeLaunch', 'killSession', 'capture'
+    ]) {
+      expect(usesSessionLane(cmd), cmd).toBe(true)
+    }
+  })
+})
 
 describe('session-host per-socket request ordering', () => {
   it('does not let a same-name detach overtake a delayed attach', async () => {

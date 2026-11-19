@@ -3,6 +3,7 @@ import {
   DeliveryQueue,
   DELIVERY_QUEUE_CAPACITY,
   DELIVERY_QUEUE_TTL_MS,
+  QUEUE_PERSIST_TTL_MAX,
   type DeliveryQueueDeps,
   type QueuedDeliveryRequest,
   type CancelTimer
@@ -191,6 +192,77 @@ describe('DeliveryQueue', () => {
     expect(h.expired).toHaveLength(1)
     expect(h.expired[0].info.queuedForMs).toBe(1000)
     expect(h.expired[0].info.traceId).toBeTruthy()
+  })
+
+  // ── PAR-238: a turn longer than the TTL must not cost the message ──────────────────────────────
+  // 2026-11-18, three times: a reply was queued behind a working agent, dropped at exactly five
+  // minutes with the agent still working, and the agent then ended its turn and waited for it.
+  it('a TTL lapse while the target is STILL mid-turn holds the message; the turn end delivers it', async () => {
+    let busy = true
+    const h = harness({ stillBusy: () => busy })
+    const q = new DeliveryQueue(h.deps, { ttlMs: 1000 })
+    await q.enqueue(req())
+    for (const at of [2000, 3000, 4000]) {
+      // Three TTL windows pass with the target in the same long turn.
+      h.setClock(at)
+      h.fireLatestTimer()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(q.depth('dst')).toBe(1)
+    }
+    expect(h.expired).toEqual([])
+    expect(h.traced.map((t) => t.outcome)).not.toContain('expired')
+    // The extended deadline is what a restart would restore from.
+    expect(q.snapshot()[0].ttlMs).toBe(4000)
+
+    busy = false
+    await q.onTargetIdle('dst') // the turn ended
+    expect(h.delivered).toHaveLength(1)
+    expect(h.flushed.map((f) => f.outcome.kind)).toEqual(['delivered'])
+    expect(q.depth('dst')).toBe(0)
+  })
+
+  it('once the target is no longer mid-turn, the next lapse expires the held message — loudly', async () => {
+    let busy = true
+    const h = harness({ stillBusy: () => busy })
+    const q = new DeliveryQueue(h.deps, { ttlMs: 1000 })
+    await q.enqueue(req())
+    h.setClock(2000)
+    h.fireLatestTimer()
+    await Promise.resolve()
+    expect(q.depth('dst')).toBe(1)
+    busy = false // idle now, and no flush took it (no idle event reached the queue)
+    h.setClock(3000)
+    h.fireLatestTimer()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(q.depth('dst')).toBe(0)
+    expect(h.expired).toHaveLength(1)
+    expect(h.expired[0].info.queuedForMs).toBe(2000)
+  })
+
+  it('the hold is bounded: a target that stays "working" forever still ends in an expiry', async () => {
+    const h = harness({ stillBusy: () => true })
+    const q = new DeliveryQueue(h.deps)
+    await q.enqueue(req(), { ttlMs: QUEUE_PERSIST_TTL_MAX })
+    h.setClock(1000 + QUEUE_PERSIST_TTL_MAX)
+    h.fireLatestTimer()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(q.depth('dst')).toBe(0)
+    expect(h.expired).toHaveLength(1)
+  })
+
+  it('a board comment keeps its hard deadline even while the target is mid-turn', async () => {
+    const h = harness({ stillBusy: () => true })
+    const q = new DeliveryQueue(h.deps, { ttlMs: 1000 })
+    await q.enqueue(req({ verb: 'board-comment' }))
+    h.setClock(2000)
+    h.fireLatestTimer()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(q.depth('dst')).toBe(0)
+    expect(h.expired).toHaveLength(1)
   })
 
   it('an expiry timer that fires AFTER the entry already flushed is a no-op (no double drop)', async () => {

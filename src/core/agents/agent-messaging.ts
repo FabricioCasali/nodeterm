@@ -322,6 +322,10 @@ export function setDeliveryQueue(q: DeliveryQueue | null): void {
   deliveryQueue = q
 }
 
+/** How long after a queued flush met an unreadable pane the queue is re-offered. Above the ssh
+ *  probe's 15 s child reap (pane-probe.ts), so retries never overlap a probe still running. */
+export const PANE_UNREADABLE_RETRY_MS = 20_000
+
 /** The board-log author for a queue-level record (an app action, not a person's) — the same stamp
  *  `recordDelivery` uses. */
 const QUEUE_TRACE_AUTHOR = { name: 'nodeterm', color: '#8b8b8b' } as const
@@ -404,6 +408,14 @@ export function createDeliveryQueue(
         // re-offer it when the window ends (see `DeliveryQueue.retryAfter`).
         if (qreq.verb === 'board-comment' && outcome.kind === 'rateLimited')
           queue.retryAfter(qreq.targetNodeId, outcome.retryAfterMs + BOARD_RETRY_SLACK_MS)
+        // An unreadable pane is the same kind of wait: the target is IDLE (that is why this flush
+        // ran), so no further `done` will come to re-offer the entry, and it would sit until its
+        // TTL dropped it (PAR-238: a task queued at 10:31:19, flushed into an unreadable pane at
+        // 10:34:10, expired at 10:36:19 with its target idle the whole time). Re-offered on a
+        // timer instead — one pending nudge per target, bounded by the TTL, and far apart enough
+        // that the ssh hazard in pane-probe.ts (a probe's child outliving its deadline) cannot stack.
+        if (outcome.kind === 'targetPaneUnreadable')
+          queue.retryAfter(qreq.targetNodeId, PANE_UNREADABLE_RETRY_MS)
         return outcome
       },
       // The trace leg: ring always, board log when the TARGET's owning project is resolvable. A board
@@ -447,6 +459,13 @@ export function createDeliveryQueue(
       // Injected so a test pins TTL expiry deterministically; production uses the default setTimeout.
       ...(opts.schedule ? { schedule: opts.schedule } : {}),
       ...(opts.durable ? { persist: (entries: PersistedQueueEntry[]) => opts.durable?.save(entries) } : {}),
+      // Mid-turn on a status observed THIS run: restored or expired evidence proves no turn, and a
+      // node between sessions (`state` undefined) is not in one.
+      stillBusy: (id) => {
+        const m = (deps.mirrorEntry ?? coreMirrorEntry)(id)
+        return !!m && m.restored !== true && m.stateExpired !== true &&
+          m.state !== undefined && m.state !== 'done'
+      },
       // Which conversation a message was queued for — compared when a RESTORED entry flushes.
       bindingOf: (id) => {
         const m = (deps.mirrorEntry ?? coreMirrorEntry)(id)
@@ -602,7 +621,13 @@ export function renderMessageOutcome(o: AgentMessageOutcome): AgentMessageReply 
     case 'queued':
       return {
         ok: true,
-        message: `queued at position ${o.position}, expires in ${o.ttlMs}ms.${trace}`,
+        // NOT delivered: the bytes have not reached the pane. Said in words because a caller that
+        // reads `ok` plus a working target as "delivered" stops watching a message that can still
+        // expire (PAR-238).
+        message:
+          `queued at position ${o.position}: NOT delivered yet — it is typed into the target when ` +
+          `its current turn ends. It is held while the target stays mid-turn; if the target is ` +
+          `not mid-turn and still has not taken it after ${o.ttlMs}ms, it expires.${trace}`,
         result: o
       }
     case 'deliveredToReplacedTarget':
@@ -668,12 +693,18 @@ export function renderMessageOutcome(o: AgentMessageOutcome): AgentMessageReply 
       return {
         ok: false,
         error:
-          `targetPaneUnreadable: the target's pane could not be read — this says nothing about ` +
-          `what is running in it, and the message was refused rather than sent blind. On an SSH ` +
-          `project this usually means the host link is saturated or reconnecting. On Windows it ` +
-          `can also mean the session host predates the pane-identity verb (messageOwnerV1), in ` +
-          `which case it resolves when that process next restarts and retrying now will not help. ` +
-          `${advice}`,
+          // The Windows sentence used to end "retrying now will not help", one clause before
+          // "Retryable": true only for a session host that predates the verb, and false for the
+          // case that actually stops a whole canvas — the PowerShell probe lapsing under load
+          // (PAR-239), which a later retry does clear.
+          `targetPaneUnreadable: the target's pane could not be read` +
+          `${o.detail ? ` (${o.detail})` : ''} — this says nothing about what is running in it, ` +
+          `and the message was refused rather than sent blind. On Windows the pane is read by a ` +
+          `PowerShell probe that can lapse while the machine is under heavy load; the session ` +
+          `host's log (session-host.log) records the reason. On an SSH project it usually means ` +
+          `the host link is saturated or reconnecting. A read that answers at once with no owner ` +
+          `on Windows can mean the session host predates the pane-identity verb (messageOwnerV1), ` +
+          `which only a restart of that process resolves. ${advice}`,
         result: o
       }
     case 'targetNotAgentPane':

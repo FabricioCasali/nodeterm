@@ -15,6 +15,7 @@ import {
   renderMessageOutcome,
   onMessagingAgentEvent,
   createDeliveryQueue,
+  PANE_UNREADABLE_RETRY_MS,
   type AgentMessagingDeps
 } from '../core/agents/agent-messaging'
 import type { BoardLogEntry } from '../shared/types'
@@ -420,6 +421,84 @@ describe('deliver-on-idle wiring (PR 7)', () => {
     )
     await vi.waitFor(() => expect(queue.depth('b1')).toBe(0))
     expect(flushed).toHaveBeenCalledTimes(1)
+  })
+
+  // PAR-238, the two shapes recorded in the board log on 2026-11-18, driven through the real
+  // wiring (`createDeliveryQueue` over the messaging deps).
+  it('a reply queued behind a turn LONGER than the TTL is still delivered when the turn ends', async () => {
+    const timers: { ms: number; fn: () => void; cancelled: boolean }[] = []
+    const working: MirrorEntry = { state: 'working', updatedAt: 1, stateVerified: true, clientRevision: MANAGED_SCRIPT_REVISION }
+    let entry = working
+    let clock = 1_000_000
+    const deps = fakeDeps({ mirrorEntry: () => entry, now: () => clock })
+    const expired = vi.fn()
+    deps.onQueuedResult = expired
+    const queue = createDeliveryQueue(deps, {
+      schedule: (ms, fn) => {
+        const t = { ms, fn, cancelled: false }
+        timers.push(t)
+        return () => {
+          t.cancelled = true
+        }
+      }
+    })
+    deps.queue = queue
+    expect((await deliverFromControl(req({ verb: 'reply' }), deps)).outcome.kind).toBe('queued')
+
+    // 08:12:46 -> 08:17:46: the five-minute TTL lapses, the Codex turn runs on (it ended 08:34).
+    for (let i = 0; i < 4; i++) {
+      clock += 5 * 60_000
+      timers.filter((t) => !t.cancelled).at(-1)!.fn()
+      await Promise.resolve()
+    }
+    expect(queue.depth('b1')).toBe(1)
+    expect(expired).not.toHaveBeenCalled()
+
+    entry = idle
+    onMessagingAgentEvent({ nodeId: 'b1', state: 'done', verified: true, newTurn: false }, queue)
+    // (The entry leaves the list before its delivery is awaited, so wait on the write itself.)
+    await vi.waitFor(() => expect(deps.rec.sent).toHaveLength(1))
+    expect(deps.rec.sent[0].payload).toContain('hello')
+    await vi.waitFor(() => expect(expired).toHaveBeenCalledTimes(1))
+    expect(expired.mock.calls[0][1].kind).toBe('delivered')
+  })
+
+  it('a flush that meets an UNREADABLE pane is re-offered on a timer, not left to expire', async () => {
+    const timers: { ms: number; fn: () => void; cancelled: boolean }[] = []
+    const working: MirrorEntry = { state: 'working', updatedAt: 1, stateVerified: true, clientRevision: MANAGED_SCRIPT_REVISION }
+    let entry = working
+    let readable = false
+    const base = fakeDeps()
+    const deps = fakeDeps({
+      mirrorEntry: () => entry,
+      paneOwner: async (id) => (readable ? base.paneOwner(id) : null)
+    })
+    const queue = createDeliveryQueue(deps, {
+      schedule: (ms, fn) => {
+        const t = { ms, fn, cancelled: false }
+        timers.push(t)
+        return () => {
+          t.cancelled = true
+        }
+      }
+    })
+    deps.queue = queue
+    expect((await deliverFromControl(req(), deps)).outcome.kind).toBe('queued')
+
+    // 10:34:10: the target went idle, the flush ran, and the pane probe answered nothing.
+    entry = idle
+    onMessagingAgentEvent({ nodeId: 'b1', state: 'done', verified: true, newTurn: false }, queue)
+    await vi.waitFor(() =>
+      expect(timers.some((t) => !t.cancelled && t.ms === PANE_UNREADABLE_RETRY_MS)).toBe(true)
+    )
+    expect(queue.depth('b1')).toBe(1)
+    expect(deps.rec.sent).toEqual([])
+
+    // No further `done` will come — the target is idle. The nudge is what delivers it.
+    readable = true
+    timers.find((t) => !t.cancelled && t.ms === PANE_UNREADABLE_RETRY_MS)!.fn()
+    await vi.waitFor(() => expect(deps.rec.sent).toHaveLength(1))
+    await vi.waitFor(() => expect(queue.depth('b1')).toBe(0))
   })
 
   it('drops a queued send if caller ownership is gone before the idle flush', async () => {

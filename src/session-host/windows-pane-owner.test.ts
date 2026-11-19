@@ -3,6 +3,7 @@ import { isAgentPane } from '../shared/agents/pane-owner-predicate'
 import {
   readWindowsConsoleOwner,
   scriptCommandName,
+  setWindowsOwnerReadFailureLog,
   windowsConsoleOwner,
   windowsConsoleProbeScript,
   type ReadPackageJson,
@@ -135,6 +136,29 @@ describe('readWindowsConsoleOwner through the probe worker', () => {
     await expect(
       readWindowsConsoleOwner(10, 'gen-1', { request: async () => ({ kind: 'ok', result: { console: 'x' } }) })
     ).resolves.toBeNull()
+  })
+
+  // PAR-239: every cause of a null read used to be the same silent null, so an outage of the probe
+  // left no trace anywhere. The session host routes these lines to session-host.log.
+  it('a null read reports WHY, and a read that names an owner reports nothing', async () => {
+    setPlatform('win32')
+    const lines: string[] = []
+    setWindowsOwnerReadFailureLog((line) => lines.push(line))
+    try {
+      await readWindowsConsoleOwner(10, 'gen-1', { request: async () => ({ kind: 'ok', result: snapshot }) })
+      expect(lines).toEqual([])
+      await readWindowsConsoleOwner(10, 'gen-1', { request: async () => ({ kind: 'failed' }) })
+      // Two children under the root shell: not ONE chain, so no owner — a definite answer.
+      const sibling = { ...agent, pid: 21 }
+      await readWindowsConsoleOwner(10, 'gen-1', {
+        request: async () => ({ kind: 'ok', result: { console: [10, 20, 21], processes: [root, agent, sibling] } })
+      })
+      expect(lines).toHaveLength(2)
+      expect(lines[0]).toMatch(/^pane owner unreadable pid=10 after \d+ ms: the probe failed in the worker/)
+      expect(lines[1]).toMatch(/names no single owner/)
+    } finally {
+      setWindowsOwnerReadFailureLog(null)
+    }
   })
 
   it('an invalid pid is refused before the worker is asked; off Windows nothing runs', async () => {

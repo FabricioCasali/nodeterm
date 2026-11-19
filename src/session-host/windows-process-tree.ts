@@ -17,6 +17,30 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/** How long a root that taskkill just reported on may take to be observed absent. */
+export const FAILED_TREE_KILL_ROOT_GRACE_MS = 1_500
+
+/**
+ * After `terminateWindowsProcessTree` REJECTED: is the root pid nevertheless gone?
+ *
+ * taskkill `/T /F` exits non-zero when any pid of the tree disappeared between its enumeration and
+ * its kill, although the root (and the rest) was terminated. This answers only the narrow question
+ * "did the root die", within a short grace for the kernel to reap it. It is not a success claim:
+ * the caller still needs its own proof that the tree is gone (the host waits for node-pty's onExit).
+ */
+export async function rootGoneAfterFailedTreeKill(
+  pid: number,
+  isAlive: (candidate: number) => boolean = processExists,
+  graceMs: number = FAILED_TREE_KILL_ROOT_GRACE_MS
+): Promise<boolean> {
+  const deadline = Date.now() + graceMs
+  while (isAlive(pid)) {
+    if (Date.now() >= deadline) return false
+    await delay(25)
+  }
+  return true
+}
+
 /**
  * Force-terminate a Windows process tree independently of node-pty's `WindowsTerminal.kill()`.
  * node-pty defers that method until its first output marks the terminal ready, so a valid silent
