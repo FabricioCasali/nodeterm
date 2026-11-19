@@ -86,3 +86,51 @@ describe('DaReplyGate', () => {
     expect(g.filterInput(DA2_R, 1)).toBe(DA2_R)
   })
 })
+
+describe('DaReplyGate — colour replies the host already answered (Windows panes)', () => {
+  const CODEX_QUERY = '\x1b]10;?\x1b\\\x1b]11;?\x1b\\'
+  // The renderer's late answer, exactly as it landed in Codex's prompt.
+  const FG_R = '\x1b]10;rgb:e6e6/e6e6/e6e6\x1b\\'
+  const BG_R = '\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\'
+
+  it("drops the viewer's duplicate of each colour reply and lets the next keystroke through", () => {
+    const g = new DaReplyGate(30_000, true)
+    g.noteOutput(CODEX_QUERY, 0)
+    expect(g.filterInput(FG_R + BG_R, 100)).toBe('')
+    expect(g.filterInput('a', 101)).toBe('a')
+  })
+
+  it('separate writes, a split query and the multi-colour form each spend one slot', () => {
+    const g = new DaReplyGate(30_000, true)
+    g.noteOutput('x\x1b]1', 0)
+    g.noteOutput('0;?\x1b', 1)
+    g.noteOutput('\\\x1b]11;?;?\x07', 2) // asks 11 and 12
+    expect(g.filterInput(FG_R, 3)).toBe('')
+    expect(g.filterInput(BG_R, 3)).toBe('')
+    expect(g.filterInput('\x1b]12;rgb:ffff/ffff/ffff\x07', 3)).toBe('')
+    expect(g.filterInput(FG_R, 4)).toBe(FG_R) // nothing left to spend
+  })
+
+  it('a DA1 reply spends no colour slot, and DA1/DA2 stay as they were', () => {
+    const g = new DaReplyGate(30_000, true)
+    g.noteOutput(`${CODEX_QUERY}${DA1_Q}`, 0)
+    expect(g.filterInput(DA1_R, 1)).toBe(DA1_R)
+    expect(g.filterInput(DA1_R, 1)).toBe('')
+    expect(g.filterInput(FG_R, 2)).toBe('')
+    expect(g.filterInput(BG_R, 2)).toBe('')
+  })
+
+  it('off (tmux): colour queries open nothing and colour replies pass untouched', () => {
+    const g = new DaReplyGate(DA_REPLY_TTL_TMUX_MS)
+    g.noteOutput(CODEX_QUERY, 0)
+    expect(g.filterInput(FG_R, 1)).toBe(FG_R)
+    expect(g.filterInput(BG_R, 1)).toBe(BG_R)
+  })
+
+  it('a colour SET or a mixed write is never touched', () => {
+    const g = new DaReplyGate(30_000, true)
+    g.noteOutput(CODEX_QUERY, 0)
+    for (const input of ['\x1b]10;#ffffff\x1b\\', `${FG_R}x`, '\x1b]4;1;rgb:0000/0000/0000\x1b\\'])
+      expect(g.filterInput(input, 1)).toBe(input)
+  })
+})

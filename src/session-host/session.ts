@@ -258,7 +258,8 @@ export class HostSession {
       new TerminalEmulator({
         cols: this.appliedGeometry.cols,
         rows: this.appliedGeometry.rows,
-        scrollback
+        scrollback,
+        onColourReply: (reply) => this.proc.write(reply)
       })
   }
 

@@ -34,7 +34,16 @@ export const DA_REPLY_TTL_TMUX_MS = 4_000
 /** Anything else (a plain shell, the session host): the app's own wait is unknown, so be generous. */
 export const DA_REPLY_TTL_OTHER_MS = 30_000
 
-type Kind = 'da1' | 'da2'
+type Kind = 'da1' | 'da2' | 'osc10' | 'osc11' | 'osc12'
+
+// Colour queries (OSC 10/11/12, each extra `;?` asks the next colour), BEL- or ST-terminated.
+const COLOUR_QUERY = /\x1b\](1[012])((?:;\?)+)(?:\x07|\x1b\\)/g
+// A trailing fragment that could still become a colour query with the next chunk.
+const COLOUR_PARTIAL = /^\x1b\](?:1(?:[012](?:;\??)*\x1b?)?)?$/
+const MAX_COLOUR_CARRY = 24
+// A whole write made only of OSC 10/11/12 colour replies.
+const COLOUR_REPLIES_ONLY = /^(?:\x1b\]1[012];rgb:[0-9a-fA-F/]+(?:\x07|\x1b\\))+$/
+const COLOUR_REPLY = /\x1b\](1[012]);rgb:[0-9a-fA-F/]+(?:\x07|\x1b\\)/g
 
 // Queries the app/tmux writes to the terminal: CSI c, CSI 0 c (DA1); CSI > c, CSI > 0 c (DA2).
 const QUERY = /\x1b\[(>?)0?c/g
@@ -47,12 +56,21 @@ const MAX_CARRY = 4
 const MAX_OPEN = 32
 
 export class DaReplyGate {
-  private readonly open: Record<Kind, number[]> = { da1: [], da2: [] }
+  private readonly open: Record<Kind, number[]> = { da1: [], da2: [], osc10: [], osc11: [], osc12: [] }
   private carry = ''
 
-  constructor(private readonly ttlMs: number) {}
+  /**
+   * `hostAnswersColours`: the pty's own process already answers OSC 10/11/12 colour queries (the
+   * Windows panes' host emulator, `TerminalEmulator.onColourReply`), so a viewer's answer to one is
+   * a late duplicate — each query opens a slot, and a viewer's colour reply that spends one is
+   * dropped. Off for tmux, which answers colour queries itself and may ask the viewer its own.
+   */
+  constructor(
+    private readonly ttlMs: number,
+    private readonly hostAnswersColours = false
+  ) {}
 
-  /** Watch the pty's output for DA queries. */
+  /** Watch the pty's output for DA queries (and colour queries, when the host answers those). */
   noteOutput(chunk: string, now: number): void {
     if (!chunk) return
     const text = this.carry + chunk
@@ -61,6 +79,19 @@ export class DaReplyGate {
     QUERY.lastIndex = 0
     let m: RegExpExecArray | null
     while ((m = QUERY.exec(text))) this.push(m[1] === '>' ? 'da2' : 'da1', now)
+    if (this.hostAnswersColours) {
+      COLOUR_QUERY.lastIndex = 0
+      while ((m = COLOUR_QUERY.exec(text))) {
+        const asked = m[2].length / 2
+        for (let i = 0, ident = Number(m[1]); i < asked && ident + i <= 12; i++)
+          this.push(`osc${ident + i}` as Kind, now)
+      }
+      const osc = text.lastIndexOf('\x1b]')
+      if (osc !== -1 && text.length - osc <= MAX_COLOUR_CARRY && COLOUR_PARTIAL.test(text.slice(osc))) {
+        this.carry = text.slice(osc)
+        return
+      }
+    }
     // Keep a trailing fragment that could still become a query with the next chunk.
     const esc = text.lastIndexOf('\x1b')
     if (esc !== -1 && text.length - esc <= MAX_CARRY && /^\x1b(?:\[(?:>?0?)?)?$/.test(text.slice(esc)))
@@ -69,10 +100,22 @@ export class DaReplyGate {
 
   /**
    * Input from a viewer. Returns what may reach the pty: the write unchanged unless it is made only
-   * of DA1/DA2 replies, in which case only the replies that answer an open query survive ('' = drop).
+   * of DA1/DA2 replies, in which case only the replies that answer an open query survive ('' = drop);
+   * or, when the host answers colours, only of colour replies, in which case those the host already
+   * answered (an open slot) are dropped.
    */
   filterInput(data: string, now: number): string {
-    if (!data || data.charCodeAt(0) !== 0x1b || !REPLIES_ONLY.test(data)) return data
+    if (!data || data.charCodeAt(0) !== 0x1b) return data
+    if (this.hostAnswersColours && COLOUR_REPLIES_ONLY.test(data)) {
+      let kept = ''
+      COLOUR_REPLY.lastIndex = 0
+      let c: RegExpExecArray | null
+      while ((c = COLOUR_REPLY.exec(data))) {
+        if (!this.take(`osc${c[1]}` as Kind, now)) kept += c[0]
+      }
+      return kept
+    }
+    if (!REPLIES_ONLY.test(data)) return data
     let kept = ''
     REPLY.lastIndex = 0
     let m: RegExpExecArray | null

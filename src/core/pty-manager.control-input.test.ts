@@ -560,3 +560,15 @@ describe('controlInput — bounded on every route', () => {
     expect(sendText).toHaveBeenLastCalledWith('c', false)
   })
 })
+
+describe('write — a viewer colour reply the Windows host already answered', () => {
+  it("drops the renderer's late OSC 10/11 reply and passes the next keystroke intact", async () => {
+    const daReplies = new DaReplyGate(30_000, true)
+    const { mgr, write } = await manager({ sessionHost: true, tmuxBacked: false, daReplies })
+    const viewer = mgr as unknown as { write(clientId: null, sessionId: string, data: string): void }
+    daReplies.noteOutput('\x1b]10;?\x1b\\\x1b]11;?\x1b\\', Date.now())
+    viewer.write(null, 'sess-1', '\x1b]10;rgb:e6e6/e6e6/e6e6\x1b\\\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\')
+    viewer.write(null, 'sess-1', 'a')
+    expect(write.mock.calls).toEqual([['a']])
+  })
+})

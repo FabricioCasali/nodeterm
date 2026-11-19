@@ -8,6 +8,24 @@ import { activateTerminalWidths } from '../shared/terminal-width'
 // ever touches buffer/modes/cols/rows at runtime — all present on the headless Terminal — so this
 // is a real type mismatch between two packages that are runtime-compatible, not a runtime risk.
 
+// The default terminal theme (`nodeterm-dark` in src/renderer/terminal/themes.ts), the colours a
+// colour query is answered with. Per-session themes do not reach the host.
+const COLOURS: Record<number, string> = { 10: '#e6e6e6', 11: '#1e1e1e', 12: '#ffffff' }
+
+const xtermRgb = (hex: string): string =>
+  'rgb:' + [1, 3, 5].map((i) => hex.slice(i, i + 2).repeat(2)).join('/')
+
+/**
+ * The reply to `OSC <ident> ; ? [; ? …]` (OSC 10 = foreground, 11 = background, 12 = cursor; each
+ * extra `?` asks the next colour), in xterm's own `rgb:rrrr/gggg/bbbb` ST-terminated form. `null`
+ * when the sequence sets a colour instead of asking, so xterm's own handler takes it.
+ */
+export function colourQueryReply(ident: number, data: string): string | null {
+  const params = data.split(';')
+  if (params.some((p, i) => p !== '?' || !COLOURS[ident + i])) return null
+  return params.map((_, i) => `\x1b]${ident + i};${xtermRgb(COLOURS[ident + i])}\x1b\\`).join('')
+}
+
 /**
  * One session's server-side screen. This is the piece that makes the session host able to
  * reconstruct a fresh client's screen on attach WITHOUT itself being a "painter" the way a real
@@ -34,7 +52,13 @@ export class TerminalEmulator {
   private readonly serializer: SerializeAddon
   private readonly defaultScrollback: number
 
-  constructor(opts: { cols: number; rows: number; scrollback: number }) {
+  /**
+   * `onColourReply`, when given, answers the pane app's OSC 10/11/12 colour queries from this
+   * emulator, in the pty's own process. @xterm/headless parses those queries but never answers them
+   * (it has no theme service); only the renderer's xterm did, a process hop away — late enough for
+   * an app that stops waiting (Codex) to read the reply as typed text in its prompt.
+   */
+  constructor(opts: { cols: number; rows: number; scrollback: number; onColourReply?: (reply: string) => void }) {
     // Capped at the renderer's own xterm cap (`XTERM_SCROLLBACK_MAX`): xterm allocates every
     // buffered line at full width (cols × 12 B), and nothing past the renderer's cap is ever
     // shown. Clamped HERE as well as in core, because an older client still sends 50,000.
@@ -55,6 +79,21 @@ export class TerminalEmulator {
     }
     this.serializer = new SerializeAddon()
     this.term.loadAddon(this.serializer as unknown as ITerminalAddon)
+    const onColourReply = opts.onColourReply
+    if (onColourReply) {
+      for (const ident of [10, 11, 12]) {
+        this.term.parser.registerOscHandler(ident, (data) => {
+          const reply = colourQueryReply(ident, data)
+          if (reply === null) return false
+          try {
+            onColourReply(reply)
+          } catch {
+            // A pty that is already gone; the parser must keep going.
+          }
+          return true
+        })
+      }
+    }
   }
 
   /**

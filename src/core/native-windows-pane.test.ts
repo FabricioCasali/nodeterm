@@ -126,3 +126,12 @@ describe('native Windows sendText (the write verb and the app’s own writers)',
     expect(write).not.toHaveBeenCalled()
   })
 })
+
+describe('native Windows colour queries', () => {
+  it("answers Codex's OSC 10/11 query to the pty from the host, without the renderer", async () => {
+    const { pane, write } = fixture(false)
+    pane.recordOutput('\x1b]10;?\x1b\\\x1b]11;?\x1b\\')
+    await pane.capture(false)
+    expect(write.mock.calls).toEqual([['\x1b]10;rgb:e6e6/e6e6/e6e6\x1b\\'], ['\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\']])
+  })
+})
