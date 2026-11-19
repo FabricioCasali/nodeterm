@@ -25,6 +25,7 @@ import {
 import { bundledTmuxPath, findCommand, findFixedTmux, tmuxInstall } from './tmux-hint'
 import { hookServer, PERM_WAIT_SECS_DEFAULT } from './agents/hook-server'
 import { cursorApprovalIn, cursorPlanPromptIn, cursorQuestionIn } from './agents/cursor-approval'
+import { antigravitySurveyIn } from './agents/antigravity-survey'
 import { findAgy, pathWithAgyDir } from './agents/hooks/antigravity'
 import { currentIntegrationLifecycle } from './agent-integrations'
 import {
@@ -6718,6 +6719,18 @@ export class PtyManager {
     return cursorApprovalIn(screen) || cursorQuestionIn(screen) || cursorPlanPromptIn(screen)
   }
 
+  /**
+   * Is agy's feedback survey on screen? It fires no hook, so the messaging idle gate cannot see it.
+   * Visible screen only: the survey's text in scrollback is not a live dialog. A failed capture is
+   * not evidence (fail-open, as `cursorDialogShowing`).
+   */
+  private async antigravitySurveyShowing(persistKey: string): Promise<boolean> {
+    const agent = this.agentForKey(persistKey)
+    if (!agent || capabilityAgentId(agent as AgentId) !== 'antigravity') return false
+    const screen = await this.captureSession(persistKey, false, true).catch(() => '')
+    return antigravitySurveyIn(screen)
+  }
+
   private async deliverText(
     persistKey: string,
     text: string,
@@ -7365,6 +7378,8 @@ export class PtyManager {
 
   private async sendEnvelopeNow(persistKey: string, envelope: string, expected?: PaneOwner, guard?: EnvelopeGuard): Promise<boolean | 'dialog'> {
     if (envelope.length === 0) return false
+    // Before every backend branch: on Windows an agy pane is session-host-backed.
+    if (await this.antigravitySurveyShowing(persistKey)) return 'dialog'
     const live = this.liveSessionForPersistKey(persistKey)
     if (this.isZellij(persistKey, live)) return false
     if (live?.nativeWindowsPane) return guard
