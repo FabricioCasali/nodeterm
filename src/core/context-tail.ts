@@ -288,7 +288,9 @@ export interface ContextTailOptions {
    * optional) and its window keeps coming from the model-family resolver.
    */
   parse?: (
-    text: string | string[]
+    text: string | string[],
+    /** The session being read, for a parser that needs per-session facts (antigravity's model). */
+    sessionId?: string
   ) => { used: number; window?: number | null; model: string | null; effort?: string } | null
   /**
    * Re-read the tracked file from byte 0 on every tick instead of tailing an offset.
@@ -393,7 +395,7 @@ export function createContextTail(
         const r = await opts.readSource(t.path, t.sourceKey)
         if (r) {
           t.sourceKey = r.key
-          const latest = parse([r.text])
+          const latest = parse([r.text], sessionId)
           if (latest) {
             t.used = latest.used
             t.model = latest.model ?? t.model
@@ -443,7 +445,7 @@ export function createContextTail(
           t.carry = splitCompleteLines(combined).carry
           const lines = combined.toString('utf-8').split('\n')
           const completeLines = lines.slice(0, -1)
-          const latest = parse(lines)
+          const latest = parse(lines, sessionId)
           if (latest) {
             t.used = latest.used
             t.model = latest.model ?? t.model

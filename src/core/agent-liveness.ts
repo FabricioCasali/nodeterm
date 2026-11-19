@@ -81,9 +81,12 @@ export function createStationLiveness(d: StationLivenessSources): StationLivenes
   const receipts = new Map<string, string>()
   const receiptExists = d.receiptExists ?? ((file: string) => fs.existsSync(file))
 
+  // A verified state from this run, or a verified SessionStart (a CLI opened with no prompt has
+  // no state yet, and is exactly as alive).
   const confirmedSince = (m: Readonly<MirrorEntry> | undefined, at: number): boolean =>
-    !!m && m.stateVerified === true && m.restored !== true && m.stateExpired !== true &&
-    m.state !== undefined && m.updatedAt >= at
+    !!m && m.restored !== true &&
+    ((m.stateVerified === true && m.stateExpired !== true && m.state !== undefined && m.updatedAt >= at) ||
+      (m.sessionStarted !== undefined && m.sessionStarted.at >= at))
 
   /** Still the conclusion on record: nothing newer has been asserted about the node since. */
   const stillConcluded = (nodeId: string, attemptId: string, m: Readonly<MirrorEntry> | undefined): boolean => {

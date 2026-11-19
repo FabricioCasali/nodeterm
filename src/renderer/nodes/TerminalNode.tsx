@@ -305,7 +305,7 @@ import { liveLinkUnavailable } from '../lib/liveLinkEntry'
 import { useWatchLinks } from '../state/watchLinks'
 import { agentLaunchOverride, toggleCollapsed, type CanvasNode } from '../state/workspace'
 import { NodeColorSwatches } from '../components/NodeColorSwatches'
-import { AccountChip, useAccountChip } from '../components/AccountChip'
+import { AccountChip, AgentProfileChip, useAccountChip } from '../components/AccountChip'
 import { IssueRefChip } from '../components/IssueRefChip'
 import { TeamProgressChip } from '../components/TeamProgressChip'
 import { PortsChip } from '../components/PortsChip'
@@ -6366,7 +6366,8 @@ export function TerminalNode({
             SSH {(data.ssh as SshConnection).user}@{(data.ssh as SshConnection).host}
           </span>
         ) : null}
-        {showUsage && <ContextMeter sessionId={transcript.sessionId ?? null} fromLaunchId={transcript.fallback} nodeId={id} remote={!!remoteSession} agentId={agentId} />}
+        <AgentProfileChip agentId={agentId} />
+        {showUsage && <ContextMeter sessionId={transcript.sessionId ?? null} fromLaunchId={transcript.fallback} nodeId={id} remote={!!remoteSession} agentId={agentId} fallbackModel={status?.model} />}
         {/* Who else is in this node. Subscribes to presence itself — see PresenceChips. */}
         <PresenceChips nodeId={id} />
         {/* This terminal is broadcast by a live link — never hideable (live-link.guard.test.ts).

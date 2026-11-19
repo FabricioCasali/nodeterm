@@ -60,7 +60,9 @@ describe('normalizeAntigravity over captured agy 1.2.3 payloads', () => {
       sessionId: e.payload.conversationId,
       kind: 'state',
       state: 'working',
-      newTurn: true
+      newTurn: true,
+      // The session's own model rides every event (PAR-225).
+      model: e.payload.modelName
     })
   })
 
@@ -102,10 +104,15 @@ describe('normalizeAntigravity over captured agy 1.2.3 payloads', () => {
     expect(run(pick('PostToolUse', toolIs('ask_question')))?.state).toBe('working')
   })
 
-  it('an ordinary PostToolUse says nothing new → null', () => {
-    // The captured one arrived 27.5 s AFTER an intermediate Stop, for a background tool. Mapping it
-    // to a state could only ever wipe something (a pending question); it cannot add information.
-    expect(run(pick('PostToolUse', toolIs('run_command')))).toBeNull()
+  it('an ordinary PostToolUse only REASSERTS work (PAR-177): working, flagged reaffirm', () => {
+    // The captured one arrived 27.5 s AFTER an intermediate Stop, for a background tool. As a plain
+    // state it could wipe a pending question or relight a stopped turn, so it carries `reaffirm`
+    // and the shells drop it in exactly those states (reaffirmIsStale, agent-status-mirror.ts).
+    const out = run(pick('PostToolUse', toolIs('run_command')))
+    expect(out).toMatchObject({ kind: 'state', state: 'working', reaffirm: true })
+    expect(out?.newTurn).toBeUndefined()
+    // The ask's own answer is a real transition, never a reassertion.
+    expect(run(pick('PostToolUse', toolIs('ask_question')))?.reaffirm).toBeUndefined()
   })
 
   it('PostInvocation is not subscribed and maps to nothing', () => {
@@ -116,13 +123,23 @@ describe('normalizeAntigravity over captured agy 1.2.3 payloads', () => {
     const out = run(pick('Stop', (p) => p.fullyIdle === false))
     expect(out?.state).toBe('done')
     expect(out?.backgroundTaskIds).toEqual(['agy-bg'])
+    // …and the inventory plain `--after` holds on: that work is the unfinished part of the turn.
+    expect(out?.backgroundSubagentIds).toEqual(['agy-bg'])
   })
 
-  it('Stop with fullyIdle:true → done, not errored, no backgroundTaskIds', () => {
+  it('Stop with fullyIdle:true → done, not errored, an EMPTY inventory (it releases the hold)', () => {
     const out = run(pick('Stop', finalStopMatch))
     expect(out?.state).toBe('done')
     expect(out?.errored).toBeUndefined()
-    expect(out?.backgroundTaskIds).toBeUndefined()
+    expect(out?.backgroundTaskIds).toEqual([])
+    expect(out?.backgroundSubagentIds).toEqual([])
+  })
+
+  it('Stop without fullyIdle states no inventory at all: absent is unknown, never none', () => {
+    const out = normalizeAntigravity(envFor('Stop', {}))
+    expect(out?.state).toBe('done')
+    expect(out).not.toHaveProperty('backgroundTaskIds')
+    expect(out).not.toHaveProperty('backgroundSubagentIds')
   })
 
   it('a hook-terminated Stop (TERMINAL_CUSTOM_HOOK) is an ordinary end, not an error', () => {
@@ -189,7 +206,7 @@ describe('normalizeAntigravity — the rules the capture could not produce', () 
   it('a malformed toolCall or conversationId degrades instead of throwing', () => {
     expect(normalizeAntigravity(envFor('PreToolUse', { toolCall: null }))?.state).toBe('working')
     expect(normalizeAntigravity(envFor('PreToolUse', { toolCall: 'ask_question' }))?.state).toBe('working')
-    expect(normalizeAntigravity(envFor('PostToolUse', { toolCall: { name: 42 } }))).toBeNull()
+    expect(normalizeAntigravity(envFor('PostToolUse', { toolCall: { name: 42 } }))).toMatchObject({ state: 'working', reaffirm: true })
     expect(normalizeAntigravity(envFor('PreInvocation', { conversationId: 42 }))?.sessionId).toBeUndefined()
   })
 
@@ -220,7 +237,10 @@ describe('normalizeAntigravity — measured event orders', () => {
       ['PreInvocation', inv(0)],
       ['Stop', end]
     ]
-    expect(states(seq)).toEqual(['working', 'working', 'working', 'done', null, 'working', 'done'])
+    // The late PostToolUse is a reassertion; after a Stop that left background work the shells
+    // drop it (reaffirmIsStale), so the node does not relight.
+    expect(states(seq)).toEqual(['working', 'working', 'working', 'done', 'working', 'working', 'done'])
+    expect(normalizeAntigravity(envFor('PostToolUse', post))?.reaffirm).toBe(true)
     expect(seq.map(([ev, p]) => normalizeAntigravity(envFor(ev, p))?.newTurn ?? false)).toEqual([
       true,
       false,
@@ -242,6 +262,10 @@ describe('normalizeAntigravity — measured event orders', () => {
         ['PostToolUse', bgPost],
         ['PostToolUse', askPost]
       ])
-    ).toEqual(['waiting', null, 'working'])
+    ).toEqual(['waiting', 'working', 'working'])
+    // What keeps NEEDS YOU standing is the flag: the background ping is dropped while a person is
+    // being waited on, the ask's own answer is not.
+    expect(normalizeAntigravity(envFor('PostToolUse', bgPost))?.reaffirm).toBe(true)
+    expect(normalizeAntigravity(envFor('PostToolUse', askPost))?.reaffirm).toBeUndefined()
   })
 })

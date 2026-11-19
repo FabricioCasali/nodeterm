@@ -24,7 +24,7 @@ import { applyIconChoice } from '../../lib/nodeIconChoice'
 import { normalizeNodeIcon, type NodeIcon } from '@shared/node-icon'
 import { ContextMeter } from '../ContextMeter'
 import { isRemoteSessionNode } from '@shared/worktree'
-import { AccountChip, useAccountChip } from '../AccountChip'
+import { AccountChip, AgentProfileChip, useAccountChip } from '../AccountChip'
 import { LiveLinkChip, projectSessionSource } from '../LiveLinkChip'
 import { useWatchLinks } from '../../state/watchLinks'
 import { liveLinkUnavailable } from '../../lib/liveLinkEntry'
@@ -191,6 +191,7 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
   // Same chip as the card and the canvas node header — the modal is where a user checks WHICH
   // session this is, so the account belongs in its header chips, not only two views away.
   const observedAccount = agentStatusStore((st) => st.byId[session.id]?.account)
+  const observedModel = agentStatusStore((st) => st.byId[session.id]?.model)
   // The session name, where it is not already the title (lib/cardRedundancy — the rule the card
   // and the canvas node header use). The card carries it on its detail line; the modal, which
   // hides the node, carries it here so the session's name is never two views away.
@@ -552,6 +553,7 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
             </span>
           )}
           {isTerminal && <AccountChip chip={accountChip} />}
+          {isTerminal && <AgentProfileChip agentId={session.agentId ?? session.spawn.agentId ?? observedAgentId} />}
           {isTerminal && <LiveLinkChip nodeId={session.id} source={liveLinkSource} className="kanban-modal__live" />}
           {/* The driving chip, so a user watching a browser card THROUGH the modal is not
               driving-blind. The lease is keyed by node id (not by webview object), so this shows
@@ -612,7 +614,7 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
           {isTerminal && (
             <>
               {/* Same context-window pill + popover as the node header (null until usage data). */}
-              <ContextMeter sessionId={transcript.sessionId ?? null} fromLaunchId={transcript.fallback} nodeId={session.id} remote={isRemoteSessionNode(session.spawn)} agentId={session.agentId ?? session.spawn.agentId ?? observedAgentId} />
+              <ContextMeter sessionId={transcript.sessionId ?? null} fromLaunchId={transcript.fallback} nodeId={session.id} remote={isRemoteSessionNode(session.spawn)} agentId={session.agentId ?? session.spawn.agentId ?? observedAgentId} fallbackModel={observedModel} />
               <button
                 className="kanban-modal__action"
                 title={commandTooltip(mdOpen ? 'Back to the live terminal' : 'Markdown / chat view', 'node.toggleMarkdown')}

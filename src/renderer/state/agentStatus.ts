@@ -207,6 +207,12 @@ export interface AgentNodeStatus {
    */
   lifecycle?: 'launch-failed' | 'dropped'
   /**
+   * The model this node's CLI last named in a hook of its own session (antigravity). Shown where
+   * the context meter shows a model, before any token usage exists. TRANSIENT: a claim about a
+   * running session, re-stated by its next hook.
+   */
+  model?: string
+  /**
    * This node's CLI announced its own exit (any SessionEnd hook: `/exit`, `/quit`,
    * Ctrl+D) and nothing has started a session since.
    *
@@ -415,6 +421,8 @@ export interface AgentStatusStore {
   setDropped(id: string, on: boolean): void
   /** Replace core's lifecycle conclusions whole (the host pushes the full map, never a delta). */
   setLifecycles(map: Readonly<Record<string, 'launch-failed' | 'dropped'>>): void
+  /** Record the model the node's own session last named. Transient; bails when unchanged. */
+  setModel(id: string, model: string): void
   /** Record (or withdraw) that this node's CLI announced its exit. Transient; see `sessionEnded`.
    *  Bails when the flag already reads that way. */
   setSessionEnded(id: string, on: boolean): void
@@ -1154,6 +1162,13 @@ export function createAgentStatusSession(
         // Transient: cleared by dropping the key, and NO `save()` — see the field comment. An entry
         // holding nothing else durable must not be conjured onto disk by a pane reading.
         return { byId: { ...s.byId, [id]: { ...prev, dropped: on ? true : undefined } } }
+      }),
+
+    setModel: (id, model) =>
+      set((s) => {
+        const prev = s.byId[id] ?? EMPTY
+        if (prev.model === model) return s
+        return { byId: { ...s.byId, [id]: { ...prev, model } } }
       }),
 
     setLifecycles: (map) =>

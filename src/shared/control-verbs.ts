@@ -48,7 +48,9 @@ import { oneLine } from './one-line'
 export const CONTROL_AGENT_LABELS = {
   idle: 'IDLE', working: 'WORKING', 'needs-you': 'NEEDS YOU', unconfirmed: 'AGENT STATUS UNCONFIRMED',
   // Process liveness (core/agent-liveness.ts): the launch returned without a CLI / the CLI is gone.
-  failed: 'LAUNCH FAILED', dropped: 'DROPPED'
+  failed: 'LAUNCH FAILED', dropped: 'DROPPED',
+  // The turn ended but the CLI's own inventory says work is still running (antigravity).
+  'working-background': 'WORKING (background)'
 } as const
 
 export function controlAskText(kind: 'approval' | 'question' | 'dialog', detail?: string, minutes?: number): string {

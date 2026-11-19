@@ -13,7 +13,10 @@ import { antigravityWindowFor } from './model-window'
 import {
   antigravityContextParse,
   pickAntigravityTokens,
-  rememberAntigravityModel
+  antigravityModelFor,
+  antigravitySessionContextParse,
+  rememberAntigravityModel,
+  resetAntigravityModelsForTests
 } from './antigravity-session'
 import { chatFromAntigravity, readAntigravityChatTranscript } from './antigravity-chat'
 import { locateAntigravity } from './handoff/locate'
@@ -117,8 +120,10 @@ describe('Antigravity context window & token usage', () => {
     })
   })
 
-  it('falls back to the last hook-reported model when the transcript chunk has no USER_SETTINGS_CHANGE', () => {
-    rememberAntigravityModel('gpt-oss-120b-medium')
+  it('PAR-225 T18 uses the model the hooks of THAT conversation named — never another conversation\'s', () => {
+    resetAntigravityModelsForTests()
+    rememberAntigravityModel('gpt-oss-120b-medium', 'conv-a')
+    rememberAntigravityModel('gemini-3.1-pro-high', 'conv-b')
     const partial = JSON.stringify({
       step_index: 5,
       type: 'PLANNER_RESPONSE',
@@ -126,11 +131,14 @@ describe('Antigravity context window & token usage', () => {
       input_tokens: 10_000,
       cache_read_tokens: 5_000
     })
-    expect(antigravityContextParse(partial)).toEqual({
-      used: 15_000,
-      window: 128_000,
-      model: 'gpt-oss-120b-medium'
+    expect(antigravityModelFor('conv-a')).toBe('gpt-oss-120b-medium')
+    expect(antigravitySessionContextParse(partial, 'conv-a')).toEqual({
+      used: 15_000, window: 128_000, model: 'gpt-oss-120b-medium'
     })
+    expect(antigravitySessionContextParse(partial, 'conv-b')).toMatchObject({ model: 'gemini-3.1-pro-high' })
+    // T19 a conversation nobody named a model for: tokens are shown, no model or window is invented.
+    expect(antigravitySessionContextParse(partial, 'conv-c')).toEqual({ used: 15_000, window: null, model: null })
+    expect(antigravityContextParse(partial)).toEqual({ used: 15_000, window: null, model: null })
   })
 })
 

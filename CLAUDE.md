@@ -3496,7 +3496,12 @@ its agent status" under Hosted team relay.
   failed to — time alone never fails a launch; a hibernated node, or one whose program the app
   itself just ended, is suppressed; and any later hook withdraws the conclusion. For codex and
   antigravity a deliberate `/quit` therefore reads DROPPED as well: nothing distinguishes it, and
-  a pane with no CLI in it is what the label says. **A second thing this catches, unplanned:** in the same sweep 9 of 149 panes sat at a
+  a pane with no CLI in it is what the label says. Related, same batch: a Codex `SessionStart` is a
+  session boundary, not `working` (a Codex opened with no prompt used to read WORKING until a
+  first turn), and the Windows codex hook wrapper has NO env gate — under Codex's shared
+  app-server the hook is the daemon's child and carries neither `NODETERM_NODE_ID` nor
+  `CODEX_THREAD_ID`, so gating on them dropped every event; `codex.sh` resolves the node from
+  the payload's `session_id` and is the only place that decides. **A second thing this catches, unplanned:** in the same sweep 9 of 149 panes sat at a
   bare shell because a cold-restore `--resume` had answered *"No conversation found with session
   ID"* — the persisted `sessionId` outlived its transcript. The chip surfaces those too, but the
   Resume it offers still replays that dead id — but cold restore no longer creates the state: it

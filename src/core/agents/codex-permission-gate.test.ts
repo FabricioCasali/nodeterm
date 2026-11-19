@@ -118,7 +118,7 @@ describe('codex permission gate', () => {
 
   it('under auto_review the PermissionRequest is not shown as NEEDS YOU, order kept', async () => {
     await run('auto_review')
-    expect(out.map((e) => e.state)).toEqual(['working', 'working', 'working', 'working', 'done'])
+    expect(out.map((e) => e.state)).toEqual([undefined, 'working', 'working', 'working', 'done'])
     expect(out.some((e) => e.state === 'waiting')).toBe(false)
   })
 
@@ -134,7 +134,7 @@ describe('codex permission gate', () => {
   ] as const) {
     it(`keeps NEEDS YOU for ${label}`, async () => {
       await run(value)
-      expect(out.map((e) => e.state)).toEqual(['working', 'working', 'working', 'waiting', 'working', 'done'])
+      expect(out.map((e) => e.state)).toEqual([undefined, 'working', 'working', 'waiting', 'working', 'done'])
     })
   }
 
@@ -158,7 +158,7 @@ describe('codex permission gate', () => {
       readReviewer: () => new Promise((r) => setTimeout(() => r('auto_review'), 60))
     })
     await new Promise((r) => setTimeout(r, 80))
-    expect(out.map((e) => e.state)).toEqual(['working', 'working', 'working', 'waiting', 'working', 'done'])
+    expect(out.map((e) => e.state)).toEqual([undefined, 'working', 'working', 'waiting', 'working', 'done'])
   })
 
   it('keeps NEEDS YOU when the read throws', async () => {

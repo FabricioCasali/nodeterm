@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from 'react'
 import type { ObservedClaudeAccount } from '@shared/types'
+import { AGENT_CONFIG } from '@shared/agents/config'
 import { accountChipFor, accountKey, hasMultipleAccountKeys, type AccountChipInfo } from '../lib/accountChip'
 import { useAgentStatus, type AgentStatusSession } from '../state/agentStatus'
 import { useSettings } from '../state/settings'
@@ -11,6 +12,29 @@ import { useSystemAccount } from '../state/systemAccount'
  * nodes (CONTRIBUTING), so a chip that only existed on one of them would say a pane is on
  * `.claude-2` in one view and nothing at all in the other.
  */
+/**
+ * The PROFILE an antigravity node runs as (PAR-225): the custom agent it was created with — its
+ * machine-local identity, not the renamable node title and not whichever agent ran last. Drawn
+ * with the account chip's own style, in the account chip's place, because that is where a Claude
+ * node says which account/profile it is on. Nothing for a plain `agy` node or any other agent.
+ */
+export function AgentProfileChip({ agentId, className }: { agentId: string | undefined; className?: string }): React.JSX.Element | null {
+  const profile = useSettings((s) =>
+    agentId && !Object.hasOwn(AGENT_CONFIG, agentId)
+      ? s.settings.customAgents.find((c) => c.id === agentId)
+      : undefined
+  )
+  if (!profile || profile.baseAgent !== 'antigravity') return null
+  return (
+    <span
+      className={`node-account-chip node-account-chip--profile${className ? ` ${className}` : ''}`}
+      title={`Agent profile: ${profile.id}`}
+    >
+      {profile.label || profile.id}
+    </span>
+  )
+}
+
 export function AccountChip({
   chip,
   warning = false,

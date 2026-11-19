@@ -552,6 +552,12 @@ export interface ControlCommand {
   args: Record<string, string>
 }
 
+/** Antigravity only: a `done` with live background work is not an idle station (PAR-177). */
+function antigravityBackground(agentId: unknown, backgroundWork: boolean | undefined): boolean {
+  return backgroundWork === true && typeof agentId === 'string' &&
+    capabilityAgentId(agentId as AgentId) === 'antigravity'
+}
+
 export async function listControlNodes(sourceNodeId: string, args: Record<string, string>, deps: {
   projects(): readonly StationCanvas[]
   statusOf(nodeId: string): MirrorEntry | undefined
@@ -575,7 +581,8 @@ export async function listControlNodes(sourceNodeId: string, args: Record<string
     const lifecycle = nodeLifecycle(status)
     let launchState: keyof typeof CONTROL_AGENT_LABELS | undefined = lifecycle === 'dropped' ? 'dropped'
       : lifecycle === 'launch-failed' ? 'failed'
-      : state === 'done' ? 'idle' : state === 'working' ? 'working'
+      : state === 'done' ? (antigravityBackground(node.agentId, current?.backgroundWork) ? 'working-background' : 'idle')
+      : state === 'working' ? 'working'
       : state === 'blocked' || state === 'waiting' ? 'needs-you' : node.agentId ? 'unconfirmed' : undefined
     let dialogDetail: string | undefined
     if (typeof node.agentId === 'string' && capabilityAgentId(node.agentId as AgentId) === 'claude') {

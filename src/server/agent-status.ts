@@ -12,7 +12,7 @@ import { join, resolve } from 'path'
 import { homedir } from 'os'
 import { hookServer } from '../core/agents/hook-server'
 import { recordAgentEvent, recordRawToolEvent, recordContextUsage,
-  recordQuestionResult, turnInterruptEvent, ignoreQuestionHook
+  recordQuestionResult, turnInterruptEvent, ignoreQuestionHook, reaffirmIsStale
 } from '../core/agent-status-mirror'
 import { createSubagentTail, type SubagentTail } from '../core/subagent-tail'
 import { createCursorSubagentTracker } from '../core/cursor-subagents'
@@ -20,7 +20,7 @@ import { ClaudeSubagentLifecycle } from '../core/claude-subagent-lifecycle'
 import { claudeSubagentTranscriptPath, isClaudeAgentId } from '../shared/agents/claude-subagents'
 import { createContextTail, type ContextTail, type TaskNotification } from '../core/context-tail'
 import { geminiContextParse } from '../core/gemini-session'
-import { antigravityContextParse, rememberAntigravityModel } from '../core/antigravity-session'
+import { antigravitySessionContextParse, rememberAntigravityModel } from '../core/antigravity-session'
 import { codexContextParse } from '../core/codex-session'
 import { grokContextParse, GROK_SIGNALS_FILE } from '../core/grok-signals'
 import { applyCursorRaw, cursorContextParse, readCursorContextSource, releaseCursorRaw } from '../core/cursor-chat'
@@ -198,11 +198,13 @@ export function wireAgentStatus(
     readSource: readCursorContextSource
   })
   const antigravityContextTail = createContextTail(pushContextUpdate, {
-    parse: antigravityContextParse,
+    parse: antigravitySessionContextParse,
     wholeFile: true
   })
 
   const emit = (e: NormalizedAgentEvent): void => {
+    // A tool's reassertion must not end a pending ask or relight a stopped turn (reaffirmIsStale).
+    if (reaffirmIsStale(e)) return
     // Claude subagent events first become one card per child (claudeSubagents above); every other
     // event comes back as itself. Then, per event: record FIRST — recordAgentEvent computes the
     // stash-priority classification and returns the event ENRICHED for a needs-you edge (a question
@@ -415,7 +417,7 @@ export function wireAgentStatus(
         transcriptPath?: string
         modelName?: string
       }
-      rememberAntigravityModel(p.modelName)
+      rememberAntigravityModel(p.modelName, p.conversationId)
       const transcriptPath = safeTranscriptPath(p.transcriptPath)
       if (p.conversationId && transcriptPath) {
         antigravityContextTail.track(p.conversationId, transcriptPath)

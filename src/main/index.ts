@@ -260,6 +260,7 @@ import {
   workingNodes,
   mirrorEntry,
   mirrorEntries,
+  reaffirmIsStale,
   nodeLifecycles,
   onNodeLifecycleChange,
   setNodeLifecycle,
@@ -309,7 +310,7 @@ import { applyCursorRaw, cursorContextParse, readCursorContextSource, releaseCur
 import { GROK_CHAT_HISTORY_FILE } from '../core/agents/grok-paths'
 import { createGrokSubagentFormatter } from '../core/grok-subagent-format'
 import { geminiContextParse } from '../core/gemini-session'
-import { antigravityContextParse, rememberAntigravityModel } from '../core/antigravity-session'
+import { antigravitySessionContextParse, rememberAntigravityModel } from '../core/antigravity-session'
 import { codexContextParse, codexContextModel } from '../core/codex-session'
 import { createCodexSubagentFormatter } from '../core/codex-subagent-format'
 import { codexHome } from '../core/usage/codex-usage'
@@ -3127,7 +3128,7 @@ app.whenReady().then(async () => {
     readSource: readCursorContextSource
   })
   const antigravityContextTail = createContextTail(pushContextUpdate, {
-    parse: antigravityContextParse,
+    parse: antigravitySessionContextParse,
     wholeFile: true
   })
   // Remote (SSH-project) counterparts: a node whose pty runs on a remote host has its Claude
@@ -3510,6 +3511,8 @@ app.whenReady().then(async () => {
   // and the mobile-facing mirror. Named so the deterministic-approval answer handler below can reuse
   // it for the optimistic flip.
   const emitAgentStatus = (e: NormalizedAgentEvent): void => {
+    // A tool's reassertion must not end a pending ask or relight a stopped turn (reaffirmIsStale).
+    if (reaffirmIsStale(e)) return
     // Claude subagent events first become one card per child (claudeSubagents); every other event
     // comes back as itself, so for them this loop runs exactly once, over `e`.
     for (const out of claudeSubagents.apply(e)) {
@@ -4078,7 +4081,7 @@ app.whenReady().then(async () => {
         transcriptPath?: string
         modelName?: string
       }
-      rememberAntigravityModel(p.modelName)
+      rememberAntigravityModel(p.modelName, p.conversationId)
       const transcriptPath = safeTranscriptPath(p.transcriptPath)
       if (p.conversationId && transcriptPath) {
         antigravityContextTail.track(p.conversationId, transcriptPath)

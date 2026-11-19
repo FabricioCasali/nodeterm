@@ -197,6 +197,13 @@ export interface MirrorEntry {
    * drops it as soon as anything newer is asserted about the node.
    */
   lifecycle?: { state: 'launch-failed' | 'dropped'; at: number }
+  /**
+   * The node's last turn ended (`done`) with background work still alive, per the CLI's own
+   * inventory (`backgroundTaskIds` non-empty). Cleared by the next `working`, a session boundary,
+   * or a `done` whose inventory is empty; a `done` with NO inventory leaves it as it was (absent
+   * is unknown, not none). Runtime-only. `list` reads it as WORKING (background) for antigravity.
+   */
+  backgroundWork?: true
 }
 
 /** The lifecycle conclusion that still stands for `entry`: none once a later hook has spoken. */
@@ -1697,7 +1704,7 @@ export function recordAgentEvent(rawEvent: NormalizedAgentEvent): NormalizedAgen
     // Broadcast no state proof either: a renderer must not show this stale done as fresh.
     return { nodeId, kind: 'state', agentId: prev?.sessionStarted?.agentId ?? ev.agentId, sessionId: prev?.sessionId }
   }
-  const next = reduceEffectiveEntry(prev, ev, now)
+  const next = withBackgroundWork(reduceEffectiveEntry(prev, ev, now), ev)
   state.set(nodeId, next)
   const questionAnswered = !!prev?.pendingQuestion && !next.pendingQuestion &&
     ev.sessionId === prev.pendingQuestion.sessionId && ev.answeredQuestionId === prev.pendingQuestion.toolUseId
@@ -2148,6 +2155,31 @@ export function setNodeSessionName(nodeId: string, name: string): boolean {
  * idleness) or one reported at boot before any hook event of this run — exactly when the flag
  * matters most. Clearing an unknown id stays a no-op.
  */
+/** Fold the event's background inventory into the entry (see `MirrorEntry.backgroundWork`). */
+function withBackgroundWork(next: MirrorEntry, ev: NormalizedAgentEvent): MirrorEntry {
+  let want = next.backgroundWork
+  if (ev.kind === 'session' || next.state !== 'done') want = undefined
+  else if (ev.kind === 'state' && ev.state === 'done' && Array.isArray(ev.backgroundTaskIds))
+    want = ev.backgroundTaskIds.length > 0 ? true : undefined
+  if (want === next.backgroundWork) return next
+  const out = { ...next }
+  if (want) out.backgroundWork = true
+  else delete out.backgroundWork
+  return out
+}
+
+/**
+ * Should a tool's reassertion (`NormalizedAgentEvent.reaffirm`) be dropped before anything records
+ * or broadcasts it? Yes while the node waits on a person (only the ask's own answer ends that),
+ * and after a turn that stopped with background work alive (its late tool pings are that work, not
+ * a new turn — relighting it would leave WORKING with nothing to end it).
+ */
+export function reaffirmIsStale(ev: NormalizedAgentEvent): boolean {
+  if (ev?.reaffirm !== true) return false
+  const e = state.get(ev.nodeId)
+  return e?.state === 'waiting' || e?.state === 'blocked' || (e?.state === 'done' && e.backgroundWork === true)
+}
+
 const lifecycleListeners = new Set<() => void>()
 
 /** Told whenever a node's lifecycle conclusion is set or withdrawn (each shell pushes the list). */

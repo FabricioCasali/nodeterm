@@ -48,9 +48,7 @@ describe('buildWindowsHookWrapper', () => {
   })
 
   it('keeps the codex wrapper byte-identical (it is the same template)', () => {
-    expect(buildWindowsHookWrapper('codex.sh', 'codex', { skipUnlessAnyEnv: CODEX_SESSION_ENV })).toBe(
-      buildCodexWindowsWrapper()
-    )
+    expect(buildWindowsHookWrapper('codex.sh', 'codex')).toBe(buildCodexWindowsWrapper())
   })
 })
 
@@ -64,8 +62,10 @@ describe('buildWindowsHookWrapper — the no-session early exit is opt-in', () =
     expect(lines.indexOf(EARLY)).toBeLessThan(lines.indexOf('set "NT_SH="'))
   })
 
-  it('is on for codex only — never for the shared wrappers installed for other agents', () => {
-    expect(buildCodexWindowsWrapper()).toContain(EARLY)
+  it('is on for NO installed wrapper — codex included (PAR-174)', () => {
+    // Under codex's shared app-server the hook is the daemon's child: neither variable is set, and
+    // the payload's session_id is the only identity. An env gate here dropped every such event.
+    expect(buildCodexWindowsWrapper()).not.toContain('if not defined NODETERM_NODE_ID')
     for (const agent of ['gemini', 'grok', 'copilot']) {
       expect(buildWindowsHookWrapper(`${agent}.sh`, agent)).not.toContain('if not defined NODETERM_NODE_ID')
     }

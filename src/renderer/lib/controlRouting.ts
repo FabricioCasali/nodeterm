@@ -17,6 +17,7 @@ import { canControlCanvas, capabilityAgentId, type AgentId } from '@shared/agent
 import { claudeFolderTrustVisible } from '@shared/agents/claude-screen'
 import { CONTROL_AGENT_LABELS, controlAskText } from '@shared/control-verbs'
 import type { AgentNodeStatus } from '../state/agentStatus'
+import { antigravityBackgroundWork } from './kanbanStatusChips'
 import { formatIssueRef } from '@shared/github-issue-ref'
 import { formatPrWaits, normalizePrWaitHold } from '@shared/pr-wait'
 import {
@@ -219,7 +220,7 @@ export function answerBrowserResolve(
  *  (`n.type` is the persisted `kind`, `n.data.title` the persisted `title`). */
 export function storedNodeListing(
   nodes: readonly StoredNode[],
-  statuses: StatusById & Record<string, Pick<AgentNodeStatus, 'dropped' | 'lifecycle' | 'pendingAsk'> | undefined> = {},
+  statuses: StatusById & Record<string, Pick<AgentNodeStatus, 'dropped' | 'lifecycle' | 'pendingAsk' | 'backgroundTaskAt' | 'agentId'> | undefined> = {},
   deliveries: Record<string, LaunchDelivery | undefined> = {},
   now: number = Date.now(),
   /** Every station's latest task report (`report-outcome`, core's store mirrored). */
@@ -259,7 +260,7 @@ export function storedNodeListing(
     // Every agent row names its state: an unlabelled row used to mean idle, waiting on a person, or
     // not an agent at all, so an orchestrator read a station stuck on a permission prompt as finished.
     const launchState = controlLaunchState(!!n.pendingLaunch, deliveries[n.id] ?? ((n.pendingLaunch as { manualOnly?: boolean } | undefined)?.manualOnly ? { kind: 'failed', attempts: 1, at: 0 } : undefined), status, prExpired, successState) ??
-      (n.agentId ? agentRowState(status?.state) : undefined)
+      (n.agentId ? agentRowState(status?.state, antigravityBackgroundWork(status)) : undefined)
     // A session started on an issue is told so on its OWN row, so `list` is enough for an agent to
     // learn it is bound (and which card to move). Only a reference `formatIssueRef` vouches for.
     const issue = formatIssueRef(n.issueRef)
@@ -322,8 +323,11 @@ export function storedNodeListing(
 }
 
 /** An agent row with no launch or drop to report: its live state, in the canvas badge's words. */
-function agentRowState(state: string | undefined): 'idle' | 'needs-you' | 'unconfirmed' {
-  if (state === 'done') return 'idle'
+function agentRowState(
+  state: string | undefined,
+  background = false
+): 'idle' | 'working-background' | 'needs-you' | 'unconfirmed' {
+  if (state === 'done') return background ? 'working-background' : 'idle'
   if (state === 'waiting' || state === 'blocked') return 'needs-you'
   return 'unconfirmed'
 }

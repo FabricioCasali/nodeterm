@@ -1,7 +1,7 @@
 import { memo, useState } from 'react'
 import type { KanbanCardMeta, KanbanColumnCategory, KanbanLabel, KanbanPriority } from '@shared/types'
 import { useAgentStatus, type AgentStatusSession } from '../../state/agentStatus'
-import { AccountChip, useAccountChip } from '../AccountChip'
+import { AccountChip, AgentProfileChip, useAccountChip } from '../AccountChip'
 import { LiveLinkChip, showsLiveLinks } from '../LiveLinkChip'
 import type { SessionSource } from '../../session/session'
 import { useWatchLinks } from '../../state/watchLinks'
@@ -269,8 +269,9 @@ export const SessionCard = memo(function SessionCard({
             <span className="kanban-card__stickytext">{stickyPreview}</span>
           ) : (
             <>
-              <ContextMeter sessionId={cardTranscript.sessionId ?? null} fromLaunchId={cardTranscript.fallback} nodeId={session.id} remote={isRemoteSessionNode(session.spawn)} agentId={session.agentId ?? session.spawn.agentId ?? status?.agentId} />
+              <ContextMeter sessionId={cardTranscript.sessionId ?? null} fromLaunchId={cardTranscript.fallback} nodeId={session.id} remote={isRemoteSessionNode(session.spawn)} agentId={session.agentId ?? session.spawn.agentId ?? status?.agentId} fallbackModel={status?.model} />
               <AccountChip chip={accountChip} />
+              <AgentProfileChip agentId={session.agentId ?? session.spawn.agentId ?? status?.agentId} />
               <LiveLinkChip nodeId={session.id} source={liveLinkSource} className="kanban-card__live" />
               {sessionName && (
                 <span className="kanban-card__session" title={sessionName}>

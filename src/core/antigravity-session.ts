@@ -18,18 +18,49 @@ export interface AntigravityTokens {
   model: string | null
 }
 
-let lastHookModel: string | null = null
+/** Hook-reported model per conversation. Bounded: the oldest entry goes first. */
+const hookModels = new Map<string, string>()
+const HOOK_MODELS_MAX = 512
 
-/** Record the latest model id reported by an Antigravity hook payload (`payload.modelName`). */
-export function rememberAntigravityModel(model: string | null | undefined): void {
+/**
+ * Record the model an Antigravity hook payload reported (`payload.modelName`) for ITS conversation.
+ * Keyed by conversation on purpose: this used to be one global "last model", so a node showed
+ * whatever model the most recent hook of ANY agy node had named (PAR-225).
+ */
+export function rememberAntigravityModel(
+  model: string | null | undefined,
+  conversationId: string | null | undefined
+): void {
   const m = typeof model === 'string' ? model.trim() : ''
-  if (m) lastHookModel = m
+  const id = typeof conversationId === 'string' ? conversationId.trim() : ''
+  if (!m || !id) return
+  hookModels.delete(id)
+  hookModels.set(id, m)
+  if (hookModels.size > HOOK_MODELS_MAX) hookModels.delete(hookModels.keys().next().value as string)
+}
+
+/** The model the hooks of this conversation last named, or null — never another conversation's. */
+export function antigravityModelFor(conversationId: string | null | undefined): string | null {
+  return (typeof conversationId === 'string' && hookModels.get(conversationId)) || null
+}
+
+/** `ContextTail`'s parser for antigravity: the session's own hook-reported model wins. */
+export function antigravitySessionContextParse(
+  text: string | string[],
+  conversationId?: string
+): { used: number; window: number | null; model: string | null } | null {
+  return antigravityContextParse(text, antigravityModelFor(conversationId))
+}
+
+export function resetAntigravityModelsForTests(): void {
+  hookModels.clear()
 }
 
 /**
  * Scan an Antigravity transcript buffer for the last `PLANNER_RESPONSE` token usage and the latest
- * known model name (`fallbackModel` wins when provided, else the transcript's `Model Selection`,
- * else the last hook-reported `modelName`).
+ * known model name (`fallbackModel` — the session's own hook-reported one — wins when provided,
+ * else the transcript's `Model Selection`). Nothing known = null: no other session's model is
+ * ever borrowed.
  */
 export function pickAntigravityTokens(
   text: string | string[],
@@ -68,7 +99,7 @@ export function pickAntigravityTokens(
   }
 
   if (usedTokens === null) return null
-  const model = fallbackModel?.trim() || transcriptModel || lastHookModel
+  const model = fallbackModel?.trim() || transcriptModel
   return { usedTokens, model: model || null }
 }
 

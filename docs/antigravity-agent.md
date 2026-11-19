@@ -114,16 +114,31 @@ None of the five payloads carries its event name (measured), and `PreInvocation`
 | `PreToolUse` with `toolCall.name === 'ask_question'` | `waiting` (NEEDS YOU) |
 | other `PreToolUse` | `working` |
 | `PostToolUse` of `ask_question` | `working` |
-| other `PostToolUse` | nothing |
-| `Stop`, `fullyIdle === false` | `working` (not terminal) |
-| `Stop`, otherwise | `done`; `errored` only for `terminationReason === 'ERROR'` |
+| other `PostToolUse` | `working`, flagged `reaffirm` (a reassertion, not a turn boundary) |
+| `Stop`, `fullyIdle === false` | `done` + a background inventory (`backgroundTaskIds` and `backgroundSubagentIds` = `['agy-bg']`) |
+| `Stop`, `fullyIdle === true` | `done` + an EMPTY inventory |
+| `Stop` without `fullyIdle` | `done`, no inventory (unknown, not none) |
+| every `Stop` | `errored` only for `terminationReason === 'ERROR'` |
 | anything else | nothing |
 
 Why each one:
 - **`fullyIdle` is the "really finished" bit** (measured with a background tool: a
   `Stop fullyIdle:false` at the end of the model's turn, the tool's `PostToolUse` 27.5 s later, then a
-  `Stop fullyIdle:true`). Strict `=== false`: a payload without the field reads as finished. With this
-  rule the late `PostToolUse` is simply the tool's real end.
+  `Stop fullyIdle:true`). The turn itself ends on every `Stop` (`done` — keeping it `working` left
+  the card on RUNNING and blocked `send` for the life of any background process), and the bit
+  rides as an inventory instead: `false` states live background work, which `list` and the cards
+  show as **WORKING (background)**, which holds a plain `--after` dependent, and which exempts the
+  node from Eco and bulk restart; `true` states an empty inventory, which releases all three; a
+  payload without the field states nothing and leaves what stood. Only antigravity is drawn this
+  way — Claude's and Codex's background tasks keep their own semantics.
+- **Every tool reasserts work.** An ordinary `PostToolUse` maps to `working` with `reaffirm`, so a
+  node whose turn-start hook was lost still lights on its first tool. A reassertion never ENDS
+  anything: both shells drop it (`reaffirmIsStale`, core/agent-status-mirror.ts) while a question
+  is pending — only the ask's own `PostToolUse` clears that — and after a `Stop` that left
+  background work, where the late ping is that work finishing, not a new turn.
+- **The model is the session's own.** Every hook payload carries `modelName`; it rides the event
+  (`NormalizedAgentEvent.model`) and is remembered per conversation for the context tail, so a
+  card names its model before any token usage exists and never borrows another node's.
 - **`terminationReason` is UPPER_SNAKE** — a closed enum of 12 read from the binary (`ERROR`,
   `NO_TOOL_CALL`, `TERMINAL_CUSTOM_HOOK`, `USER_CANCELED`, `MAX_*`…). The bundled docs' lowercase
   example is wrong. Only `ERROR` sets `errored`; the others are unhappy ends, not API errors.
