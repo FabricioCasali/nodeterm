@@ -5233,8 +5233,10 @@ export class PtyManager {
       tmuxBacked: persisted,
       // A real tmux client (local or the SSH project's remote one) gives up on its handshake after
       // ~5 s; anything else has no known deadline. Zellij is not measured, so it gets the generous one.
+      // The Windows panes (session host, direct pty) answer colour queries from their host emulator.
       daReplies: new DaReplyGate(
-        persisted && !useSessionHost && !useLocalZellij ? DA_REPLY_TTL_TMUX_MS : DA_REPLY_TTL_OTHER_MS
+        persisted && !useSessionHost && !useLocalZellij ? DA_REPLY_TTL_TMUX_MS : DA_REPLY_TTL_OTHER_MS,
+        useSessionHost || (process.platform === 'win32' && !persisted)
       ),
       unwatchedSince: null,
       pausedBy: new Set<string>(),

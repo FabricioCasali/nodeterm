@@ -121,3 +121,26 @@ describe('TerminalEmulator scrollback cap (Windows session-host memory bound)', 
     expect((e as unknown as { term: { options: { scrollback: number } } }).term.options.scrollback).toBe(3000)
   })
 })
+
+describe('TerminalEmulator colour queries (OSC 10/11/12)', () => {
+  it('answers with the default theme from the emulator itself, and only when asked', async () => {
+    const replies: string[] = []
+    const e = new TerminalEmulator({ cols: 20, rows: 4, scrollback: 10, onColourReply: (r) => replies.push(r) })
+    emulators.push(e)
+    await e.write('\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x07\x1b]10;#123456\x1b\\hello')
+    expect(replies).toEqual([
+      '\x1b]10;rgb:e6e6/e6e6/e6e6\x1b\\',
+      '\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\',
+      '\x1b]12;rgb:ffff/ffff/ffff\x1b\\'
+    ])
+    expect(text(e.captureVisible().screen)).toContain('hello')
+  })
+
+  it('the multi-colour form answers each colour asked', async () => {
+    const replies: string[] = []
+    const e = new TerminalEmulator({ cols: 20, rows: 4, scrollback: 10, onColourReply: (r) => replies.push(r) })
+    emulators.push(e)
+    await e.write('\x1b]10;?;?\x07')
+    expect(replies).toEqual(['\x1b]10;rgb:e6e6/e6e6/e6e6\x1b\\\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\'])
+  })
+})

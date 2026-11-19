@@ -25,7 +25,14 @@ export class NativeWindowsPane {
     private readonly probe = readWindowsConsoleOwner,
     private readonly settle: SettleOptions = {}
   ) {
-    this.screen = new TerminalEmulator(size)
+    this.screen = new TerminalEmulator({
+      cols: size.cols,
+      rows: size.rows,
+      scrollback: size.scrollback,
+      onColourReply: (reply) => {
+        if (this.alive) this.proc.write(reply)
+      }
+    })
   }
 
   recordOutput(data: string): void {
