@@ -111,8 +111,11 @@ export function findAgy(): string | null {
 
 /** Our bundle's key in hooks.json. */
 export const ANTIGRAVITY_BUNDLE_KEY = 'nodeterm-status'
-/** Seconds `agy` waits for one handler (its own default is 30 s). */
-export const ANTIGRAVITY_HOOK_TIMEOUT = 5
+/**
+ * Seconds `agy` waits for one handler (its own default is 30 s). A timeout kill is a DENY on
+ * `PreToolUse`, and a burst of hooks spawning cmd -> sh.exe on Windows measured past 5 s.
+ */
+export const ANTIGRAVITY_HOOK_TIMEOUT = 15
 
 export interface AntigravityHandler {
   type: 'command'

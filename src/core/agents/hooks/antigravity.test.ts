@@ -119,15 +119,15 @@ describe('the bundle', () => {
   it('subscribes exactly the four events, in the two shapes agy expects', () => {
     const bundle = buildAntigravityBundle((ev) => `cmd-${ev}`)
     expect(Object.keys(bundle)).toEqual(['PreInvocation', 'PreToolUse', 'PostToolUse', 'Stop'])
-    expect(bundle.PreInvocation).toEqual([{ type: 'command', command: 'cmd-PreInvocation', timeout: 5 }])
-    expect(bundle.Stop).toEqual([{ type: 'command', command: 'cmd-Stop', timeout: 5 }])
+    expect(bundle.PreInvocation).toEqual([{ type: 'command', command: 'cmd-PreInvocation', timeout: 15 }])
+    expect(bundle.Stop).toEqual([{ type: 'command', command: 'cmd-Stop', timeout: 15 }])
     expect(bundle.PreToolUse).toEqual([
-      { matcher: '*', hooks: [{ type: 'command', command: 'cmd-PreToolUse', timeout: 5 }] }
+      { matcher: '*', hooks: [{ type: 'command', command: 'cmd-PreToolUse', timeout: 15 }] }
     ])
     expect(bundle.PostToolUse).toEqual([
-      { matcher: '*', hooks: [{ type: 'command', command: 'cmd-PostToolUse', timeout: 5 }] }
+      { matcher: '*', hooks: [{ type: 'command', command: 'cmd-PostToolUse', timeout: 15 }] }
     ])
-    expect(ANTIGRAVITY_HOOK_TIMEOUT).toBe(5)
+    expect(ANTIGRAVITY_HOOK_TIMEOUT).toBe(15)
     // PostInvocation is deliberately not subscribed.
     expect(ANTIGRAVITY_HOOK_EVENTS.map((e) => (typeof e === 'string' ? e : e.event))).not.toContain('PostInvocation')
   })
