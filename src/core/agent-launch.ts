@@ -14,6 +14,7 @@ import {
 } from "../shared/agents/config";
 import { approvalFlags } from "../shared/agents/approval-mode";
 import { CODEX_NO_DAEMON_FLAG } from "../shared/agents/codex-daemon";
+import { agentModelArg } from "../shared/agents/model-gateway";
 import { SAFE_SESSION_ID } from "../shared/session-id";
 import { isRecord } from "../shared/is-record";
 
@@ -43,7 +44,7 @@ export type AgentLaunchExecutableKindResolver = (
 /** The one current custom-agent record selected from machine-local settings. */
 export type TrustedCustomAgentLaunchConfig = Pick<
   CustomAgent,
-  "id" | "launchCmd" | "promptInjectionMode"
+  "id" | "launchCmd" | "promptInjectionMode" | "baseAgent" | "args"
 >;
 
 /**
@@ -74,6 +75,21 @@ export interface AgentLaunchTrustedContext {
    * plain Codex TUI nodeterm starts needs it from codex-cli 0.157.0 on.
    */
   codexNoDaemon?: boolean | null;
+  /**
+   * The file the core read `intent.prompt` from, when it came from one. A PowerShell-script entry
+   * point whose inline line would pass the Windows command-line limit reads the prompt from this
+   * file inside its own process instead, so a long brief is neither truncated nor refused. The
+   * text stays data: only the single-quoted path is interpolated.
+   */
+  promptSourceFile?: string;
+  /**
+   * A core-private file this launch writes when its invocation RETURNS to the shell (try/finally,
+   * so a failed start and a clean exit both leave it). Its existence is the only proof the
+   * liveness monitor accepts that a launch which never produced a CLI has actually finished — a
+   * shell that is still starting the CLI looks exactly like one that failed to. The path is
+   * minted by the core for this one launch id; only the single-quoted path is interpolated.
+   */
+  completionReceipt?: string;
 }
 
 /** Core-private launch material. It must never cross the renderer/preload/relay boundary. */
@@ -96,17 +112,26 @@ const SAFE_ERROR_MESSAGES: Record<AgentLaunchPreparationErrorCode, string> = {
 /** An error whose code and copy are safe to surface; it never embeds launch material. */
 export class AgentLaunchPreparationError extends Error {
   readonly code: AgentLaunchPreparationErrorCode;
+  /**
+   * The agent's only entry point here is a batch shim, which this planner cannot encode for. That
+   * install has always been launched by its typed line; refusing it outright would stop an agent
+   * that starts today, so the caller keeps that line for it.
+   */
+  readonly typedLineOnly: boolean;
 
-  constructor(code: AgentLaunchPreparationErrorCode) {
+  constructor(code: AgentLaunchPreparationErrorCode, typedLineOnly = false) {
     super(SAFE_ERROR_MESSAGES[code]);
     this.name = "AgentLaunchPreparationError";
     this.code = code;
+    this.typedLineOnly = typedLineOnly;
   }
 }
 
 interface LogicalAgentLaunch {
   executable: string;
   args: string[];
+  /** Index of the prompt in `args`, when the prompt rides argv. */
+  promptIndex?: number;
   stdinAfterStart?: string;
 }
 
@@ -118,6 +143,8 @@ interface ResolvedAgentConfig {
   /** `flag-interactive` only: the builtin's own interactive-prompt flag (agy's differs). */
   promptFlag?: string;
   builtin: boolean;
+  /** The builtin harness whose flag grammar applies: the id itself, or a custom agent's base. */
+  capId: AgentId;
 }
 
 const SAFE_NEW_SESSION_UUID_V4 =
@@ -143,6 +170,7 @@ const START_FIELDS = new Set([
   "prompt",
   "permissionMode",
   "newSessionId",
+  "model",
 ]);
 const RESUME_FIELDS = new Set([
   "kind",
@@ -204,6 +232,11 @@ function validateIntentRuntime(
         !SAFE_NEW_SESSION_UUID_V4.test(intent.newSessionId))
     )
       fail("invalid-intent");
+    if (
+      intent.model !== undefined &&
+      (!safeText(intent.model, 500) || !intent.model.trim())
+    )
+      fail("invalid-intent");
     return;
   }
 
@@ -243,6 +276,7 @@ function resolveTrustedAgentConfig(
       argvPromptSeparator: config.argvPromptSeparator,
       promptFlag: config.promptFlag,
       builtin: true,
+      capId: intent.agentId,
     };
   }
 
@@ -251,18 +285,49 @@ function resolveTrustedAgentConfig(
     !custom ||
     typeof custom.id !== "string" ||
     custom.id !== intent.agentId ||
-    custom.id !== context.expectedAgentId ||
-    !safeText(custom.launchCmd, MAX_LAUNCH_COMMAND_LENGTH) ||
-    !custom.launchCmd.trim() ||
-    !validPromptMode(custom.promptInjectionMode)
+    custom.id !== context.expectedAgentId
   )
     fail("agent-unavailable");
+  // Same inheritance as `resolveAgentConfig` (shared/agents/custom-agent.ts): a declared base
+  // harness owns the prompt grammar and the flag vocabulary; the record owns the program.
+  let base: AgentConfig | undefined;
+  if (custom.baseAgent !== undefined) {
+    if (
+      typeof custom.baseAgent !== "string" ||
+      !Object.hasOwn(AGENT_CONFIG, custom.baseAgent)
+    )
+      fail("agent-unavailable");
+    base = AGENT_CONFIG[custom.baseAgent];
+  }
+  // Extra `args` expand ${env:…} per token on the typed line; this planner does not model that,
+  // and dropping them would launch a different command than the one configured.
+  if (typeof custom.args === "string" && custom.args.trim())
+    fail("unsupported-shell");
+  const launchCmd =
+    typeof custom.launchCmd === "string" && custom.launchCmd.trim()
+      ? custom.launchCmd
+      : base?.launchCmd;
+  const ownMode: unknown = custom.promptInjectionMode;
+  // A record that asks for stdin-after-start is refused even under a base harness: no custom
+  // process has a trusted readiness signal to write a prompt behind (see prepareAgentLaunch).
+  if (ownMode === "stdin-after-start") fail("unsupported-shell");
+  if (
+    !safeText(launchCmd, MAX_LAUNCH_COMMAND_LENGTH) ||
+    !launchCmd.trim() ||
+    (!base && !validPromptMode(ownMode))
+  )
+    fail("agent-unavailable");
+  const promptInjectionMode =
+    base?.promptInjectionMode ?? (ownMode as PromptInjectionMode);
 
   return {
     id: intent.agentId,
-    launchCmd: custom.launchCmd,
-    promptInjectionMode: custom.promptInjectionMode,
+    launchCmd,
+    promptInjectionMode,
+    argvPromptSeparator: base?.argvPromptSeparator,
+    promptFlag: base?.promptFlag,
     builtin: false,
+    capId: custom.baseAgent ?? intent.agentId,
   };
 }
 
@@ -357,16 +422,16 @@ function logicalLaunch(
       context.sharedIdentityAvailable,
     );
 
-  if (intent.permissionMode !== undefined && !hasPermissionMode(config.id))
+  if (intent.permissionMode !== undefined && !hasPermissionMode(config.capId))
     fail("invalid-intent");
   const approval = intent.permissionMode
-    ? approvalFlags(config.id, intent.permissionMode, {
+    ? approvalFlags(config.capId, intent.permissionMode, {
         codexApprovalValues: context.codexApprovalValues,
       })
     : [];
   // Same rule as `withCodexNoDaemon`, applied to argv instead of a typed line.
   const noDaemon =
-    config.id === "codex" &&
+    config.capId === "codex" &&
     context.codexNoDaemon === true &&
     !baseArgs.some(
       (a) =>
@@ -395,15 +460,19 @@ function logicalLaunch(
 
   const sessionArgs: string[] = [];
   if (intent.newSessionId !== undefined) {
-    if (!mintsSessionId(config.id)) fail("invalid-intent");
+    if (!mintsSessionId(config.capId)) fail("invalid-intent");
     // `withSessionId`'s grammar: copilot's verified contract is `--session-id=<uuid>` (1.0.80);
     // cursor mints by resuming an id that does not exist yet (see withSessionId in shared/agents/launch).
-    if (config.id === "copilot")
+    if (config.capId === "copilot")
       sessionArgs.push(`--session-id=${intent.newSessionId}`);
-    else if (config.id === "cursor")
+    else if (config.capId === "cursor")
       sessionArgs.push("--resume", intent.newSessionId);
     else sessionArgs.push("--session-id", intent.newSessionId);
   }
+  // Same rule and placement as `withAgentModel` on the typed line: after the mode and session
+  // flags, and nothing at all for a harness with no model flag.
+  const modelId = agentModelArg(config.capId, intent.model);
+  if (modelId) sessionArgs.push("--model", modelId);
 
   const hasPrompt = Object.hasOwn(intent, "prompt");
   const prompt = hasPrompt ? (intent.prompt ?? "") : undefined;
@@ -440,20 +509,19 @@ function logicalLaunch(
         ...modeFlags,
         ...sessionArgs,
       ],
+      ...(hasPrompt ? { promptIndex: baseArgs.length + 1 } : {}),
     };
   }
 
   if (hasPrompt && config.argvPromptSeparator) {
-    return {
-      executable,
-      args: [
-        ...baseArgs,
-        ...modeFlags,
-        ...sessionArgs,
-        config.argvPromptSeparator,
-        prompt as string,
-      ],
-    };
+    const args = [
+      ...baseArgs,
+      ...modeFlags,
+      ...sessionArgs,
+      config.argvPromptSeparator,
+      prompt as string,
+    ];
+    return { executable, args, promptIndex: args.length - 1 };
   }
 
   return {
@@ -464,6 +532,7 @@ function logicalLaunch(
       ...modeFlags,
       ...sessionArgs,
     ],
+    ...(hasPrompt ? { promptIndex: baseArgs.length } : {}),
   };
 }
 
@@ -548,21 +617,47 @@ function windowsNativeArg(value: string): string {
   return `${quoted}${"\\".repeat(backslashes * 2)}"`;
 }
 
+/**
+ * A PowerShell expression that yields a prompt file's text as ONE string, collapsed exactly like
+ * `promptFromFileText` (launch-intent-execute.ts) collapses it. Evaluated inside the pane's own
+ * PowerShell, so the text never crosses a process command line.
+ */
+function promptFileExpression(file: string): string {
+  return `(([System.IO.File]::ReadAllText(${powershellQuote(file)}) -replace '[\\s\\uFEFF]+', ' ').Trim())`;
+}
+
 function powershellInvocation(
   executable: string,
   kind: AgentLaunchExecutableKind,
   args: string[],
+  promptFromFile?: { index: number; file: string },
 ): string {
   // A batch shim introduces a second cmd parse. `%`, `!`, quotes and Unicode cannot all be carried
   // losslessly through it as arbitrary argv, so require the trusted resolver to choose a native or
   // PowerShell-script entry point (npm installations normally provide the sibling `.ps1` shim).
-  if (kind === "cmd-script") fail("unsupported-shell");
-  if (kind === "powershell-script")
-    return [
+  if (kind === "cmd-script")
+    throw new AgentLaunchPreparationError("unsupported-shell", true);
+  if (kind === "powershell-script") {
+    const inline = [
       "&",
       powershellQuote(executable),
       ...args.map(powershellQuote),
     ].join(" ");
+    if (inline.length <= MAX_WINDOWS_COMMAND_LINE || !promptFromFile)
+      return inline;
+    // Too long to type as one line: a script entry point takes its arguments in-process, so the
+    // prompt is read from its file there instead. A native image has no such path — its whole
+    // command line is capped by CreateProcessW — and stays refused below.
+    return [
+      "&",
+      powershellQuote(executable),
+      ...args.map((arg, i) =>
+        i === promptFromFile.index
+          ? promptFileExpression(promptFromFile.file)
+          : powershellQuote(arg),
+      ),
+    ].join(" ");
+  }
 
   // Windows PowerShell 5.1's native-command marshaller loses embedded quotes before a program's
   // CRT parser sees them. Give Start-Process one already-quoted command-line string instead; it
@@ -644,16 +739,30 @@ export async function prepareAgentLaunch(
     dialect,
     context.resolveExecutableKind,
   );
+  const promptFile = context.promptSourceFile;
   const script = powershellInvocation(
     resolved.executable,
     resolved.kind,
     logical.args,
+    logical.promptIndex !== undefined &&
+      typeof promptFile === "string" &&
+      /^[A-Za-z]:[\\/]/.test(promptFile) &&
+      !FORBIDDEN_INLINE_CHARACTER.test(promptFile)
+      ? { index: logical.promptIndex, file: promptFile }
+      : undefined,
   );
   if (script.length > MAX_WINDOWS_COMMAND_LINE) fail("invalid-intent");
+  const receipt = context.completionReceipt;
+  const invocation =
+    typeof receipt === "string" &&
+    /^[A-Za-z]:[\\/]/.test(receipt) &&
+    !FORBIDDEN_INLINE_CHARACTER.test(receipt)
+      ? `try { ${script} } finally { [System.IO.File]::WriteAllText(${powershellQuote(receipt)}, "$LASTEXITCODE") }`
+      : script;
 
   if (dialect === "cmd") {
     const wrapper = trustedWindowsPowerShellPath(context.windowsPowerShellPath);
-    const command = `"${wrapper}" -NoLogo -NoProfile -EncodedCommand ${encodedPowerShellCommand(script)}`;
+    const command = `"${wrapper}" -NoLogo -NoProfile -EncodedCommand ${encodedPowerShellCommand(invocation)}`;
     if (command.length > MAX_CMD_INTERACTIVE_LINE) fail("invalid-intent");
     return {
       command,
@@ -664,7 +773,7 @@ export async function prepareAgentLaunch(
   }
 
   return {
-    command: script,
+    command: invocation,
     ...(logical.stdinAfterStart !== undefined
       ? { stdinAfterStart: logical.stdinAfterStart }
       : {}),

@@ -102,6 +102,11 @@ export function applyAgentStatusSnapshot(
     if (entry.agentId !== undefined) merged.agentId = entry.agentId
     if (entry.sessionId !== undefined) merged.sessionId = entry.sessionId
     if (entry.account !== undefined) merged.account = { ...entry.account, remote: true }
+    // The host's process-liveness conclusion, drawn like the local one (DROPPED raises `dropped`).
+    if (entry.lifecycle === 'dropped' || entry.lifecycle === 'launch-failed') {
+      merged.lifecycle = entry.lifecycle
+      if (entry.lifecycle === 'dropped') merged.dropped = true
+    }
     writes.set(nodeId, merged)
   }
   if (writes.size > 0) status.setState({ byId: Object.fromEntries([...Object.entries(prev), ...writes]) })

@@ -119,23 +119,39 @@ select a local executable. See
 The renderer's agent launch line is POSIX source (`'it'\''s'`, `"$(cat '<file>')"`). PowerShell
 breaks on the apostrophe, Windows PowerShell 5.1 drops embedded double quotes before the CLI sees
 them, and cmd.exe splits a single-quoted prompt into separate arguments. So a prompt-bearing
-builtin agent node also carries a semantic `data.launchIntent` (`shared/agents/launch-intent.ts`),
-bound to its exact typed line and never serialized. When the launch writer is about to type that
-line into a **local session-host pane on a win32 core**, it calls `pty:execute-launch` instead
-(`renderer/terminal/launch-intent.ts` → `core/launch-intent-execute.ts`): the core resolves the
-agent executable against the session's spawn PATH (native image, then `.ps1`; a `.cmd`-only
-install is refused), reads a `--prompt-file` itself (whitespace flattened to one argument, exactly
-what `"$(cat …)"` yields in PowerShell), encodes argv for the dialect the HOST recorded for that
-generation (`launchDialect` on the attach result; set at spawn only for `pwsh`/`powershell`/`cmd`),
-and delivers through the host's exactly-once launch ledger.
+agent node also carries a semantic `data.launchIntent` (`shared/agents/launch-intent.ts`),
+bound to its exact typed line. It is machine-local and persisted only beside the pending launch
+it describes, so a cold project and an off-screen `--run-now` still have it. When that line is
+about to be typed into a **local session-host pane on a win32 core** — by the mounted launch
+writer (`renderer/terminal/launch-intent.ts`) or by the headless launcher
+(`core/headless-launch.ts`) — `PtyManager.executeLaunch` runs instead
+(`core/launch-intent-execute.ts`): the core resolves the agent executable against the session's
+spawn PATH (native image, then `.ps1`), reads a `--prompt-file` itself (whitespace flattened to
+one argument, exactly what `"$(cat …)"` yields in PowerShell), encodes argv for the dialect the
+HOST recorded for that generation (`launchDialect` on the attach result; set at spawn only for
+`pwsh`/`powershell`/`cmd`), and delivers through the host's exactly-once launch ledger.
+
+A brief too long for one command line (CreateProcessW caps a line at 32,767 characters) is not
+truncated: a PowerShell-script entry point reads it from the prompt file inside its own process,
+as data. A native entry point has no such path — its whole command line is capped by the OS — and
+is refused, never cut.
+
+Each delivered launch also writes a completion receipt when its invocation returns to the shell
+(`try { … } finally { … }` around the invocation, into a core-private file named by the launch
+id). The liveness monitor (`core/agent-liveness.ts`) reads it: a launch whose shell is back, with
+no CLI in its process tree AND a receipt, is reported LAUNCH FAILED.
 
 Rules that keep this safe:
 - Every other pane (tmux, SSH, Zellij, plain shell, Git Bash/WSL, any POSIX core) answers
-  `unsupported-shell` before anything is read, and the typed line is used, byte-identical.
-- A refusal made before the host is asked falls back to the typed line; `delivery-failed` (or a
-  lost reply) does NOT — the launch stays held for an explicit Run now, never typed twice.
-- Excluded from the intent (legacy line only): resumes, custom agents, launch-command overrides,
-  per-node models, SSH nodes. A resume line holds only flag words and a validated id.
+  `unsupported-shell` with `typedLineSafe` before anything is read, and the typed line is used,
+  byte-identical. So does an agent whose only entry point is a `.cmd`/`.bat` shim: the planner
+  cannot encode for a second cmd parse, and that install has always been launched by its line.
+- Every other refusal is final — invalid request, missing prompt file, unavailable agent, a host
+  that cannot launch, `delivery-failed`, a lost reply. The launch stays held for an explicit Run
+  now; the POSIX line is never typed into a Windows-native shell behind a refusal.
+- Excluded from the intent (legacy line only): resumes, launch-command overrides, SSH nodes, and
+  a custom agent with its own `args` or an `${env:…}` launch command. A custom agent is named by
+  id only; the core resolves its current machine-local record and its base harness's grammar.
 - `pty:execute-launch` is host-only for relay peers (`shared/host-control.ts`).
 
 ### The IPty-shim (why the integration is this small)

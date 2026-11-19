@@ -117,6 +117,8 @@ export const HOST_ONLY_CHANNELS: ReadonlySet<string> = new Set([
   // refused, so a peer has nothing true to report.
   IPC.boardDispatchReport,
   IPC.stationNoticeList,
+  // Unscoped like the notice list: every project's nodes. A relay tab's stations are the host's.
+  IPC.stationLifecycleList,
   // Unscoped: every project's station outcomes and their notes. A relay guest bound to one project
   // must not read another's, and a relay tab's launch loop is refused anyway (its stub is inert).
   IPC.stationOutcomeList,

@@ -48,17 +48,18 @@ describe('createAgentNode launchIntent', () => {
     })
   })
 
-  it('holds nothing without a prompt, on an SSH node, or with a model override', () => {
+  it('holds nothing without a prompt or on an SSH node', () => {
     expect(createAgentNode('claude', 0).data.launchIntent).toBeUndefined()
     const ssh = { server: 'h', remoteCwd: '/r' } as never
     expect(createAgentNode('claude', 0, '/r', undefined, 'go', ssh).data.launchIntent).toBeUndefined()
-    expect(
-      createAgentNode('claude', 0, '/r', undefined, 'go', undefined, undefined, undefined, undefined, 'opus').data
-        .launchIntent
-    ).toBeUndefined()
   })
 
-  it('is live data only: never serialized, never copied by duplicate', () => {
+  it('PAR-230 F2 holds the model together with the prompt', () => {
+    expect(createAgentNode('claude', 0, '/r', undefined, 'go', undefined, undefined, undefined, undefined, 'opus').data
+      .launchIntent).toMatchObject({ intent: { kind: 'agent', action: 'start', agentId: 'claude', prompt: 'go', model: 'opus' } })
+  })
+
+  it('never serializes an intent without a pending launch or copies it by duplicate', () => {
     const n = createAgentNode('claude', 0, '/repo', undefined, 'go')
     expect(n.data.launchIntent).toBeDefined()
     expect(JSON.stringify(flowToNodeStates([n]))).not.toContain('launchIntent')

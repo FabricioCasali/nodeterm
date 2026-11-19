@@ -46,7 +46,9 @@
 import { oneLine } from './one-line'
 
 export const CONTROL_AGENT_LABELS = {
-  idle: 'IDLE', working: 'WORKING', 'needs-you': 'NEEDS YOU', unconfirmed: 'AGENT STATUS UNCONFIRMED'
+  idle: 'IDLE', working: 'WORKING', 'needs-you': 'NEEDS YOU', unconfirmed: 'AGENT STATUS UNCONFIRMED',
+  // Process liveness (core/agent-liveness.ts): the launch returned without a CLI / the CLI is gone.
+  failed: 'LAUNCH FAILED', dropped: 'DROPPED'
 } as const
 
 export function controlAskText(kind: 'approval' | 'question' | 'dialog', detail?: string, minutes?: number): string {

@@ -169,7 +169,7 @@ export async function launchBriefPresent(
 export function controlLaunchState(
   pending: boolean,
   delivery: LaunchDelivery | undefined,
-  status?: { dropped?: boolean; state?: AgentState },
+  status?: { dropped?: boolean; lifecycle?: 'launch-failed' | 'dropped'; state?: AgentState },
   /** The node's `--after-pr` wait has passed its deadline: it will not start on its own. */
   prExpired = false,
   /** Where the node's `--after-success` wait stands, when it has one. */
@@ -196,6 +196,8 @@ export function controlLaunchState(
     return 'queued'
   }
   if (status?.dropped) return 'dropped'
+  // Core proved the launch returned to the shell with no CLI (core/agent-liveness.ts).
+  if (status?.lifecycle === 'launch-failed') return 'failed'
   if (status?.state === 'working') return 'working'
   return undefined
 }

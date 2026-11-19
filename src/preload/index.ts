@@ -1051,6 +1051,12 @@ const api: NodeTerminalApi = {
     },
     reportDropped: (nodeId, dropped) => {
       void ipcRenderer.invoke(IPC.stationNoticeDropped, nodeId, dropped).catch(() => undefined)
+    },
+    lifecycle: () => ipcRenderer.invoke(IPC.stationLifecycleList),
+    onLifecycle: (cb) => {
+      const handler = (_e: unknown, map: Parameters<typeof cb>[0]) => cb(map)
+      ipcRenderer.on(IPC.stationLifecycleChanged, handler)
+      return () => ipcRenderer.removeListener(IPC.stationLifecycleChanged, handler)
     }
   },
   stationOutcome: {

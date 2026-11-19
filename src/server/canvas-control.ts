@@ -25,7 +25,12 @@ import { DurableFactFile } from '../core/durable-state'
 import { QUEUE_FACT } from '../core/agents/delivery-queue'
 import { HANDOVER_FACT, StationHandoverTracker } from '../core/station-handover'
 import { stationRecipientFromOwner } from '../shared/station-notice'
+import { createStationLiveness } from '../core/agent-liveness'
 import {
+  mirrorEntries,
+  nodeLifecycles,
+  onNodeLifecycleChange,
+  setNodeLifecycle,
   mirrorEntry,
   openAskFor,
   nodeState
@@ -285,8 +290,27 @@ export async function initServerCanvasControl(
     appendBoardLog: (projectId, entry) => deps.boardLog.append(projectId, entry),
     deliver: opener.deliver,
     publish: (views) => platform().broadcast(IPC.stationNoticeChanged, views),
-    exists: (nodeId) => deps.workspaceStore.projectIdsForNode(nodeId).length > 0
+    exists: (nodeId) => deps.workspaceStore.projectIdsForNode(nodeId).length > 0,
+    // Process liveness for launches and tracked sessions (core/agent-liveness.ts) — the same
+    // producer as the desktop. This edition has no renderer to measure a pane, so before this a
+    // server with no tab attached could not report a dead CLI at all.
+    ...(typeof deps.ptyManager.launchAttemptsSnapshot === 'function' && typeof deps.ptyManager.paneOwner === 'function'
+      ? {
+          liveness: createStationLiveness({
+            now: () => Date.now(),
+            launches: () => deps.ptyManager.launchAttemptsSnapshot(),
+            mirrorEntries,
+            paneOwner: (id, opts) => deps.ptyManager.paneOwner(id, opts),
+            customAgents: () => deps.settings().customAgents,
+            deliberateExitAt: (id) => deps.ptyManager.deliberateExitAt(id),
+            setLifecycle: setNodeLifecycle
+          })
+        }
+      : {})
   })
+  const offLifecycle = onNodeLifecycleChange(() =>
+    platform().broadcast(IPC.stationLifecycleChanged, nodeLifecycles())
+  )
   messaging.noticeCurrent = (id, at) => stationNotices.isCurrentNotice(id, at)
   stationNotices.start()
   messaging.onQueuedResult = (req, outcome) => stationNotices.onQueuedResult(req, outcome)
@@ -405,6 +429,7 @@ export async function initServerCanvasControl(
       factory.stop()
       queue.resetForTests()
       stationNotices.stop()
+      offLifecycle()
       // Write what the last save window still holds; the next start loads it.
       queueFile.dispose()
       outcomesFile.dispose()

@@ -8,12 +8,20 @@
 // Never a blind paste: zsh's rc/ZLE setup FLUSHES the tty (#556) and a canonical-mode line is cut
 // at the tty's cap (#706). A tmux paste is not immune to either, which is why the desktop rule
 // "launches use the echo-verified writer, not sendText" now covers this path too.
+import { randomUUID } from 'crypto'
 import { deliverCommand, type DeliveryIo, type DeliveryOutcome } from '../shared/command-delivery'
 import { isLaunchShell } from '../shared/agents/pane'
 import type { HeadlessLaunchRequest, HeadlessLaunchResult } from '../shared/headless-launch'
 import { trustsFreshShell } from '../shared/launch-trust'
 import { shellKillLineSequence } from '../shared/shell-kill-line'
-import type { PtyCreateOptions, PtyCreateResult } from '../shared/types'
+import { normalizeHeldLaunchIntent } from '../shared/pending-launch-shape'
+import type {
+  HeldLaunchIntent,
+  LaunchIntentExecutionResult,
+  LaunchIntentRequest,
+  PtyCreateOptions,
+  PtyCreateResult
+} from '../shared/types'
 
 /** Same numbers as TerminalNode's `whenShellSettled`: 200 ms of quiet after output = prompt is up;
  *  1500 ms of total silence = write anyway. */
@@ -31,14 +39,18 @@ export interface HeadlessLaunchDeps {
   writeHeadless(persistKey: string, data: string): boolean
   onOutput(persistKey: string, cb: (chunk: string) => void): () => void
   releaseHeadless(persistKey: string): void
+  /** `PtyManager.executeLaunch`: run a semantic launch against the live session. Absent on a
+   *  surface without the channel, where every launch is the typed line as before. */
+  executeLaunch?(persistKey: string, request: LaunchIntentRequest): Promise<LaunchIntentExecutionResult>
   /** Test seam; production uses SETTLE_QUIET_MS / SETTLE_CAP_MS / SETTLE_MAX_MS. */
   timing?: { quietMs: number; capMs: number; maxMs?: number }
 }
 
 /**
  * The desktop's `pty.launchHeadless` request, as main runs it: the renderer sends only
- * `{ ptyOptions, command }`, and the desktop always releases its synthetic client, so it always
- * requires a persistent backend. Whatever else the wire carries is overwritten here.
+ * `{ ptyOptions, command, launchIntent? }`, and the desktop always releases its synthetic client,
+ * so it always requires a persistent backend. Whatever else the wire carries is overwritten here.
+ * The intent is kept only as the semantic twin of that exact command; the core validates it.
  *
  * `sshRemote` is stripped: this path never spawns over a ControlMaster. `viewerId` is stripped: a
  * headless start is the connection's PRIMARY view, and `releaseHeadless` detaches `(0, PRIMARY)`,
@@ -54,10 +66,14 @@ export interface HeadlessLaunchDeps {
 export function desktopHeadlessRequest(req: {
   ptyOptions: PtyCreateOptions
   command: string
+  launchIntent?: HeldLaunchIntent
 }): HeadlessLaunchRequest {
+  const command = String(req.command ?? '')
+  const launchIntent = normalizeHeldLaunchIntent(req.launchIntent, { command })
   return {
     ptyOptions: { ...req.ptyOptions, sshRemote: undefined, viewerId: undefined, clearEnv: undefined },
-    command: String(req.command ?? ''),
+    command,
+    ...(launchIntent ? { launchIntent } : {}),
     release: true,
     requirePersistent: true
   }
@@ -108,6 +124,24 @@ export async function launchHeadless(
       }
       // Unknown is not a shell: an un-typed launch is recoverable (Run now), a spliced one is not.
       if (!isLaunchShell(pane)) return { outcome: 'failed', reason: 'no-shell', fresh }
+    }
+    // The same launch as a semantic request: a Windows-native session-host pane mis-parses the
+    // POSIX line, so the core encodes it for that pane's own shell. Only the "not this channel"
+    // answer goes on to the typed line; any other refusal ends the launch untyped.
+    const held = req.launchIntent
+    if (held && held.command === req.command && deps.executeLaunch) {
+      let result: LaunchIntentExecutionResult
+      try {
+        result = await deps.executeLaunch(key, {
+          launchId: randomUUID(),
+          intent: held.intent,
+          ...(held.promptFile ? { promptFile: held.promptFile } : {})
+        })
+      } catch {
+        return { outcome: 'failed', reason: 'cancelled', fresh }
+      }
+      if (result.ok) return { outcome: 'delivered', fresh }
+      if (result.typedLineSafe !== true) return { outcome: 'failed', reason: 'cancelled', fresh }
     }
     const killLine = shellKillLineSequence(undefined, req.ptyOptions.shell)
     const outcome = await deliver(deps, key, req.command, killLine, !fresh)

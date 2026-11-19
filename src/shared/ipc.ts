@@ -279,6 +279,11 @@ export const IPC = {
   boardDispatchReport: 'board-dispatch:report',
   /** core → every renderer: the FULL current notice list on each change, never a delta. */
   stationNoticeChanged: 'station-notice:changed',
+  /** Process-liveness conclusions (core/agent-liveness.ts): node id → 'launch-failed' | 'dropped'.
+   *  invoke: the current map, for a renderer that booted after the last push. */
+  stationLifecycleList: 'station-lifecycle:list',
+  /** core → every renderer: the FULL current lifecycle map on each change, never a delta. */
+  stationLifecycleChanged: 'station-lifecycle:changed',
   /** Station task outcomes (`report-outcome`, src/core/station-outcome-store.ts). invoke: every
    *  record this process holds (StationOutcomeRecord[]), for a renderer that booted after a push. */
   stationOutcomeList: 'station-outcome:list',

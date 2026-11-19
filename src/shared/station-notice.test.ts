@@ -68,7 +68,7 @@ describe('the trigger table — closed, and an unknown never triggers', () => {
   })
 
   it('the table separates approval confirmation from failure reasons', () => {
-    expect(STATION_TRIGGERS.map((r) => r.reason)).toEqual(['approval-unconfirmed', 'dropped', 'turn-errored', 'question-unanswered'])
+    expect(STATION_TRIGGERS.map((r) => r.reason)).toEqual(['approval-unconfirmed', 'dropped', 'launch-failed', 'turn-errored', 'question-unanswered'])
   })
 })
 

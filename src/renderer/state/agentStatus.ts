@@ -198,6 +198,15 @@ export interface AgentNodeStatus {
    */
   dropped?: boolean
   /**
+   * Core's process-liveness conclusion for this node (core/agent-liveness.ts), mirrored from the
+   * host: its launch returned without a CLI (`launch-failed`), or its CLI left the pane without
+   * a SessionEnd (`dropped` — which also raises `dropped` above, so every DROPPED surface shows
+   * it). Core measured it for nodes this window may not even have mounted, so a local pane check
+   * cannot withdraw it; core does, and so does any hook event (a live CLI fired it).
+   * TRANSIENT, like `dropped`.
+   */
+  lifecycle?: 'launch-failed' | 'dropped'
+  /**
    * This node's CLI announced its own exit (any SessionEnd hook: `/exit`, `/quit`,
    * Ctrl+D) and nothing has started a session since.
    *
@@ -404,6 +413,8 @@ export interface AgentStatusStore {
   /** Record (or withdraw) the verdict that this node's CLI died unannounced. Transient; see
    *  `dropped`. Cheap to call repeatedly — it bails when the flag already reads that way. */
   setDropped(id: string, on: boolean): void
+  /** Replace core's lifecycle conclusions whole (the host pushes the full map, never a delta). */
+  setLifecycles(map: Readonly<Record<string, 'launch-failed' | 'dropped'>>): void
   /** Record (or withdraw) that this node's CLI announced its exit. Transient; see `sessionEnded`.
    *  Bails when the flag already reads that way. */
   setSessionEnded(id: string, on: boolean): void
@@ -962,6 +973,7 @@ export function createAgentStatusSession(
         // (a late Stop POST would undo a hibernation we just performed), but it absolutely does
         // disprove "this pane has no CLI in it". Nothing is saved — the flag is transient.
         if (prev.dropped) next.dropped = undefined
+        if (prev.lifecycle) next.lifecycle = undefined
         // Same reasoning: a state transition is fired by a live CLI, so "it exited" no longer holds.
         if (prev.sessionEnded) next.sessionEnded = undefined
         const byId = { ...s.byId, [id]: next }
@@ -1136,9 +1148,34 @@ export function createAgentStatusSession(
         // the overwhelmingly common call is "still fine, still fine" — and a fresh entry object
         // each time would re-render the node (and the minimap) for no news.
         if (!!prev.dropped === on) return s
+        // Core's own process proof stands until core (or a hook) withdraws it: this window's pane
+        // check only speaks for the nodes and agents it can measure.
+        if (!on && prev.lifecycle === 'dropped') return s
         // Transient: cleared by dropping the key, and NO `save()` — see the field comment. An entry
         // holding nothing else durable must not be conjured onto disk by a pane reading.
         return { byId: { ...s.byId, [id]: { ...prev, dropped: on ? true : undefined } } }
+      }),
+
+    setLifecycles: (map) =>
+      set((s) => {
+        let byId = s.byId
+        const ids = new Set([...Object.keys(map), ...Object.keys(s.byId).filter((id) => s.byId[id]?.lifecycle)])
+        for (const id of ids) {
+          const prev = byId[id] ?? EMPTY
+          const want = Object.hasOwn(map, id) ? map[id] : undefined
+          if (prev.lifecycle === want) continue
+          // Transient, like `dropped`: no `save()`.
+          const wasCoreDropped = prev.lifecycle === 'dropped'
+          byId = {
+            ...byId,
+            [id]: {
+              ...prev,
+              lifecycle: want,
+              dropped: want === 'dropped' ? true : wasCoreDropped ? undefined : prev.dropped
+            }
+          }
+        }
+        return byId === s.byId ? s : { byId }
       }),
 
     setSessionEnded: (id, on) =>

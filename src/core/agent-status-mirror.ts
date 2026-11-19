@@ -189,6 +189,22 @@ export interface MirrorEntry {
    * state commit.
    */
   stateExpired?: true
+  /**
+   * Core's process-liveness conclusion about this node (core/agent-liveness.ts): its launch never
+   * produced a CLI, or its CLI left the pane without a SessionEnd. Runtime-only (not in
+   * `buildFile`'s allowlist — a claim about a pane must not survive a restart) and never an agent
+   * event: it does not touch `state` or `updatedAt`. Read it through `nodeLifecycle`, which
+   * drops it as soon as anything newer is asserted about the node.
+   */
+  lifecycle?: { state: 'launch-failed' | 'dropped'; at: number }
+}
+
+/** The lifecycle conclusion that still stands for `entry`: none once a later hook has spoken. */
+export function nodeLifecycle(
+  entry: Readonly<MirrorEntry> | undefined
+): 'launch-failed' | 'dropped' | undefined {
+  const l = entry?.lifecycle
+  return l && entry.updatedAt <= l.at ? l.state : undefined
 }
 
 /** This host's Server-Edition install metadata (spec: server-update). Written by the installer
@@ -2132,6 +2148,50 @@ export function setNodeSessionName(nodeId: string, name: string): boolean {
  * idleness) or one reported at boot before any hook event of this run — exactly when the flag
  * matters most. Clearing an unknown id stays a no-op.
  */
+const lifecycleListeners = new Set<() => void>()
+
+/** Told whenever a node's lifecycle conclusion is set or withdrawn (each shell pushes the list). */
+export function onNodeLifecycleChange(cb: () => void): () => void {
+  lifecycleListeners.add(cb)
+  return () => lifecycleListeners.delete(cb)
+}
+
+/** Every node with a standing lifecycle conclusion — what a renderer draws and `list` names. */
+export function nodeLifecycles(): Record<string, 'launch-failed' | 'dropped'> {
+  const out: Record<string, 'launch-failed' | 'dropped'> = {}
+  for (const [id, e] of state) {
+    const l = nodeLifecycle(e)
+    if (l) out[id] = l
+  }
+  return out
+}
+
+/**
+ * Record (or withdraw) the liveness monitor's conclusion — its only writer. Like the hibernation
+ * flag it creates a minimal entry for an unknown node: a launch that failed never posted a hook,
+ * so the mirror has nothing for it yet. Never bumps `updatedAt` and never schedules a write.
+ */
+export function setNodeLifecycle(nodeId: string, lifecycle: 'launch-failed' | 'dropped' | undefined): void {
+  if (typeof nodeId !== 'string' || !nodeId || nodeId.length > 128) return
+  const e = state.get(nodeId)
+  if (lifecycle) {
+    const at = Math.max(Date.now(), e?.updatedAt ?? 0)
+    state.set(nodeId, e ? { ...e, lifecycle: { state: lifecycle, at } } : { updatedAt: at, lifecycle: { state: lifecycle, at } })
+  } else {
+    if (!e?.lifecycle) return
+    const next = { ...e }
+    delete next.lifecycle
+    state.set(nodeId, next)
+  }
+  for (const cb of lifecycleListeners) {
+    try {
+      cb()
+    } catch {
+      // A listener's failure is its own.
+    }
+  }
+}
+
 export function setNodeHibernated(nodeId: string, on: boolean): void {
   if (typeof nodeId !== 'string' || !nodeId || nodeId.length > 128) return
   const e = state.get(nodeId)

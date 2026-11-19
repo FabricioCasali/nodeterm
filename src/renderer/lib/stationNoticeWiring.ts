@@ -12,7 +12,7 @@
  * this machine's, and so are the stations core reports on.
  */
 import type { NodeTerminalApi } from '@shared/types'
-import { sanitizeStationNotices } from '@shared/station-notice'
+import { sanitizeStationLifecycles, sanitizeStationNotices } from '@shared/station-notice'
 import { useAgentStatus } from '../state/agentStatus'
 import { useStationNotices } from '../state/stationNotices'
 
@@ -46,6 +46,18 @@ export function installStationNoticeWiring(
     })
     .catch(() => undefined)
   const offChanged = api.stationNotice.onChanged((views) => setViews(views))
+  // Core's process-liveness conclusions (launch failed / CLI gone), for nodes this window may not
+  // have mounted. Applied before the DROPPED report below is wired, so core's own verdict is
+  // simply echoed back as a no-op edge.
+  const setLifecycles = (raw: unknown): void =>
+    useAgentStatus.getState().setLifecycles(sanitizeStationLifecycles(raw))
+  void api.stationNotice.lifecycle?.().then(
+    (map) => {
+      if (live) setLifecycles(map)
+    },
+    () => undefined
+  )
+  const offLifecycle = api.stationNotice.onLifecycle?.((map) => setLifecycles(map))
 
   const sent = new Map<string, boolean>()
   const report = (byId: Record<string, { dropped?: boolean } | undefined>): void => {
@@ -62,6 +74,7 @@ export function installStationNoticeWiring(
   return () => {
     live = false
     offChanged()
+    offLifecycle?.()
     offStatus()
   }
 }

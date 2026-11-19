@@ -3,7 +3,7 @@
 // the response is narrowed for a non-editor by `narrowResponseForRole` (relay/access-policy.ts).
 import { AGENT_STATUS_SNAPSHOT_MAX, type AgentStatusSnapshotEntry } from '../shared/agent-status-snapshot'
 import { IPC } from '../shared/ipc'
-import { mirrorEntries, type MirrorEntry } from './agent-status-mirror'
+import { mirrorEntries, nodeLifecycle, type MirrorEntry } from './agent-status-mirror'
 import type { CorePlatform } from './platform'
 
 /**
@@ -33,6 +33,8 @@ export function buildAgentStatusSnapshot(
     if (e.agentId !== undefined) out.agentId = e.agentId
     if (e.sessionId !== undefined) out.sessionId = e.sessionId
     if (e.account !== undefined) out.account = e.account
+    const lifecycle = nodeLifecycle(e)
+    if (lifecycle) out.lifecycle = lifecycle
     return out
   })
 }

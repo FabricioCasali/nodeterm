@@ -36,7 +36,9 @@ import {
   type AgentId,
   type BuiltinAgentId
 } from '../shared/agents/config'
-import { assembleLaunchCommand } from '../shared/agents/launch'
+import { stat } from 'fs/promises'
+import { assembleLaunchCommand, promptFilePathError } from '../shared/agents/launch'
+import { heldLaunchIntentFor } from '../shared/agents/launch-intent'
 import type { AgentState, NormalizedAgentEvent } from '../shared/agents/normalize'
 import { oneLine } from '../shared/one-line'
 import { rootPositionWith } from '../shared/root-position'
@@ -61,6 +63,9 @@ import type {
   BridgeLink,
   CanvasMutation,
   CanvasNodeState,
+  HeldLaunchIntent,
+  LaunchIntentExecutionResult,
+  LaunchIntentRequest,
   ClaudeCliCaps,
   CodexCliCaps,
   GrokCliCaps,
@@ -88,6 +93,8 @@ export interface ServerControlReply {
 /** The PtyManager surface the headless factory uses, kept narrow for deterministic tests. */
 export interface HeadlessPty {
   createHeadless(options: PtyCreateOptions): Promise<PtyCreateResult>
+  /** `PtyManager.executeLaunch` — the semantic launch channel; absent on a fake or older core. */
+  executeLaunch?(persistKey: string, request: LaunchIntentRequest): Promise<LaunchIntentExecutionResult>
   /** Probe only. Boot reconciliation must never turn absence into a fresh session. */
   paneCommand(persistKey: string): Promise<string | null>
   sessionExists(persistKey: string): Promise<boolean>
@@ -209,8 +216,7 @@ export interface OpenLaunchFailure {
 /**
  * The `open-*` failure reply (#925). Each failed node is named with its own reason, grouped, so a
  * caller can tell a failure Run now may get past from one it repeats: `line-too-long` fails the
- * same way on every attempt, and this edition has no `--prompt-file` (the open flag allowlist),
- * so the only way past it is a shorter prompt or command. "Do not repeat the open request" holds
+ * same way on every attempt, so the only way past it is a shorter prompt or command. "Do not repeat the open request" holds
  * for every reason: the nodes are persisted, so the same request would open duplicates.
  */
 export function launchFailedError(
@@ -236,6 +242,15 @@ export function launchFailedError(
     `launch-failed: node(s) ${failures.map((f) => f.id).join(', ')} were persisted but their PTY or ` +
     `initial command could not be delivered — ${clauses.join('; ')}; do not repeat the open request`
   )
+}
+
+/** A `--prompt-file` must name a regular file before any node is created for it. */
+async function isReadableFile(file: string): Promise<boolean> {
+  try {
+    return (await stat(file)).isFile()
+  } catch {
+    return false
+  }
 }
 
 const TERMINAL_LIMIT = 8
@@ -820,8 +835,13 @@ export class HeadlessNodeFactory {
    */
   private launch(project: Project, node: CanvasNodeState, command: string): Promise<HeadlessLaunchResult> {
     const pty = this.deps.ptyManager
+    // The semantic twin of this exact line, for a Windows-native session-host pane (core decides).
+    const launchIntent = node.launchIntent?.command === command ? node.launchIntent : undefined
     return launchHeadless(
       {
+        ...(typeof pty.executeLaunch === 'function'
+          ? { executeLaunch: (key: string, request: LaunchIntentRequest) => pty.executeLaunch!(key, request) }
+          : {}),
         persistentSpawnAvailable: () => pty.persistentSpawnAvailable(),
         createHeadless: () => this.attach(project, node),
         paneCommand: (key) => pty.paneCommand(key),
@@ -830,7 +850,13 @@ export class HeadlessNodeFactory {
         releaseHeadless: (key) => pty.releaseHeadless(key),
         timing: this.deps.launchTiming
       },
-      { ptyOptions: ptyOptions(project, node), command, release: false, requirePersistent: false }
+      {
+        ptyOptions: ptyOptions(project, node),
+        command,
+        ...(launchIntent ? { launchIntent } : {}),
+        release: false,
+        requirePersistent: false
+      }
     )
   }
 
@@ -1436,12 +1462,14 @@ export class HeadlessNodeFactory {
         // `run-now` (#925) is a no-op, since a server open already delivers immediately; only its
         // pairing with `--after` is refused, just below.
         verb === 'open-terminal'
-          ? new Set(['count', 'cwd', 'cmd', 'after', 'after-success', 'success-deadline', 'project', 'run-now'])
+          ? new Set(['count', 'cwd', 'cmd', 'after', 'after-success', 'success-deadline', 'project', 'run-now', 'title'])
           : new Set([
               'agent',
               'count',
               'cwd',
+              'title',
               'prompt',
+              'prompt-file',
               'after',
               'after-success',
               'success-deadline',
@@ -1452,6 +1480,24 @@ export class HeadlessNodeFactory {
             ])
       )
       if (flagError) return { ok: false, error: `${verb}: ${flagError}` }
+      // `--title`: an explicit name the session's own title must not replace. One line, like rename.
+      const explicitTitle = args.title !== undefined ? oneLine(args.title) : undefined
+      if (args.title !== undefined && !explicitTitle) {
+        return { ok: false, error: `${verb}: --title needs a name` }
+      }
+      // `--prompt-file`: the brief stays a file the core reads at launch; only its path is checked
+      // here, before anything is created.
+      const promptFile = args['prompt-file']?.trim()
+      if (args['prompt-file'] !== undefined) {
+        if (args.prompt !== undefined) {
+          return { ok: false, error: `${verb}: use --prompt or --prompt-file, not both` }
+        }
+        const pathError = promptFilePathError(args['prompt-file'])
+        if (pathError) return { ok: false, error: `${verb}: --prompt-file ${pathError}` }
+        if (!(await isReadableFile(promptFile as string))) {
+          return { ok: false, error: `${verb}: --prompt-file is not a readable file` }
+        }
+      }
       // "Start now" and "start when X is done" contradict each other: refused in the desktop's
       // words, before anything is created, rather than silently opening an armed node.
       if (runNowRequested(args) && args.after) return { ok: false, error: RUN_NOW_AFTER_REFUSAL }
@@ -1584,6 +1630,7 @@ export class HeadlessNodeFactory {
         let color: string = SYSTEM_NODE_COLORS[(startIndex + i) % SYSTEM_NODE_COLORS.length]
         let mintedSessionId: string | undefined
         let permissionMode
+        let launchIntent: HeldLaunchIntent | undefined
         if (verb === 'open-agent') {
           const config = AGENT_CONFIG[agentId as BuiltinAgentId]
           title = config.label
@@ -1598,15 +1645,20 @@ export class HeadlessNodeFactory {
             grokCaps?.sessionIdFlag === true
           )
           mintedSessionId = sessionIdFlagSupported ? randomUUID() : undefined
+          // An issue-bound session's first prompt is the REFERENCE line, never the issue's text.
+          const initialPrompt = issueRef ? issueLaunchPrompt(issueRef, args.prompt) : args.prompt
+          // The issue reference line wins over a brief file: it is the session's binding.
+          const launchPromptFile = issueRef ? undefined : promptFile
+          const launchCmdOverride = settings.agentLaunchCommands?.[agentId as BuiltinAgentId]
           command = assembleLaunchCommand(
             {
               agentId: agentId as AgentId,
-              // An issue-bound session's first prompt is the REFERENCE line, never the issue's text.
-              initialPrompt: issueRef ? issueLaunchPrompt(issueRef, args.prompt) : args.prompt,
+              initialPrompt,
+              ...(launchPromptFile ? { promptFile: launchPromptFile } : {}),
               permissionMode,
               sessionId: mintedSessionId,
               sessionIdFlagSupported,
-              launchCmdOverride: settings.agentLaunchCommands?.[agentId as BuiltinAgentId],
+              launchCmdOverride,
               sharedIdentity: codexSharedIdentity,
               approvalCaps: {
                 codexApprovalValues: codexCaps.approvalValues,
@@ -1616,7 +1668,22 @@ export class HeadlessNodeFactory {
             },
             this.deps.env ?? process.env
           ).command
+          // The same launch as a semantic request, held beside the typed line (see
+          // heldLaunchIntentFor): what a Windows-native session-host pane is launched with.
+          launchIntent = heldLaunchIntentFor({
+            agentId: agentId as AgentId,
+            command,
+            launchCmdOverride,
+            model: args.model,
+            remote: false,
+            resume: false,
+            initialPrompt,
+            ...(launchPromptFile ? { promptFile: launchPromptFile } : {}),
+            permissionMode,
+            mintedSessionId
+          })
         }
+        if (explicitTitle) title = count > 1 ? `${explicitTitle} ${i + 1}` : explicitTitle
 
         const id = nextId('term')
         // Persist before attempting delivery, including launches whose gates are already open.
@@ -1638,7 +1705,8 @@ export class HeadlessNodeFactory {
           position: placeRight(target, source.node, nodeSize, created),
           size: { ...nodeSize },
           title,
-          ...(verb === 'open-agent' ? { titleAuto: true } : {}),
+          // An explicit name is the user's: nothing auto-tracks over it, on either verb.
+          ...(explicitTitle ? { titleAuto: false } : verb === 'open-agent' ? { titleAuto: true } : {}),
           color,
           group: null,
           tags: [],
@@ -1651,7 +1719,8 @@ export class HeadlessNodeFactory {
           (agentId === 'claude' || agentId === 'codex')
             ? { accountId: source.node.accountId }
             : {}),
-          ...(pendingLaunch ? { pendingLaunch } : {})
+          ...(pendingLaunch ? { pendingLaunch } : {}),
+          ...(pendingLaunch && launchIntent ? { launchIntent } : {})
         }
         created.push(node)
         if (command && !mustWait) commands.set(id, command)
@@ -1718,8 +1787,10 @@ export class HeadlessNodeFactory {
           }
           const launched = await this.launch(target, node, command)
           if (verb === 'open-agent' && launched.fresh) this.awaitingFirstWorking.add(node.id)
-          if (launched.outcome === 'delivered') node.pendingLaunch = undefined
-          else fail(node.id, launched.reason)
+          if (launched.outcome === 'delivered') {
+            node.pendingLaunch = undefined
+            node.launchIntent = undefined
+          } else fail(node.id, launched.reason)
         } catch {
           // The launcher answers its own failures; only the spawn-only `attach` above throws.
           fail(node.id, 'spawn-failed')

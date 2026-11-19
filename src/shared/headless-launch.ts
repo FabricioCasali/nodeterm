@@ -1,6 +1,6 @@
 // Wire types of the headless launcher (#925): core/headless-launch.ts implements it, desktop main
 // exposes it as `pty.launchHeadless`, the renderer's `--run-now` / `run` consume the result.
-import type { PtyCreateOptions } from './types'
+import type { HeldLaunchIntent, PtyCreateOptions } from './types'
 
 export type HeadlessLaunchFailure = 'not-persistent' | 'spawn-failed' | 'no-shell' | 'line-too-long' | 'cancelled'
 export type HeadlessLaunchResult =
@@ -9,6 +9,9 @@ export type HeadlessLaunchResult =
 export interface HeadlessLaunchRequest {
   ptyOptions: PtyCreateOptions
   command: string
+  /** The semantic twin of `command` (`HeldLaunchIntent`), when the node holds one for exactly that
+   *  line. The core executes it for a Windows-native session-host pane instead of typing. */
+  launchIntent?: HeldLaunchIntent
   /** Release the synthetic client afterwards (desktop: true; Server Edition: false). */
   release: boolean
   /** Refuse without a persistent backend (desktop: true — it releases; Server Edition: false). */

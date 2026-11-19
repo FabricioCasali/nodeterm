@@ -89,7 +89,7 @@ import type { LaunchIntentExecutionResult } from '../../shared/types'
 import type { WhiteboardFile, WhiteboardSaveResult } from '../../shared/whiteboard'
 import { fitsOneWsFrame } from '../../shared/ws-frame'
 import { buildStubApi, unsupported } from './stubs'
-import { sanitizeStationNotices } from '@shared/station-notice'
+import { sanitizeStationLifecycles, sanitizeStationNotices } from '@shared/station-notice'
 import { sanitizeOutcomeRecords } from '@shared/station-outcome'
 import { sanitizeHandoverRecords } from '@shared/station-handover'
 import type {
@@ -795,7 +795,12 @@ export function buildStationNoticeApi(
           cb(sanitizeStationNotices(views))) as Listener),
       reportDropped: (nodeId, dropped) => {
         void client.request(IPC.stationNoticeDropped, nodeId, dropped).catch(() => undefined)
-      }
+      },
+      lifecycle: () =>
+        (client.request(IPC.stationLifecycleList) as Promise<unknown>).then(sanitizeStationLifecycles, () => ({})),
+      onLifecycle: (cb) =>
+        client.subscribe(IPC.stationLifecycleChanged, ((map: unknown) =>
+          cb(sanitizeStationLifecycles(map))) as Listener)
     }
   }
 }

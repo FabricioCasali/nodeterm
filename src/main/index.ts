@@ -115,10 +115,11 @@ import {
 import { afterSuccessFlagRefusal } from '../shared/station-outcome'
 import { StationLineage } from '../shared/station-notice'
 import type { RemoteLogExec } from '../core/board-log'
-import type { PtyCreateOptions, TranscriptPresence } from '../shared/types'
+import type { HeldLaunchIntent, PtyCreateOptions, TranscriptPresence } from '../shared/types'
 import { boardLogRemotePath } from '../core/board-log'
 import { PtyManager } from '../core/pty-manager'
 import { desktopHeadlessRequest, launchHeadless } from '../core/headless-launch'
+import { createStationLiveness } from '../core/agent-liveness'
 import { WorkspaceStore } from '../core/workspace-store'
 import type { CardLabelEdit } from '../core/project-kanban-write'
 import { WorkspaceWatcher } from '../core/workspace-watcher'
@@ -258,6 +259,10 @@ import {
   nodeSessionName,
   workingNodes,
   mirrorEntry,
+  mirrorEntries,
+  nodeLifecycles,
+  onNodeLifecycleChange,
+  setNodeLifecycle,
   pendingTicketsFor,
   openAskFor,
   nodesForAgentSession
@@ -1886,7 +1891,7 @@ app.whenReady().then(async () => {
   // stands behind that fence as a belt.
   corePlatform.handle(
     IPC.ptyLaunchHeadless,
-    (req: { ptyOptions: PtyCreateOptions; command: string }) =>
+    (req: { ptyOptions: PtyCreateOptions; command: string; launchIntent?: HeldLaunchIntent }) =>
       launchHeadless(ptyManager, desktopHeadlessRequest(req))
   )
 
@@ -2362,8 +2367,24 @@ app.whenReady().then(async () => {
     publish: (views) => sendToMain(IPC.stationNoticeChanged, views),
     // The memoized index scan, not `getNode` (which re-parses a project file per call): the sweep
     // asks this for every node it tracks.
-    exists: (id) => workspaceStore.projectIdsForNode(id).length > 0
+    exists: (id) => workspaceStore.projectIdsForNode(id).length > 0,
+    // Process liveness for launches and tracked sessions, on screen or not (core/agent-liveness.ts).
+    // A remote node is left out: its pane is read over the project's ssh link, and one read per
+    // node per sweep is not a cost this monitor may add to that link.
+    liveness: createStationLiveness({
+      now: () => Date.now(),
+      launches: () => ptyManager.launchAttemptsSnapshot(),
+      mirrorEntries: () =>
+        mirrorEntries().filter(
+          ([id]) => !ptyManager.sshRemoteForNode(id) && workspaceStore.sshProjectIdForNode(id) === undefined
+        ),
+      paneOwner: (id, opts) => ptyManager.paneOwner(id, opts),
+      customAgents: () => settingsStore.get().customAgents,
+      deliberateExitAt: (id) => ptyManager.deliberateExitAt(id),
+      setLifecycle: setNodeLifecycle
+    })
   })
+  onNodeLifecycleChange(() => sendToMain(IPC.stationLifecycleChanged, nodeLifecycles()))
   stationNotices.start()
   messagingDeps.noticeCurrent = (id, at) => stationNotices.isCurrentNotice(id, at)
   // A queued notice's final outcome (flushed or expired) comes back here, so its chip never says

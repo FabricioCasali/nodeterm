@@ -117,6 +117,7 @@ const SERVER_V1_VERBS: ReadonlySet<string> = new Set([
   'open-project',
   'open-terminal',
   'open-agent',
+  'open-claude',
   'close',
   'link',
   'group',
@@ -186,6 +187,9 @@ export function createServerEditionControlHandler(actions: ServerEditionControlA
         return actions.openTerminal(nodeId, command.args, verified)
       case 'open-agent':
         return actions.openAgent(nodeId, command.args, verified)
+      case 'open-claude':
+        // The desktop's shorthand for `open-agent --agent claude`, with the same flags.
+        return actions.openAgent(nodeId, { ...command.args, agent: 'claude' }, verified)
       case 'close':
         return actions.close(nodeId, command.args, verified)
       case 'link':

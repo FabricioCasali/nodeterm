@@ -44,6 +44,22 @@ import {
 } from '@shared/project-capability-consent'
 
 /** The little the routing needs to know about a project (a structural subset of `Project`). */
+/**
+ * `--title` on an open verb: give the node the caller's explicit name and stop the agent's own
+ * session name from replacing it (`titleAuto: false`, on a terminal too, so the name survives a
+ * later agent start in it). A verb that opens several numbers them (`<title> 1`, `<title> 2`),
+ * like the default titles are numbered. No title = the node exactly as it was built.
+ */
+export function withExplicitTitle<T extends { data: { title: string; titleAuto?: boolean } }>(
+  node: T,
+  title: string | undefined,
+  index: number,
+  count: number
+): T {
+  if (!title) return node
+  return { ...node, data: { ...node.data, title: count > 1 ? `${title} ${index + 1}` : title, titleAuto: false } }
+}
+
 export interface ControlProject {
   id: string
   closed?: boolean
@@ -203,7 +219,7 @@ export function answerBrowserResolve(
  *  (`n.type` is the persisted `kind`, `n.data.title` the persisted `title`). */
 export function storedNodeListing(
   nodes: readonly StoredNode[],
-  statuses: StatusById & Record<string, Pick<AgentNodeStatus, 'dropped' | 'pendingAsk'> | undefined> = {},
+  statuses: StatusById & Record<string, Pick<AgentNodeStatus, 'dropped' | 'lifecycle' | 'pendingAsk'> | undefined> = {},
   deliveries: Record<string, LaunchDelivery | undefined> = {},
   now: number = Date.now(),
   /** Every station's latest task report (`report-outcome`, core's store mirrored). */

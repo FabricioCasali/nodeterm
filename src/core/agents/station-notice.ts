@@ -67,10 +67,12 @@ import {
   type StationRecipient
 } from '../../shared/station-notice'
 import { STATION_NOTICE_VERB } from '../../shared/agents/agent-messaging'
+import { reportsSessionEnd } from '../../shared/agents/config'
 import type { AgentMessageOutcome } from './agent-message-decide'
 import type { CorePlatform } from '../platform'
 import { IPC } from '../../shared/ipc'
 import { isSafeNodeId } from '../../shared/safe-id'
+import { nodeLifecycles } from '../agent-status-mirror'
 
 /** How long a notice whose recipient could not yet be resolved keeps retrying. A station that fails
  *  on its FIRST turn (a usage limit does exactly that) can fail before the canvas that holds its
@@ -85,6 +87,52 @@ export const STATION_SWEEP_MS = 30_000
 /** The longest a rate-limited notice waits for its one retry. The limiter names its own wait (the
  *  pair budget is `PAIR_MIN_INTERVAL_MS`, 10 s); this only bounds a surprising answer. */
 export const STATION_RATE_RETRY_MAX_MS = 60_000
+
+/**
+ * One launch (or one tracked agent session) the core may watch for its process — see
+ * `StationLivenessDeps`. Every field is derived by the core from its own runtime; none is taken
+ * from a renderer, a shared file or restored state.
+ */
+export interface StationLaunchAttempt {
+  nodeId: string
+  /** One launch. A relaunch in the same pane is a different attempt. */
+  attemptId: string
+  /** The backend generation the attempt ran in (root process and its birth). */
+  sessionKey: string
+  agentId: string
+  /** Changes on confirmation, replacement or a deliberate control. */
+  revision: number
+  /** A verified hook from this same session, or the CLI seen by process proof. Never "Enter was
+   *  sent", restored state or silence. */
+  confirmed: boolean
+  /** Paused, hibernated, closed on request, not delivered yet: nothing is concluded about it. */
+  suppressed: boolean
+}
+
+/** What one read of an attempt's process tree proved. `null` (unreadable) and `unknown` prove
+ *  nothing; `shell` is only said when the CLI is absent from the whole tree of that generation. */
+export interface StationProcessProof {
+  sessionKey: string
+  kind: 'agent' | 'shell' | 'unknown'
+  /** The attempt's own invocation has returned to the shell. Without it, a root shell is a CLI
+   *  that may still be starting, however long it has been. */
+  commandFinished?: true
+}
+
+/**
+ * Process liveness outside the renderer: launches the core delivered and agent sessions it already
+ * tracks, so a station that is not on screen is still told apart from a dead one.
+ *  - a never-confirmed attempt whose invocation returned with only a shell left ⇒ `launch-failed`;
+ *  - a confirmed attempt of an agent with no SessionEnd hook whose shell is back ⇒ `dropped`,
+ *    whatever its last state was (a CLI that died mid-turn never reports the turn's end);
+ *  - the CLI seen again ⇒ the conclusion is withdrawn.
+ * A slow start, an unreadable probe, another generation or a suppressed attempt concludes nothing.
+ */
+export interface StationLivenessDeps {
+  attempts(): readonly StationLaunchAttempt[]
+  probe(attempt: StationLaunchAttempt): Promise<StationProcessProof | null>
+  publish(nodeId: string, attemptId: string, state: 'launch-failed' | 'dropped' | undefined): void
+}
 
 /** The author of the board-log line — the app, like every other trace it writes. */
 const NOTICE_AUTHOR = { name: 'nodeterm', color: '#8b8b8b' } as const
@@ -118,6 +166,8 @@ export interface StationNoticeDeps {
   /** A one-shot timer (the rate-limit retry). Injected so a test drives it; defaults to an
    *  unref'd `setTimeout`. */
   schedule?(ms: number, fn: () => void): void
+  /** Process liveness for launches and tracked sessions. Absent ⇒ only the renderer's verdict. */
+  liveness?: StationLivenessDeps
 }
 
 /** The event fields the monitor reads — deliberately narrow, like the delivery receipt's. */
@@ -156,6 +206,9 @@ interface Tracked {
   state?: AgentState
   errored?: boolean
   dropped?: boolean
+  /** Core's process proof, from the liveness sweep (`StationObservation`). */
+  processGone?: boolean
+  launchFailed?: boolean
   /** The question this node asked (verified), and when. The mirror decides whether it is still
    *  unanswered; this only remembers the moment it was asked. */
   question?: { id: string; since: number }
@@ -194,18 +247,29 @@ export class StationNoticeMonitor {
   private lastPublished = '[]'
   private stopped = false
   private retries = new Set<ReturnType<typeof setTimeout>>()
+  /** Per node: the attempt last observed, whether its CLI was ever seen, and what was published. */
+  private readonly attempts = new Map<
+    string,
+    { attemptId: string; seenAgent: boolean; published?: 'launch-failed' | 'dropped' }
+  >()
+  /** One probe per node at a time; a second sweep waits on the first instead of starting another. */
+  private readonly probing = new Map<string, Promise<void>>()
+  /** Bumped by `stop` and by `forget`: a probe that outlives either publishes nothing. */
+  private livenessEpoch = 0
+  private readonly forgotten = new Map<string, number>()
 
   constructor(private readonly deps: StationNoticeDeps) {}
 
   start(intervalMs: number = STATION_SWEEP_MS): void {
     if (this.timer) return
     this.stopped = false
-    this.timer = setInterval(() => this.sweep(), intervalMs)
+    this.timer = setInterval(() => void this.sweep(), intervalMs)
     ;(this.timer as { unref?: () => void }).unref?.()
   }
 
   stop(): void {
     this.stopped = true
+    this.livenessEpoch++
     for (const retry of this.retries) clearTimeout(retry)
     this.retries.clear()
     if (this.timer) clearInterval(this.timer)
@@ -228,6 +292,8 @@ export class StationNoticeMonitor {
     // verdict is withdrawn here, whatever the kind — see the header for why core must not leave
     // this to the renderer.
     t.dropped = false
+    t.processGone = false
+    t.launchFailed = false
     if (e.questionId && t.question?.id !== e.questionId) {
       t.question = { id: e.questionId, since: now }
       if (t.episode?.reason === 'question-unanswered') t.episode = undefined
@@ -278,6 +344,8 @@ export class StationNoticeMonitor {
       t.turnSinceNotice = false
       t.errored = false
       t.dropped = false
+      t.processGone = false
+      t.launchFailed = false
       t.question = undefined
       this.publish()
       return
@@ -357,8 +425,88 @@ export class StationNoticeMonitor {
     return out.sort((a, b) => a.at - b.at)
   }
 
-  /** Time-driven work: the question threshold, the recipient grace retry, and pruning. */
-  sweep(): void {
+  /**
+   * Time-driven work: the question threshold, the recipient grace retry, pruning, and the liveness
+   * probes. The promise settles when this call's probes have; callers that only want the timed
+   * work may ignore it.
+   */
+  sweep(): Promise<void> {
+    this.sweepNotices()
+    return this.sweepLiveness()
+  }
+
+  private sweepLiveness(): Promise<void> {
+    const liveness = this.deps.liveness
+    if (!liveness || this.stopped) return Promise.resolve()
+    const pending: Promise<void>[] = []
+    const listed = new Set<string>()
+    for (const attempt of liveness.attempts()) {
+      listed.add(attempt.nodeId)
+      if (attempt.suppressed) continue
+      let probe = this.probing.get(attempt.nodeId)
+      if (!probe) {
+        probe = this.probeAttempt(liveness, attempt)
+          .catch(() => {})
+          .finally(() => this.probing.delete(attempt.nodeId))
+        this.probing.set(attempt.nodeId, probe)
+      }
+      pending.push(probe)
+    }
+    for (const nodeId of [...this.attempts.keys()]) if (!listed.has(nodeId)) this.attempts.delete(nodeId)
+    return Promise.all(pending).then(() => undefined)
+  }
+
+  private async probeAttempt(liveness: StationLivenessDeps, attempt: StationLaunchAttempt): Promise<void> {
+    const epoch = this.livenessEpoch
+    const forgot = this.forgotten.get(attempt.nodeId) ?? 0
+    const proof = await liveness.probe(attempt)
+    // Everything is re-read after the await: the attempt may have been confirmed, replaced,
+    // suppressed or forgotten while the probe ran, and a stale reading must publish nothing.
+    if (this.stopped || epoch !== this.livenessEpoch) return
+    if ((this.forgotten.get(attempt.nodeId) ?? 0) !== forgot) return
+    const current = liveness.attempts().find((a) => a.nodeId === attempt.nodeId)
+    if (
+      !current ||
+      current.attemptId !== attempt.attemptId ||
+      current.sessionKey !== attempt.sessionKey ||
+      current.revision !== attempt.revision ||
+      current.suppressed ||
+      !this.deps.exists(attempt.nodeId)
+    )
+      return
+    if (!proof || proof.sessionKey !== attempt.sessionKey || proof.kind === 'unknown') return
+    let seen = this.attempts.get(attempt.nodeId)
+    if (!seen || seen.attemptId !== attempt.attemptId) {
+      seen = { attemptId: attempt.attemptId, seenAgent: false }
+      this.attempts.set(attempt.nodeId, seen)
+    }
+    const t = this.track(attempt.nodeId)
+    if (proof.kind === 'agent') {
+      seen.seenAgent = true
+      if (!seen.published) return
+      seen.published = undefined
+      t.processGone = false
+      t.launchFailed = false
+      liveness.publish(attempt.nodeId, attempt.attemptId, undefined)
+      return
+    }
+    // A shell with no CLI in the tree. For an attempt that was confirmed (or whose CLI this monitor
+    // saw) that is an exit; an agent with a SessionEnd hook announces its own, so only the others
+    // are concluded here. For one never confirmed it is a failed start only once the invocation
+    // itself has returned.
+    const next =
+      current.confirmed || seen.seenAgent
+        ? reportsSessionEnd(current.agentId) ? undefined : 'dropped'
+        : proof.commandFinished === true ? 'launch-failed' : undefined
+    if (!next || seen.published === next) return
+    seen.published = next
+    liveness.publish(attempt.nodeId, attempt.attemptId, next)
+    if (next === 'dropped') t.processGone = true
+    else t.launchFailed = true
+    this.evaluate(attempt.nodeId, t)
+  }
+
+  private sweepNotices(): void {
     const now = this.deps.now()
     let changed = false
     for (const [id, t] of [...this.nodes]) {
@@ -393,11 +541,15 @@ export class StationNoticeMonitor {
   forget(nodeId: string): void {
     const had = !!this.nodes.get(nodeId)?.episode?.recipient
     this.nodes.delete(nodeId)
+    this.attempts.delete(nodeId)
+    this.forgotten.set(nodeId, (this.forgotten.get(nodeId) ?? 0) + 1)
     if (had) this.publish()
   }
 
   resetForTests(): void {
     this.nodes.clear()
+    this.attempts.clear()
+    this.forgotten.clear()
     this.lastPublished = '[]'
     this.stop()
   }
@@ -424,6 +576,8 @@ export class StationNoticeMonitor {
       state: t.state,
       lastTurnErrored: t.errored,
       dropped: t.dropped,
+      processGone: t.processGone,
+      launchFailed: t.launchFailed,
       questionSince: t.question?.since,
       approvalSince: t.approval?.since
     }
@@ -574,6 +728,7 @@ export function registerStationNoticeIpc(
   monitor: () => StationNoticeMonitor | null
 ): void {
   platform.handle(IPC.stationNoticeList, () => monitor()?.list() ?? [])
+  platform.handle(IPC.stationLifecycleList, () => nodeLifecycles())
   platform.handle(IPC.stationNoticeDropped, (nodeId: unknown, dropped: unknown) => {
     // Shape-checked at the boundary: the verdict arrives over IPC (or the browser bridge).
     if (typeof nodeId !== 'string' || !isSafeNodeId(nodeId) || typeof dropped !== 'boolean')

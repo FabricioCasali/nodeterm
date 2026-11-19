@@ -47,10 +47,28 @@ describe('heldLaunchIntentFor', () => {
     ['a whitespace-only prompt', { initialPrompt: '   ' }],
     ['a resume', { resume: true }],
     ['a remote (SSH) node', { remote: true }],
-    ['a custom agent', { agentId: 'custom:abc' }],
-    ['a launch-command override', { launchCmdOverride: 'my-claude' }],
-    ['a per-node model', { model: 'opus' }]
+    ['a launch-command override', { launchCmdOverride: 'my-claude' }]
   ] as const)('builds nothing for %s — the legacy line stays the only launch', (_n, extra) => {
     expect(heldLaunchIntentFor(base(extra as Partial<HeldLaunchInputs>))).toBeUndefined()
+  })
+
+  it('PAR-230 F2 carries the per-node model in the semantic start intent', () => {
+    expect(heldLaunchIntentFor(base({ model: 'opus' }))).toMatchObject({
+      command: 'claude …', intent: { kind: 'agent', action: 'start', agentId: 'claude', model: 'opus' }
+    })
+  })
+
+  it.each([
+    ['its own args', { launchCmd: 'fixture', args: '--flag' }],
+    ['an env expansion in its launch command', { launchCmd: '${env:HOME}/bin/fixture' }],
+    ['shell syntax in its launch command', { launchCmd: 'FOO=1 fixture | tee log' }]
+  ])('PAR-230 F2 builds nothing for a custom agent with %s — the planner takes a plain argv only', (_n, customAgent) => {
+    expect(heldLaunchIntentFor(base({ agentId: 'custom:abc', initialPrompt: 'brief', customAgent }))).toBeUndefined()
+  })
+
+  it('PAR-230 F2 keeps a custom agent identity for resolution against its current machine-local config', () => {
+    expect(heldLaunchIntentFor(base({ agentId: 'custom:abc', command: "fixture 'literal brief'", initialPrompt: 'literal brief' }))).toMatchObject({
+      command: "fixture 'literal brief'", intent: { kind: 'agent', action: 'start', agentId: 'custom:abc', prompt: 'literal brief' }
+    })
   })
 })

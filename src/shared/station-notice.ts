@@ -28,7 +28,12 @@ import { oneLine } from './one-line'
 import { isSafeNodeId } from './safe-id'
 
 /** The closed set of reasons. A reason that is not in this union cannot produce a notice. */
-export type StationFailureReason = 'turn-errored' | 'dropped' | 'question-unanswered' | 'approval-unconfirmed'
+export type StationFailureReason =
+  | 'turn-errored'
+  | 'dropped'
+  | 'launch-failed'
+  | 'question-unanswered'
+  | 'approval-unconfirmed'
 
 /** Pending requests get a reminder after 15 minutes. Native approval may precede its next hook,
  *  so approval reminders describe missing confirmation and offer no failure actions. */
@@ -47,6 +52,12 @@ export interface StationObservation {
   /** The DROPPED verdict: the CLI left the pane and nothing accounted for it (the renderer's
    *  pane measurement, `terminal/agent-liveness.ts`). */
   dropped?: boolean
+  /** Core's own process proof for the station's CONFIRMED session: its shell is back with no CLI in
+   *  the tree. Unlike `dropped` it does not depend on the last reported state — a CLI that died
+   *  mid-turn never reported the turn's end. */
+  processGone?: boolean
+  /** A launch whose invocation returned to the shell without the CLI ever being observed. */
+  launchFailed?: boolean
   /** When the station asked the question the status mirror still holds unanswered
    *  (`pendingQuestion`). `undefined` when there is none, or when the ask was not observed. */
   questionSince?: number
@@ -105,13 +116,24 @@ export const STATION_TRIGGERS: readonly StationTrigger[] = [
     retry:
       '`send` cannot reach it — nothing is running in its pane. Ask the user to click the ' +
       "station's DROPPED chip, which resumes the conversation, then retry.",
-    // The verdict is only ever raised about a `done` station; a station core KNOWS to be mid-turn
-    // or asking is alive, whatever a stale report says.
+    // The renderer's verdict is only ever raised about a `done` station; a station core KNOWS to
+    // be mid-turn or asking is alive, whatever a stale report says. Core's own process proof
+    // (`processGone`) is that knowledge, so it holds whatever the last reported state was.
     fires: (obs) =>
-      obs.dropped === true &&
-      obs.state !== 'working' &&
-      obs.state !== 'blocked' &&
-      obs.state !== 'waiting'
+      obs.processGone === true ||
+      (obs.dropped === true &&
+        obs.state !== 'working' &&
+        obs.state !== 'blocked' &&
+        obs.state !== 'waiting')
+  },
+  {
+    reason: 'launch-failed',
+    label: 'its agent never started (the launch command returned to the shell without a running CLI)',
+    option: 'retry',
+    retry:
+      '`run --node <station>` types its launch again. If it fails the same way, the agent is not ' +
+      'installed or cannot start in that terminal — tell the user instead of retrying.',
+    fires: (obs) => obs.launchFailed === true
   },
   {
     reason: 'turn-errored',
@@ -437,6 +459,21 @@ export function stationNoticeTooltip(views: readonly StationNoticeView[]): strin
 
 /** Validate a notice list that crossed a process boundary (IPC / the browser bridge). A malformed
  *  entry is dropped, never repaired: this list drives a chip and a click-to-focus. */
+/** Core's process-liveness conclusions, by node id (see `MirrorEntry.lifecycle`). */
+export type StationLifecycleMap = Record<string, 'launch-failed' | 'dropped'>
+
+/** The same seam rule as the notice list: a wire value becoming store data. Unknown ids and
+ *  values are dropped; the result has no prototype-named keys. */
+export function sanitizeStationLifecycles(raw: unknown): StationLifecycleMap {
+  const out: StationLifecycleMap = {}
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!isSafeNodeId(id) || Object.hasOwn(Object.prototype, id)) continue
+    if (value === 'launch-failed' || value === 'dropped') out[id] = value
+  }
+  return out
+}
+
 export function sanitizeStationNotices(raw: unknown): StationNoticeView[] {
   if (!Array.isArray(raw)) return []
   const out: StationNoticeView[] = []

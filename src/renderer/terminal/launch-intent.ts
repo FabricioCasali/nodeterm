@@ -6,10 +6,11 @@
 // On macOS, Linux, tmux, SSH and relay this answers `'fallback'` without a single IPC, so those
 // launches are byte-identical to before.
 //
-// The outcome split is the safety property: a refusal the core made before touching the pane falls
-// back to the typed line, but a delivery that may have reached the pane (`delivery-failed`, or the
-// call itself failing — the reply may be what was lost) is reported as `'cancelled'`, which leaves
-// the launch held for an explicit Run now instead of typing a second copy behind it.
+// The outcome split is the safety property: only the core's "this channel does not apply to this
+// session" answer (`typedLineSafe`: tmux, a POSIX shell on Windows) falls back to the typed line.
+// Every other refusal — and a delivery that may have reached the pane, or the call itself failing —
+// is reported as `'cancelled'`, which leaves the launch held for an explicit Run now: the POSIX
+// line is what a Windows-native shell mis-parses, so it is never typed behind a refusal.
 
 import type { DeliveryOutcome } from '@shared/command-delivery'
 import type {
@@ -34,7 +35,7 @@ export function outcomeForLaunchResult(
   result: LaunchIntentExecutionResult
 ): DeliveryOutcome | 'fallback' {
   if (result.ok) return 'submitted'
-  return result.reason === 'delivery-failed' ? 'cancelled' : 'fallback'
+  return result.typedLineSafe === true && result.reason === 'unsupported-shell' ? 'fallback' : 'cancelled'
 }
 
 export async function executeHeldLaunch(
@@ -43,8 +44,10 @@ export async function executeHeldLaunch(
 ): Promise<DeliveryOutcome | 'fallback'> {
   const held = deps.held()
   if (!held || held.command !== command) return 'fallback'
-  if (!deps.sessionHost || deps.source !== 'local' || !deps.executeLaunch) return 'fallback'
+  if (!deps.sessionHost || deps.source !== 'local') return 'fallback'
   if ((await deps.hostPlatform()) !== 'win32') return 'fallback'
+  // A Windows session-host pane on a surface with no launch channel: nothing safe to type.
+  if (!deps.executeLaunch) return 'cancelled'
   let result: LaunchIntentExecutionResult
   try {
     result = await deps.executeLaunch({

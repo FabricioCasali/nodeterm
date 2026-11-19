@@ -46,13 +46,20 @@ means — and what you may assume when writing a feature — is three tiers, not
   clearly gated off — a feature that throws `EACCES`/`EPERM` on Windows because nobody checked is a
   bug, not an accepted limitation.
 - **Agent launch lines are POSIX source; a Windows-native pane never gets one typed if it can
-  be avoided.** A prompt-bearing builtin agent node carries `data.launchIntent` (bound to its exact
-  `initialCommand`, never serialized); on a local win32 session-host pane whose host recorded a
-  `pwsh`/`windows-powershell`/`cmd` dialect, the launch writer executes it via `pty:execute-launch`
-  (`core/launch-intent-execute.ts` → `prepareAgentLaunch` → `sessionHostExecuteLaunch`). Every
-  other pane answers `unsupported-shell` and keeps the typed line byte-identical. Only a
-  pre-delivery refusal may fall back to typing; `delivery-failed` never does. Details:
-  docs/windows-session-host.md, "Agent launches in a Windows-native shell".
+  be avoided.** A prompt-bearing agent node (builtin or custom, with or without a per-node model)
+  carries `data.launchIntent`, bound to its exact `initialCommand`. It is MACHINE-LOCAL like the
+  `pendingLaunch` it rides beside: saved only while that exact launch is still pending (so a cold
+  project and an off-screen `--run-now` keep it), and stripped wherever a held launch is stripped —
+  the shared project file, an import, a relay peer (`shared/node-exec.ts`). On a local win32
+  session-host pane whose host recorded a `pwsh`/`windows-powershell`/`cmd` dialect, the mounted
+  launch writer AND the headless launcher execute it via `PtyManager.executeLaunch`
+  (`core/launch-intent-execute.ts` → `prepareAgentLaunch` → `sessionHostExecuteLaunch`). A pane
+  the channel does not apply to (tmux, SSH, a POSIX shell on Windows, a batch-shim-only agent)
+  answers `typedLineSafe` and keeps the typed line byte-identical. **Every other refusal is
+  final:** an invalid request, a missing prompt file, an unavailable agent or a host that cannot
+  launch leaves the launch held for Run now — the POSIX line is never typed into a Windows-native
+  shell behind a refusal. Details: docs/windows-session-host.md, "Agent launches in a
+  Windows-native shell".
 - **Run configurations (launch.json run node) are gated off for process launches on a Windows core**
   — the launcher is a POSIX `sh` script stopped and hot-reloaded by POSIX signals. The core's
   `gateEntriesForPlatform` marks those entries unsupported with `RUN_WINDOWS_REASON` (browser
@@ -3475,7 +3482,21 @@ its agent status" under Hosted team relay.
   believed to be a parked agent. Resume reuses the hibernation wake closure unchanged, which
   re-reads the pane and refuses anything that is not a shell. Chip on the node header, the kanban
   card and the card modal; Desktop and Server Edition identical; relay tabs answer `null` and are
-  never judged. **A second thing this catches, unplanned:** in the same sweep 9 of 149 panes sat at a
+  never judged. **The core measures too (`core/agent-liveness.ts`, PAR-175):** the renderer rule
+  above needs a mounted, watched node and refuses codex/antigravity outright, so a station opened
+  off screen that never started, or a Codex that left its pane, read as healthy for ever. The
+  station-notice sweep now probes (`paneOwner(…, { resolveUnmounted: true })`, never a spawn or
+  an attach) the launches this core delivered and the verified sessions of agents with NO
+  SessionEnd hook. Its conclusions live on the status mirror as a transient `lifecycle`
+  (`launch-failed` | `dropped`), which `list`, the cards and the relay snapshot read. The
+  refusals are again the feature: `shell` is said only about the ROOT shell standing alone (a
+  child shell of the CLI, an unreadable probe or another generation prove nothing);
+  `launch-failed` additionally needs the launch's own completion receipt (written by the
+  invocation's `finally`), because a shell still starting the CLI looks exactly like one that
+  failed to — time alone never fails a launch; a hibernated node, or one whose program the app
+  itself just ended, is suppressed; and any later hook withdraws the conclusion. For codex and
+  antigravity a deliberate `/quit` therefore reads DROPPED as well: nothing distinguishes it, and
+  a pane with no CLI in it is what the label says. **A second thing this catches, unplanned:** in the same sweep 9 of 149 panes sat at a
   bare shell because a cold-restore `--resume` had answered *"No conversation found with session
   ID"* — the persisted `sessionId` outlived its transcript. The chip surfaces those too, but the
   Resume it offers still replays that dead id — but cold restore no longer creates the state: it

@@ -33,9 +33,9 @@
  * a program string carrying shell metacharacters is never handed to tmux.
  */
 
-import { normalizePendingLaunch } from './pending-launch-shape'
+import { normalizeHeldLaunchIntent, normalizePendingLaunch } from './pending-launch-shape'
 import { sshExtraArgsEnableLocalExec } from './ssh'
-import type { CanvasMutation, CanvasNodeState, PendingLaunch } from './types'
+import type { CanvasMutation, CanvasNodeState, HeldLaunchIntent, PendingLaunch } from './types'
 
 /** Per-node exec values the LOCAL machine typed. Persisted only in the machine-local index. */
 export interface LocalNodeExec {
@@ -45,6 +45,8 @@ export interface LocalNodeExec {
   sshExtraArgs?: string
   /** `CanvasNodeState.pendingLaunch` — a launch THIS machine armed and has not delivered yet. */
   pendingLaunch?: PendingLaunch
+  /** `CanvasNodeState.launchIntent` — the semantic twin of that pending launch, never without it. */
+  launchIntent?: HeldLaunchIntent
 }
 
 /** Node id → the exec values that stay on this machine. */
@@ -79,16 +81,21 @@ export function safeSessionProgram(shell: string | undefined): string | undefine
  */
 function stripNodeExec(n: CanvasNodeState, keepLaunch = false): CanvasNodeState {
   const launch = !keepLaunch && n.pendingLaunch !== undefined
+  // The semantic intent is execution authority for the launch it rides beside: it goes wherever
+  // that launch is stripped, and never travels without one.
+  const intent = n.launchIntent !== undefined && (!keepLaunch || n.pendingLaunch === undefined)
   if (
     n.shell === undefined &&
     n.ssh?.extraArgs === undefined &&
     n.ssh?.execTrusted === undefined &&
-    !launch
+    !launch &&
+    !intent
   )
     return n
   const out: CanvasNodeState = { ...n }
   delete out.shell
   if (launch) delete out.pendingLaunch
+  if (intent) delete out.launchIntent
   if (out.ssh) {
     // `execTrusted` goes with the value it vouches for. It is a MACHINE-LOCAL provenance marker:
     // if it could ride a document or a wire frame, a hostile one would simply set it to true.
@@ -175,7 +182,11 @@ export function carryLocalNodeExec(
   if (prev.shell === undefined && extraArgs === undefined && launch === undefined) return next
   const out: CanvasNodeState = { ...next }
   if (prev.shell !== undefined) out.shell = prev.shell
-  if (launch !== undefined) out.pendingLaunch = launch
+  if (launch !== undefined) {
+    out.pendingLaunch = launch
+    if (prev.launchIntent !== undefined) out.launchIntent = prev.launchIntent
+    else delete out.launchIntent
+  }
   if (extraArgs !== undefined && out.ssh)
     out.ssh = { ...out.ssh, extraArgs, execTrusted: prev.ssh?.execTrusted }
   return out
@@ -217,6 +228,8 @@ export function localNodeExec(nodes: CanvasNodeState[]): LocalNodeExecMap | unde
     // (`sanitizeInboundNode`, `applyLocalNodeExec`), so what reaches this collector is ours.
     const pending = normalizePendingLaunch(n.pendingLaunch)
     if (pending) entry.pendingLaunch = pending
+    const intent = normalizeHeldLaunchIntent(n.launchIntent, pending)
+    if (intent) entry.launchIntent = intent
     if (entry.shell || entry.sshExtraArgs || entry.pendingLaunch) map[n.id] = entry
   }
   return Object.keys(map).length ? map : undefined
@@ -279,6 +292,8 @@ export function applyLocalNodeExec(
     // workspace.json is hand-editable too: re-validate the shape, as the renderer's serializers do.
     const pending = normalizePendingLaunch(mine?.pendingLaunch)
     if (pending) out.pendingLaunch = pending
+    const intent = normalizeHeldLaunchIntent(mine?.launchIntent, pending)
+    if (intent) out.launchIntent = intent
     if (out.ssh && mine?.sshExtraArgs) {
       // Ours: it came out of the machine-local index, so the exec site may honor an option like
       // ProxyCommand (a jump host is a legitimate thing to have configured).

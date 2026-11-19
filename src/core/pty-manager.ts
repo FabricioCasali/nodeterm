@@ -106,6 +106,7 @@ import {
 } from './agents/pane-ownership'
 import { PANE_OWNER_FMT, foregroundArgvArgs, paneOwnerFrom, parseCombinedPaneOwner, parsePaneOwner } from './agents/pane-owner'
 import { binariesFor, isAgentPane, type PaneOwner } from '../shared/agents/pane-owner-predicate'
+import type { DeliveredLaunch } from './agent-liveness'
 import { envelopeGuardAllows, type EnvelopeGuard } from '../shared/agents/message-readiness'
 import { samePane } from './agents/agent-message'
 import { pasteThenSubmitWhenSettled } from './settled-submit'
@@ -1181,6 +1182,10 @@ function screenGate(screen: string): ChatPromptBlocked | null {
 /** Gap between a paste and its separate Enter for SEPARATE_SUBMIT_AGENTS (the rename path's
  *  measured shape: paste, then Enter as its own tmux invocation). */
 const SEPARATE_SUBMIT_DELAY_MS = 150
+
+/** A launch id as the session host's ledger takes it (UUID v4): the only thing a receipt is named by. */
+const LAUNCH_RECEIPT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+const LAUNCH_RECEIPT_MAX_AGE_MS = 24 * 60 * 60_000
 
 export class PtyManager {
   private sessions = new Map<string, Session>()
@@ -2322,6 +2327,57 @@ export class PtyManager {
   /** Test seam: replace any of `executeLaunch`'s machine-reading dependencies. */
   private launchIntentDepsOverride: Partial<LaunchIntentDeps> = {}
 
+  /**
+   * The semantic launches the session host accepted, newest per node — what the liveness monitor
+   * (core/agent-liveness.ts) may watch. Registered only after the host took the launch, and
+   * dropped when the node's session is destroyed: a launch that is not on record is never judged.
+   */
+  private readonly launchAttempts = new Map<string, DeliveredLaunch>()
+  /** When the app itself last ended a node's foreground program or session. */
+  private readonly deliberateExits = new Map<string, number>()
+  private launchReceiptDir: string | null | undefined
+
+  launchAttemptsSnapshot(): readonly DeliveredLaunch[] {
+    return [...this.launchAttempts.values()]
+  }
+
+  deliberateExitAt(persistKey: string): number | undefined {
+    return this.deliberateExits.get(persistKey)
+  }
+
+  /** Where a launch writes its completion receipt: one file per launch id, in a directory only
+   *  this core creates. `undefined` when it cannot be kept — the launch then simply carries no
+   *  receipt and can never be concluded "failed". Old receipts are pruned once per run. */
+  private launchReceiptPath(launchId: string): string | undefined {
+    if (!LAUNCH_RECEIPT_ID.test(launchId)) return undefined
+    if (this.launchReceiptDir === undefined) {
+      try {
+        const dir = path.join(platform().userDataDir, 'launch-receipts')
+        fs.mkdirSync(dir, { recursive: true })
+        const cutoff = Date.now() - LAUNCH_RECEIPT_MAX_AGE_MS
+        for (const name of fs.readdirSync(dir)) {
+          const file = path.join(dir, name)
+          try {
+            if (fs.statSync(file).mtimeMs < cutoff) fs.unlinkSync(file)
+          } catch {
+            // Another process's file, or already gone.
+          }
+        }
+        this.launchReceiptDir = dir
+      } catch {
+        this.launchReceiptDir = null
+      }
+    }
+    return this.launchReceiptDir ? path.join(this.launchReceiptDir, `${launchId}.done`) : undefined
+  }
+
+  private forgetLaunchAttempt(persistKey: string): void {
+    const launch = this.launchAttempts.get(persistKey)
+    if (!launch) return
+    this.launchAttempts.delete(persistKey)
+    if (launch.receipt) fs.promises.unlink(launch.receipt).catch(() => {})
+  }
+
   private launchIntentDeps(): LaunchIntentDeps {
     return {
       platform: this.runtimePlatform,
@@ -2335,6 +2391,7 @@ export class PtyManager {
       readPromptFile: readPromptFileBounded,
       execute: sessionHostExecuteLaunch,
       isProtocolIncompatible: (error) => error instanceof SessionHostProtocolCompatibilityError,
+      completionReceipt: (launchId) => this.launchReceiptPath(launchId),
       ...this.launchIntentDepsOverride
     }
   }
@@ -2359,7 +2416,21 @@ export class PtyManager {
           }
         : undefined,
       request,
-      this.launchIntentDeps()
+      {
+        ...this.launchIntentDeps(),
+        // On record only once the host accepted it, keyed by the node — a relaunch replaces it.
+        onExecuted: ({ launchId, agentId, receipt }) => {
+          if (typeof persistKey !== 'string') return
+          this.forgetLaunchAttempt(persistKey)
+          this.launchAttempts.set(persistKey, {
+            nodeId: persistKey,
+            launchId,
+            agentId,
+            at: Date.now(),
+            ...(receipt ? { receipt } : {})
+          })
+        }
+      }
     )
   }
 
@@ -7053,6 +7124,9 @@ export class PtyManager {
    */
   async terminateForeground(persistKey: string, expectedAgentId?: string): Promise<boolean | 'unsupported'> {
     if (typeof persistKey !== 'string' || !persistKey || persistKey.length > REF_MAX_LEN) return false
+    // The app is ending this node's foreground program: whatever leaves the pane next is an exit
+    // somebody asked for, not a crash (core/agent-liveness.ts reads this).
+    this.deliberateExits.set(persistKey, Date.now())
     const live = this.liveSessionForPersistKey(persistKey)
     // Refused on Zellij (ZELLIJ_BACKEND_GAPS): a signal aimed at a process group read off `ps`
     // without the pane-owner proof the tmux leg has would be a guess at which process to kill.
@@ -7445,6 +7519,8 @@ export class PtyManager {
     persistKey: string,
     opts?: { everySocket?: boolean }
   ): Promise<void> {
+    this.forgetLaunchAttempt(persistKey)
+    this.deliberateExits.set(persistKey, Date.now())
     return this.endSession(clientId, persistKey, 'delete', opts?.everySocket === true)
   }
 
