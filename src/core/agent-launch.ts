@@ -15,6 +15,7 @@ import {
 import { approvalFlags } from "../shared/agents/approval-mode";
 import { CODEX_NO_DAEMON_FLAG } from "../shared/agents/codex-daemon";
 import { agentModelArg } from "../shared/agents/model-gateway";
+import { customAgentArgv } from "../shared/agents/launch";
 import { SAFE_SESSION_ID } from "../shared/session-id";
 import { isRecord } from "../shared/is-record";
 
@@ -90,6 +91,8 @@ export interface AgentLaunchTrustedContext {
    * minted by the core for this one launch id; only the single-quoted path is interpolated.
    */
   completionReceipt?: string;
+  /** The host's environment, for a custom agent's `${env:…}` args. Absent = nothing is set. */
+  env?: Record<string, string | undefined>;
 }
 
 /** Core-private launch material. It must never cross the renderer/preload/relay boundary. */
@@ -142,6 +145,8 @@ interface ResolvedAgentConfig {
   argvPromptSeparator?: string;
   /** `flag-interactive` only: the builtin's own interactive-prompt flag (agy's differs). */
   promptFlag?: string;
+  /** A custom agent's own `args`, already expanded to argv (after the launch command's). */
+  extraArgs?: string[];
   builtin: boolean;
   /** The builtin harness whose flag grammar applies: the id itself, or a custom agent's base. */
   capId: AgentId;
@@ -299,10 +304,14 @@ function resolveTrustedAgentConfig(
       fail("agent-unavailable");
     base = AGENT_CONFIG[custom.baseAgent];
   }
-  // Extra `args` expand ${env:…} per token on the typed line; this planner does not model that,
-  // and dropping them would launch a different command than the one configured.
-  if (typeof custom.args === "string" && custom.args.trim())
-    fail("unsupported-shell");
+  // Extra `args`: the same split-then-expand rule the typed line uses (`customAgentArgv`), each
+  // element then encoded by the dialect below — never spliced into shell source.
+  const extraArgs =
+    typeof custom.args === "string"
+      ? customAgentArgv(custom.args, context.env ?? {}).argv
+      : [];
+  if (extraArgs.some((arg) => !safeText(arg, MAX_LAUNCH_COMMAND_LENGTH)))
+    fail("agent-unavailable");
   const launchCmd =
     typeof custom.launchCmd === "string" && custom.launchCmd.trim()
       ? custom.launchCmd
@@ -326,6 +335,7 @@ function resolveTrustedAgentConfig(
     promptInjectionMode,
     argvPromptSeparator: base?.argvPromptSeparator,
     promptFlag: base?.promptFlag,
+    extraArgs,
     builtin: false,
     capId: custom.baseAgent ?? intent.agentId,
   };
@@ -414,7 +424,7 @@ function logicalLaunch(
 ): LogicalAgentLaunch {
   const parsed = parseTrustedLaunchCommand(config.launchCmd);
   let executable = parsed[0];
-  const baseArgs = parsed.slice(1);
+  const baseArgs = [...parsed.slice(1), ...(config.extraArgs ?? [])];
   if (config.builtin)
     executable = agentLaunchProgram(
       config.id,

@@ -119,6 +119,31 @@ describe.runIf(process.platform === 'win32')('PAR-230 F2 core transport with a r
     expect(existsSync(f.marker)).toBe(false)
   })
 
+  it.each(['pwsh', 'windows-powershell', 'cmd'] as const)(
+    'T09 %s a team profile (free-form id, base harness, ${env:…} args) keeps its args, model and brief',
+    async (dialect) => {
+      const f = fixture()
+      const h = harness(f, dialect)
+      const profile: CustomAgent = {
+        id: 'claude-coder-particular', label: 'Claude Coder (Particular)', baseAgent: 'claude',
+        launchCmd: quote(f.shim), promptInjectionMode: 'argv',
+        args: '--mcp-config "${env:PAR230_ROOT}/perfis/it\'s coder.mcp.json" --strict-mcp-config ${env:PAR230_UNSET}'
+      }
+      const result = await executeLaunchIntent({ ...h.target, agentId: profile.id }, {
+        launchId: LAUNCH_ID,
+        intent: { kind: 'agent', action: 'start', agentId: profile.id, model: 'opus' },
+        promptFile: f.briefFile
+      }, { ...h.d, customAgents: () => [profile], env: () => ({ PAR230_ROOT: 'H:/ambiente raiz/03-mcps' }) })
+      expect(result).toEqual({ ok: true })
+      const argv = h.received[0].argv
+      // The profile's own args, expanded per token and still ONE argument each; an unset one is gone.
+      expect(argv.slice(0, 3)).toEqual(['--mcp-config', "H:/ambiente raiz/03-mcps/perfis/it's coder.mcp.json", '--strict-mcp-config'])
+      expect(argv[argv.indexOf('--model') + 1]).toBe('opus')
+      expect(argv.filter((arg) => arg === f.flattened)).toHaveLength(1)
+      expect(existsSync(f.marker)).toBe(false)
+    }
+  )
+
   it('T10 transports a readable long file without losing its contents at the inline Windows limit', async () => {
     const f = fixture()
     const brief = '開発 "literal" '.repeat(4_000).trim()

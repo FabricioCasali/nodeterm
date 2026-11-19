@@ -150,8 +150,10 @@ Rules that keep this safe:
   that cannot launch, `delivery-failed`, a lost reply. The launch stays held for an explicit Run
   now; the POSIX line is never typed into a Windows-native shell behind a refusal.
 - Excluded from the intent (legacy line only): resumes, launch-command overrides, SSH nodes, and
-  a custom agent with its own `args` or an `${env:…}` launch command. A custom agent is named by
-  id only; the core resolves its current machine-local record and its base harness's grammar.
+  a custom agent whose launch COMMAND holds an `${env:…}` expansion or shell syntax. A custom
+  agent is named by id only; the core resolves its current machine-local record: the program, the
+  base harness's grammar, and its `args` — split, `${env:…}`-expanded per token against the
+  core's environment (`customAgentArgv`, the typed line's own rule) and encoded as argv.
 - `pty:execute-launch` is host-only for relay peers (`shared/host-control.ts`).
 
 ### The IPty-shim (why the integration is this small)

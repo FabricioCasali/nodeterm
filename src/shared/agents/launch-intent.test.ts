@@ -58,8 +58,16 @@ describe('heldLaunchIntentFor', () => {
     })
   })
 
+  it('PAR-230 F2 a custom agent with free-form id and its own args keeps its identity too', () => {
+    expect(heldLaunchIntentFor(base({
+      agentId: 'claude-coder-particular', initialPrompt: 'brief', model: 'opus',
+      customAgent: { launchCmd: 'claude', args: '--mcp-config ${env:ROOT}/x.json --strict-mcp-config' }
+    }))).toMatchObject({ intent: { kind: 'agent', action: 'start', agentId: 'claude-coder-particular', prompt: 'brief', model: 'opus' } })
+    // No record for a free-form id on this machine: nothing to resolve, the typed line stays.
+    expect(heldLaunchIntentFor(base({ agentId: 'unknown-agent', initialPrompt: 'brief' }))).toBeUndefined()
+  })
+
   it.each([
-    ['its own args', { launchCmd: 'fixture', args: '--flag' }],
     ['an env expansion in its launch command', { launchCmd: '${env:HOME}/bin/fixture' }],
     ['shell syntax in its launch command', { launchCmd: 'FOO=1 fixture | tee log' }]
   ])('PAR-230 F2 builds nothing for a custom agent with %s — the planner takes a plain argv only', (_n, customAgent) => {

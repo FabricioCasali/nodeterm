@@ -7,10 +7,11 @@
 // only from a SEMANTIC request, never by re-parsing the typed line. This builds that request.
 //
 // It is built only where it is a faithful description of the legacy line. Anything the core
-// planner does not model — a launch-command override, a custom agent with its own `args` or an
-// ${env:…} launch command, a remote node, a resume — yields NO intent, and such a node keeps its
-// legacy line on every surface. A custom agent is named by id only: the core resolves its CURRENT
-// machine-local record, so no launch command ever rides the intent. A launch with no prompt
+// planner does not model — a launch-command override, a custom agent whose launch command holds
+// an ${env:…} expansion or shell syntax, a remote node, a resume — yields NO intent, and such a
+// node keeps its legacy line on every surface. A custom agent is named by id only: the core
+// resolves its CURRENT machine-local record (launch command, base harness, `args`), so no launch
+// material ever rides the intent. A launch with no prompt
 // yields none either: without a prompt the legacy line holds only bare flag words and validated
 // ids, which every Windows shell already parses the same way.
 
@@ -46,10 +47,12 @@ export function heldLaunchIntentFor(inputs: HeldLaunchInputs): HeldLaunchIntent 
   if (inputs.resume || inputs.remote) return undefined
   if (inputs.launchCmdOverride?.trim()) return undefined
   if (!Object.hasOwn(AGENT_CONFIG, inputs.agentId)) {
-    if (!inputs.agentId.startsWith('custom:')) return undefined
-    // Extra args, an ${env:…} expansion or shell syntax in the launch command: the core planner
-    // takes a plain argv only, so such an agent keeps its typed line rather than be refused.
-    if (inputs.customAgent?.args?.trim() || /[;&|<>()$`]/u.test(inputs.customAgent?.launchCmd ?? '')) return undefined
+    // A custom agent: one this machine has a record for (ids are free-form), or a `custom:` id.
+    if (!inputs.customAgent && !inputs.agentId.startsWith('custom:')) return undefined
+    // An ${env:…} expansion or shell syntax in the launch COMMAND: the core planner takes a plain
+    // program there, so such an agent keeps its typed line rather than be refused. (`args` are
+    // modelled: the planner expands and encodes them itself.)
+    if (/[;&|<>()$`]/u.test(inputs.customAgent?.launchCmd ?? '')) return undefined
   }
   const model = inputs.model?.trim()
   const promptFile = inputs.promptFile?.trim()

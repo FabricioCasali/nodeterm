@@ -159,6 +159,8 @@ export interface LaunchIntentDeps {
   execute(name: string, launchId: string, plan: PreparedAgentLaunch): Promise<ExecuteLaunchResult>
   /** The session-host's "this host cannot launch at all" error — nothing was typed. */
   isProtocolIncompatible(error: unknown): boolean
+  /** The host's environment, for a custom agent's `${env:…}` args. */
+  env?(): Record<string, string | undefined>
   /** A core-private path for this launch's completion receipt (see
    *  `AgentLaunchTrustedContext.completionReceipt`), or undefined where none can be kept. */
   completionReceipt?(launchId: string): string | undefined
@@ -260,7 +262,8 @@ export async function executeLaunchIntent(
       codexApprovalValues: codex.approvalValues,
       codexNoDaemon: codex.noDaemon,
       ...(promptSourceFile ? { promptSourceFile } : {}),
-      ...(receipt ? { completionReceipt: receipt } : {})
+      ...(receipt ? { completionReceipt: receipt } : {}),
+      ...(deps.env ? { env: deps.env() } : {})
     })
   } catch (error) {
     // A batch-shim-only install keeps the typed line it has always been launched with.

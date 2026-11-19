@@ -108,16 +108,30 @@ export interface AssembledCommand {
  *  expand to nothing vanishes (matching what an unquoted `$VAR` does at a real shell); the names
  *  are still reported in `missing`. Returns '' when there are no args. */
 function expandedArgs(raw: string, env: Record<string, string | undefined>): { fragment: string; missing: string[] } {
-  if (!raw?.trim()) return { fragment: '', missing: [] }
+  const { argv, missing } = customAgentArgv(raw, env)
+  return { fragment: argv.map(shellSingleQuote).join(' '), missing }
+}
+
+/**
+ * A custom agent's `args` as argv: split first, then `${env:…}` expanded per token (so a value
+ * with spaces stays one argument), a token that expands to nothing dropped. The one rule behind
+ * both the typed line (`expandedArgs` quotes each element) and the core planner, which hands the
+ * same elements to a Windows-native shell's own encoder (core/agent-launch.ts).
+ */
+export function customAgentArgv(
+  raw: string | undefined,
+  env: Record<string, string | undefined>
+): { argv: string[]; missing: string[] } {
+  if (!raw?.trim()) return { argv: [], missing: [] }
   const missing: string[] = []
-  const tokens: string[] = []
+  const argv: string[] = []
   for (const token of shellSplit(raw)) {
     const r = expandEnvVars(token, env)
     missing.push(...r.missing)
     if (r.value === '' && token !== '') continue
-    tokens.push(shellSingleQuote(r.value))
+    argv.push(r.value)
   }
-  return { fragment: tokens.join(' '), missing }
+  return { argv, missing }
 }
 
 /** Expand `${env:…}` in a custom `launchCmd`. A launchCmd with no env tokens — every builtin, and

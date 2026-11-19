@@ -2392,6 +2392,7 @@ export class PtyManager {
       execute: sessionHostExecuteLaunch,
       isProtocolIncompatible: (error) => error instanceof SessionHostProtocolCompatibilityError,
       completionReceipt: (launchId) => this.launchReceiptPath(launchId),
+      env: () => process.env,
       ...this.launchIntentDepsOverride
     }
   }
