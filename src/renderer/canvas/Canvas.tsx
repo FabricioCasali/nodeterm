@@ -19,6 +19,7 @@ import { commitOwnedLaunchAttempt, registerLaunchCommit } from '../terminal/laun
 import { hasLaunchWriter, launchCommand } from '../terminal/launch-command'
 import { useCoreIsWindows } from '../terminal/use-core-platform'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { useContextLinkSync } from './useContextLinkSync'
 import { useMirrorIdentitySeed } from './useMirrorIdentitySeed'
 import { useShallow } from 'zustand/react/shallow'
@@ -15096,6 +15097,53 @@ export function Canvas() {
         markDirty()
       }
 
+      const liveRunNowProject =
+        openVerb && !offCanvas && args.project === undefined && ctlProject &&
+        !ctlProject.ssh && !ctlProject.remote && runNowRequested(args) && !isBrowserRuntime()
+          ? ctlProject
+          : undefined
+      const addOpenNodes = (
+        count: number,
+        make: (index: number) => CanvasNode,
+        intoGroupId: string | undefined,
+        after: string[] | undefined
+      ) => {
+        const add = () => {
+          const ids = intoGroupId
+            ? addGrouped(intoGroupId, count, make)
+            : Array.from({ length: count }, (_, index) => addAndConnect(make(index)))
+          ropeDeps(ids, after)
+          autoLayoutAfterCliAdd(intoGroupId ?? src.parentId)
+          return ids
+        }
+        return liveRunNowProject ? flushSync(add) : add()
+      }
+      const replyLiveOpen = async <T extends { queued: boolean; queuedIds: string[] },>(
+        opened: { ok: true; message: string; result: T }
+      ) => {
+        if (!liveRunNowProject || !opened.result.queued) return reply(opened)
+        const candidates = nodesRef.current.filter((node) =>
+          opened.result.queuedIds.includes(node.id) && !launchInFlight.current.has(node.id)
+        )
+        const ready = new Set(launchesToFire(
+          candidates as unknown as ArmedNode[],
+          useAgentStatus.getState().byId,
+          new Set(nodesRef.current.map((node) => node.id)),
+          setupDoneForGroup,
+          useLaunchDelivery.getState().byId
+        ).map(({ id }) => id))
+        const held = flowToNodeStates(candidates.filter(({ id }) => ready.has(id)))
+        if (!held.length) return reply(opened)
+        const batch = await flushSync(() => startNodesHeadlessRef.current(liveRunNowProject, held))
+        const waiting = opened.result.queuedIds.filter((id) => !ready.has(id))
+        const merged = mergeRunNow({
+          ...opened,
+          message: waiting.length ? opened.message : opened.message.replace('\nqueued; awaiting launch delivery', '')
+        }, batch)
+        const queuedIds = [...waiting, ...merged.result.queuedIds]
+        reply({ ...merged, result: { ...merged.result, queued: queuedIds.length > 0, queuedIds } })
+      }
+
       try {
         switch (verb) {
           case 'list': {
@@ -15175,14 +15223,10 @@ export function Canvas() {
               )
               return openBatch.add(node)
             }
-            const ids = intoGroupId
-              ? addGrouped(intoGroupId, count, make)
-              : Array.from({ length: count }, (_, i) => addAndConnect(make(i)))
-            ropeDeps(ids, after)
-            autoLayoutAfterCliAdd(intoGroupId ?? src.parentId)
+            const ids = addOpenNodes(count, make, intoGroupId, after)
             const openResult = openBatch.result(after ?? [])
             const { queuedIds } = openResult
-            reply({
+            await replyLiveOpen({
               ok: true,
               message:
                 `opened ${count} terminal(s): ${ids.join(', ')}` +
@@ -15322,11 +15366,7 @@ export function Canvas() {
               if (issueRef) issueNodes.push(bound)
               return openBatch.add(bound)
             }
-            const ids = intoGroupId
-              ? addGrouped(intoGroupId, count, make)
-              : Array.from({ length: count }, (_, i) => addAndConnect(make(i)))
-            ropeDeps(ids, after)
-            autoLayoutAfterCliAdd(intoGroupId ?? src.parentId)
+            const ids = addOpenNodes(count, make, intoGroupId, after)
             logRunsStarted(ctlProject?.id, issueNodes, issueRef)
             const openResult = openBatch.result(after ?? [])
             const { queuedIds } = openResult
@@ -15348,7 +15388,7 @@ export function Canvas() {
             const depLinked = (after ?? []).length
               ? ids.flatMap((nid) => bridgeTo(nid, after ?? [], openedEndpoint).linked)
               : []
-            reply({
+            await replyLiveOpen({
               ok: true,
               message:
                 `opened ${count} ${agentId} session(s): ${ids.join(', ')}` +
