@@ -10762,6 +10762,19 @@ installer command. Previous archives are never replaced. `dist:win` must call th
 script rather than bare `electron-vite build`: the latter omits `out/main/codex-relay.js`, so a
 package can otherwise contain a stale relay left by an earlier build or none at all.
 
+**The hand-off is always the build method plus one install command ready to paste.** After the
+build, give Fabricio the full line for a terminal OUTSIDE nodeterm (Windows Terminal), with the
+absolute path and the build id, never "run the installer" or a bare `RUN=` line:
+`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Desenv\particular\nodeterm\scripts\install-local-build.ps1" -BuildId <build-id> -MatarHost`.
+`scripts/install-local-build.ps1` is local-only (`.git/info/exclude`): it checks the installer
+SHA256 against the manifest, ends the in-place session host that locks the install dir, and runs
+the installer. Without `-MatarHost` it asks before closing the front and keeps the staged host
+(`%LOCALAPPDATA%\nodeterm\session-host`), so terminals survive the update; `-MatarHost` ends the
+front and the staged host without asking (clean restart of every terminal/agent). It refuses to run
+from a shell that is a child of the front or of a host, because ending them would kill the script
+before the installer starts. Do not edit tracked files while a build runs: the build script compares
+`git status` before and after and fails on any change.
+
 **Linux ships AppImage + deb + rpm**, all unsigned, all built by `release-linux` on a plain
 `ubuntu-latest` runner (`npm run dist:linux` locally). Three things about it are easy to get wrong:
 
