@@ -116,7 +116,8 @@ describe('each open path types openPrompt, never its own inline prompt', () => {
       expect(calls.length, `${name} builds agent nodes`).toBeGreaterThan(0)
       for (const call of calls) {
         expect(call).toContain('openPrompt.prompt,')
-        expect(call).toMatch(/openPrompt\.promptFile\s*\)/)
+        // Trailing arguments may follow it (PAR-255's `--launch-args`), but it is passed as-is.
+        expect(call).toMatch(/openPrompt\.promptFile\s*[,)]/)
       }
       // The per-path prompt that used to be typed inline is gone, not merely unused.
       expect(block()).not.toMatch(legacy)

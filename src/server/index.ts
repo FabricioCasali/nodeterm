@@ -1082,6 +1082,7 @@ export async function startServer(
                 sessionId: entry.sessionId,
                 permissionMode,
                 model: node.agentModel,
+                launchArgs: node.agentLaunchArgs,
                 launchCmdOverride: settings.agentLaunchCommands?.[entry.agentId as BuiltinAgentId],
                 sharedIdentity,
                 approvalCaps: { codexApprovalValues: codexCaps.approvalValues, codexNoDaemon: codexCaps.noDaemon ?? null }

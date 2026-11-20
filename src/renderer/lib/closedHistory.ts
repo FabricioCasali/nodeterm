@@ -4,6 +4,7 @@ import { flowToNodeStates, type CanvasNode } from '@renderer/state/workspace'
 import { snapshotNode, type ReopenNodeSnapshot, type RestorableNodeKind } from './reopenNode'
 import { absolutePosition, type FocusableNode } from './nodeFocus'
 import { normalizeNodeIcon } from '@shared/node-icon'
+import { normalizeLaunchArgs } from '@shared/agents/launch-args'
 
 /**
  * Builds one `ClosedSessionEntry` per node in `deletedIds` that `snapshotNode` would also accept
@@ -156,6 +157,8 @@ export function stateToReopenSnapshot(entry: ClosedSessionEntry): ReopenNodeSnap
       highScore: n.highScore,
       agentId: n.agentId,
       agentModel: n.agentModel,
+      // Re-validated, not copied: same hand-editable file (machine-local, like `shell`).
+      agentLaunchArgs: normalizeLaunchArgs(n.agentLaunchArgs),
       accountId: n.accountId,
       agentSessionId: n.agentSessionId,
       ssh: n.ssh,

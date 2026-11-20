@@ -108,7 +108,10 @@ export interface RecreateContext {
 }
 
 const COSMETIC_KEYS = [
-  'title', 'titleAuto', 'color', 'group', 'tags', 'collapsed', 'expandedHeight', 'shell', 'agentModel'
+  'title', 'titleAuto', 'color', 'group', 'tags', 'collapsed', 'expandedHeight', 'shell', 'agentModel',
+  // Not cosmetic, but carried the same way as `shell`/`agentModel`: the reopened agent keeps the
+  // per-session `--launch-args` for its later relaunches (re-validated by the serializer).
+  'agentLaunchArgs'
 ] as const
 
 function withCosmetics(node: CanvasNode, data: NodeData): CanvasNode {

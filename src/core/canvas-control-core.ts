@@ -47,6 +47,7 @@ import {
   afterSuccessFlagRefusal
 } from '../shared/station-outcome'
 import { ISSUE_BRANCH_SLUG_MAX, issueWorktreeBranch } from '../shared/issue-worktree'
+import { LAUNCH_ARGS_MAX_LENGTH, launchArgsFlagRefusal } from '../shared/agents/launch-args'
 import { CONTROL_REQUEST_TIMEOUT_MS } from '../shared/control-confirm'
 import {
   REQUEST_ID_HINT_LEAD,
@@ -711,6 +712,25 @@ import {
   REPORT_LABEL
 } from './github/report-issue-core'
 
+/** The `--launch-args` paragraph both agent-facing bodies share (@shared/agents/launch-args). */
+function launchArgsDocLines(): string[] {
+  return [
+    '  `--launch-args <args>` (open-agent / open-claude) appends extra command-line arguments to the',
+    '  CLI this ONE session launches with — e.g. `--launch-args="--strict-mcp-config --mcp-config',
+    '  /abs/mcp.json"` (claude), `--launch-args="-c mcp_servers.linear.enabled=false"` (codex),',
+    '  `--launch-args="--gemini_dir=/abs/dir"` (agy). Write it `--launch-args="..."`, with the `=`,',
+    '  whenever the value starts with `--`: after a flag, a bare `--x` is read as the next flag.',
+    '  The value is split like a shell would (quotes group, backslash escapes) and every piece is',
+    '  passed LITERALLY — no `$VAR`, `${env:…}` or `~` expansion — so pass absolute paths. The args',
+    "  land after the agent's own configured args and nodeterm's permission/session/model flags:",
+    '  before a prompt separator, after a positional prompt (so a variadic option such as',
+    '  `--mcp-config <files...>` cannot swallow the prompt). They are kept on the node, so a restart',
+    '  or cold restore relaunches with them. Do not repeat a flag nodeterm manages (`--model`, the',
+    `  permission mode, the session id). At most ${LAUNCH_ARGS_MAX_LENGTH} characters on one line: a newline,`,
+    '  NUL or other control character, or an unterminated quote, is refused.'
+  ]
+}
+
 /** The `--dry-run` paragraph both agent-facing bodies share, rendered from `DRY_RUN_VERBS`. */
 function dryRunDocLines(): string[] {
   return [
@@ -837,6 +857,9 @@ export function parseControlRequest(
   if (v === 'open-agent' && !args.agent) return { error: 'open-agent requires --agent <id>' }
   const issueRefusal = issueFlagRefusal(v, args)
   if (issueRefusal) return { error: issueRefusal }
+  // `--launch-args`: the same shape gate desktop main runs before forwarding (@shared/agents/launch-args).
+  const launchArgsRefusal = launchArgsFlagRefusal(v, args)
+  if (launchArgsRefusal) return { error: launchArgsRefusal }
   // `--after-pr`: the same shape gate desktop main runs before forwarding. The Server Edition then
   // refuses the well-formed flag as unsupported (its open allowlist), since it keeps no PR watch.
   const afterPrRefusal = afterPrFlagRefusal(v, args)
@@ -997,8 +1020,8 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  place and size — see `list --geometry` below). Start here when you need a node id.',
     '- `help` — print the verb list. Answered by the shim itself, so it works even if the app is down.',
     '- `open-terminal [--count N] [--title T] [--cwd P] [--cmd C] [--group <id>] [--after <id,id>] [--after-success <id,id>] [--success-deadline <90m|12h|3d>] [--after-pr <N:checks|N:merged>] [--pr-deadline <90m|12h|3d>] [--project <id>] [--run-now]` — open N plain terminals. `--cmd` requires verified node identity.',
-    '- `open-claude [--count N] [--title T] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--group <id>] [--after <id,id>] [--after-success <id,id>] [--success-deadline <90m|12h|3d>] [--after-pr <N:checks|N:merged>] [--pr-deadline <90m|12h|3d>] [--project <id>] [--issue <owner/repo#N | #N>] [--run-now]` — open N Claude sessions.',
-    `- \`open-agent --agent ${agentChoices} [--count N] [--title T] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--group <id>] [--after <id,id>] [--after-success <id,id>] [--success-deadline <90m|12h|3d>] [--after-pr <N:checks|N:merged>] [--pr-deadline <90m|12h|3d>] [--project <id>] [--issue <owner/repo#N | #N>] [--run-now]\` — open`,
+    '- `open-claude [--count N] [--title T] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--launch-args A] [--group <id>] [--after <id,id>] [--after-success <id,id>] [--success-deadline <90m|12h|3d>] [--after-pr <N:checks|N:merged>] [--pr-deadline <90m|12h|3d>] [--project <id>] [--issue <owner/repo#N | #N>] [--run-now]` — open N Claude sessions.',
+    `- \`open-agent --agent ${agentChoices} [--count N] [--title T] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--launch-args A] [--group <id>] [--after <id,id>] [--after-success <id,id>] [--success-deadline <90m|12h|3d>] [--after-pr <N:checks|N:merged>] [--pr-deadline <90m|12h|3d>] [--project <id>] [--issue <owner/repo#N | #N>] [--run-now]\` — open`,
     '  any agent CLI. `--group` parents the node(s) into a group frame; a worktree-bound group also',
     '  hands its worktree path down as the cwd. `--after <id,id>` opens the node ARMED: it does not',
     '  start until every listed station has finished a turn SUCCESSFULLY. It is',
@@ -1072,6 +1095,7 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  (and custom agents based on them); any other agent ignores it and launches',
     '  exactly as it would without the flag. The id is passed to the CLI as-is, so a name that',
     '  agent does not recognise fails inside the session, not at open time — name a model you know.',
+    ...launchArgsDocLines(),
     '  `--title <name>` names the node (all three open verbs) and stops the session\'s own title from',
     '  replacing it; with `--count` each node is numbered (`<name> 1`, `<name> 2`).',
     ...issueBindingDocLines(),
@@ -1576,8 +1600,8 @@ Verbs:
 - \`help\` — print the verb list. The shim answers this itself, without reaching the app, so it
   is also what to run when you are unsure whether the control endpoint is alive.
 - \`open-terminal [--count N] [--title T] [--cwd P] [--cmd C] [--group <id>] [--after <id,id>] [--after-success <id,id>] [--success-deadline <90m|12h|3d>] [--after-pr <N:checks|N:merged>] [--pr-deadline <90m|12h|3d>] [--project <id>] [--run-now]\` — open N plain terminals (default 1). \`--cmd\` requires verified node identity.
-- \`open-claude [--count N] [--title T] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--group <id>] [--after <id,id>] [--after-success <id,id>] [--success-deadline <90m|12h|3d>] [--after-pr <N:checks|N:merged>] [--pr-deadline <90m|12h|3d>] [--project <id>] [--issue <owner/repo#N | #N>] [--run-now]\` — open N Claude sessions (default 1).
-- \`open-agent --agent ${agentChoices} [--count N] [--title T] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--group <id>] [--after <id,id>] [--after-success <id,id>] [--success-deadline <90m|12h|3d>] [--after-pr <N:checks|N:merged>] [--pr-deadline <90m|12h|3d>] [--project <id>] [--issue <owner/repo#N | #N>] [--run-now]\` — open N sessions of any agent CLI.
+- \`open-claude [--count N] [--title T] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--launch-args A] [--group <id>] [--after <id,id>] [--after-success <id,id>] [--success-deadline <90m|12h|3d>] [--after-pr <N:checks|N:merged>] [--pr-deadline <90m|12h|3d>] [--project <id>] [--issue <owner/repo#N | #N>] [--run-now]\` — open N Claude sessions (default 1).
+- \`open-agent --agent ${agentChoices} [--count N] [--title T] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--launch-args A] [--group <id>] [--after <id,id>] [--after-success <id,id>] [--success-deadline <90m|12h|3d>] [--after-pr <N:checks|N:merged>] [--pr-deadline <90m|12h|3d>] [--project <id>] [--issue <owner/repo#N | #N>] [--run-now]\` — open N sessions of any agent CLI.
   \`--group\` parents the node(s) into an existing group frame; a worktree-bound group also
   hands its worktree path down as the cwd.
   \`--after <id,id>\` opens the node **armed**: it does NOT start yet, and launches itself once
@@ -1668,6 +1692,7 @@ ${offScreenCascadeDocLines().join('\n')}
   as it would have — the flag is never an error, so a mixed fan-out needs no special-casing. The
   id goes to the CLI verbatim: an unknown name fails inside the session on its first turn, not at
   open time, so name a model you know that CLI accepts rather than guessing.
+${launchArgsDocLines().join('\n')}
 ${issueBindingDocLines().join('\n')}
 ${afterPrDocLines().join('\n')}
 ${afterHandoverDocLines().join('\n')}

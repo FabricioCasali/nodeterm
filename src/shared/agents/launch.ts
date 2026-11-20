@@ -29,6 +29,7 @@ import { withPermissionMode, type ApprovalCaps } from './approval-mode'
 import { resolveAgentConfig } from './custom-agent'
 import { withAgentModel } from './model-gateway'
 import { withCodexNoDaemon } from './codex-daemon'
+import { launchArgsArgv } from './launch-args'
 
 export interface LaunchInputs {
   agentId: AgentId
@@ -55,6 +56,10 @@ export interface LaunchInputs {
   permissionMode?: AgentPermissionMode
   /** Per-node model override, applied through the effective base harness. */
   model?: string
+  /** Per-session extra CLI arguments (canvas-control `--launch-args`), as the raw string. Split once
+   *  (`launchArgsArgv`, literal — no env expansion), each element single-quoted, and placed in the
+   *  managed-flags slot — see `withLaunchArgs`. Undefined/invalid = byte-identical line. */
+  launchArgs?: string
   /** A minted session id for FIRST launch (claude-base only, when the CLI supports `--session-id`).
    *  Ignored on resume. */
   sessionId?: string
@@ -83,6 +88,9 @@ export interface ResumeInputs {
   permissionMode?: AgentPermissionMode
   /** Per-node model override, applied through the effective base harness. */
   model?: string
+  /** Per-session extra CLI arguments persisted on the node (`agentLaunchArgs`) — same meaning and
+   *  placement as `LaunchInputs.launchArgs`, so a restart relaunches with the same flags. */
+  launchArgs?: string
   /** Should a SHARED_IDENTITY_CAPABLE agent (codex) name its managed launcher on resume? Same
    *  semantics as `LaunchInputs.sharedIdentity`. */
   sharedIdentity?: boolean
@@ -178,6 +186,20 @@ export function promptFilePathError(p: string): string | null {
 }
 
 /**
+ * Append the per-session `--launch-args` to a line, in the managed-flags slot: after the permission,
+ * session-id and model flags nodeterm adds, so BEFORE the prompt separator of a separator harness
+ * (grok's `--`, cursor's `agent`) and AFTER the positional prompt of every other one. That is the
+ * slot each harness's grammar already proves safe for a flag (it is where nodeterm's own flags have
+ * always gone), and it keeps a VARIADIC option (claude's `--mcp-config <configs...>` /
+ * `--plugin-dir <paths...>`) from swallowing the prompt as one more value, which it would do if the
+ * args sat in front of the positional prompt.
+ */
+function withLaunchArgs(cmd: string, raw: string | undefined): string {
+  const argv = launchArgsArgv(raw)
+  return argv.length ? `${cmd} ${argv.map(shellSingleQuote).join(' ')}` : cmd
+}
+
+/**
  * Assemble the FIRST-LAUNCH command: `<launchCmd> <args> [sep] [prompt] [permission flag]
  * [session-id flag]`. The prompt and flags land per the resolved prompt convention (separator
  * agents put flags before `--`; positional agents put them last), exactly as the historical
@@ -245,10 +267,11 @@ export function assembleLaunchCommand(
       : cmd
     // Session-id minting: claude-base + CLI supports the flag. On resume this branch is never
     // taken (assembleResumeCommand does not pass sessionId).
-    if (inputs.sessionId && mintsSessionId(capId) && inputs.sessionIdFlagSupported) {
-      return withAgentModel(withSessionId(withMode, capId, inputs.sessionId), capId, inputs.model)
-    }
-    return withAgentModel(withMode, capId, inputs.model)
+    const withSession =
+      inputs.sessionId && mintsSessionId(capId) && inputs.sessionIdFlagSupported
+        ? withSessionId(withMode, capId, inputs.sessionId)
+        : withMode
+    return withLaunchArgs(withAgentModel(withSession, capId, inputs.model), inputs.launchArgs)
   }
 
   const composed = usesSep ? `${flagged(baseCmd)} ${sep} ${promptArg}` : flagged(withPrompt)
@@ -289,7 +312,7 @@ export function assembleResumeCommand(
     ? withPermissionMode(base, capId, inputs.permissionMode, inputs.approvalCaps ?? {})
     : base
   const command = withCodexNoDaemon(
-    withAgentModel(withMode, capId, inputs.model),
+    withLaunchArgs(withAgentModel(withMode, capId, inputs.model), inputs.launchArgs),
     capId,
     inputs.approvalCaps ?? {}
   )

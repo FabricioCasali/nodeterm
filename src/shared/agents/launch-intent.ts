@@ -13,9 +13,12 @@
 // resolves its CURRENT machine-local record (launch command, base harness, `args`), so no launch
 // material ever rides the intent. A launch with no prompt
 // yields none either: without a prompt the legacy line holds only bare flag words and validated
-// ids, which every Windows shell already parses the same way.
+// ids, which every Windows shell already parses the same way — UNLESS it carries per-session
+// `--launch-args`: those are free text (a `-c 'k=[{name="a"}]'` override, a path with spaces), so
+// a launch with them always gets an intent, prompt or not.
 
 import type { CustomAgent, HeldLaunchIntent } from '../types'
+import { launchArgsArgv } from './launch-args'
 import {
   AGENT_CONFIG,
   hasPermissionMode,
@@ -41,6 +44,8 @@ export interface HeldLaunchInputs {
   permissionMode?: AgentPermissionMode
   /** The id the factory minted AND put on the legacy line (`--session-id`). */
   mintedSessionId?: string
+  /** Per-session extra CLI arguments (`--launch-args`) the legacy line carries, raw. */
+  launchArgs?: string
 }
 
 export function heldLaunchIntentFor(inputs: HeldLaunchInputs): HeldLaunchIntent | undefined {
@@ -58,7 +63,8 @@ export function heldLaunchIntentFor(inputs: HeldLaunchInputs): HeldLaunchIntent 
   const promptFile = inputs.promptFile?.trim()
   // Collapsed exactly like the legacy line collapses it (`assembleLaunchCommand`).
   const prompt = promptFile ? undefined : inputs.initialPrompt?.replace(/\s+/g, ' ').trim()
-  if (!promptFile && !prompt) return undefined
+  const launchArgs = launchArgsArgv(inputs.launchArgs)
+  if (!promptFile && !prompt && !launchArgs.length) return undefined
   return {
     command: inputs.command,
     intent: {
@@ -74,7 +80,8 @@ export function heldLaunchIntentFor(inputs: HeldLaunchInputs): HeldLaunchIntent 
       ...(inputs.mintedSessionId && mintsSessionId(inputs.agentId)
         ? { newSessionId: inputs.mintedSessionId }
         : {}),
-      ...(model ? { model } : {})
+      ...(model ? { model } : {}),
+      ...(launchArgs.length ? { launchArgs } : {})
     },
     ...(promptFile ? { promptFile } : {})
   }

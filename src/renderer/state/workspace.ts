@@ -20,6 +20,7 @@ import {
 } from '@shared/agents/config'
 import { assembleLaunchCommand, assembleResumeCommand } from '@shared/agents/launch'
 import { heldLaunchIntentFor } from '@shared/agents/launch-intent'
+import { normalizeLaunchArgs } from '@shared/agents/launch-args'
 import { agentAccountColor } from '@shared/agents/account-color'
 import { boundAccountId } from '@shared/agents/account-binding'
 import { agentEnvSnapshot } from '../lib/agentEnv'
@@ -238,6 +239,9 @@ export interface NodeData {
   agentId?: AgentId
   /** Model selected for this node through the shared model gateway. */
   agentModel?: string
+  /** Per-session extra CLI arguments (`open-agent --launch-args`), re-applied on every relaunch.
+   *  Machine-local — see `CanvasNodeState.agentLaunchArgs`. */
+  agentLaunchArgs?: string
   /** The GitHub issue this agent session was started on (see `CanvasNodeState.issueRef`).
    *  Display + run history only — never read back into a launch line. */
   issueRef?: IssueRef
@@ -830,9 +834,14 @@ export function createAgentNode(
    *  conversation. An id the resume grammar refuses (`resumeCommandWith` re-validates it against
    *  SAFE_SESSION_ID) yields NO node-level resume: the caller must check `canResumeWith` first —
    *  this factory never silently starts a fresh conversation under a resume request, it throws. */
-  resumeSessionId?: string
+  resumeSessionId?: string,
+  /** Per-session extra CLI arguments (canvas-control `--launch-args`), raw. Validated by the caller
+   *  (`launchArgsFlagRefusal`); re-checked here (`normalizeLaunchArgs`, an invalid value is dropped)
+   *  and persisted as `data.agentLaunchArgs` so every later relaunch of the node carries them. */
+  launchArgs?: string
 ): CanvasNode {
   const { label, color: agentColor } = resolveAgent(agentId)
+  const agentLaunchArgs = normalizeLaunchArgs(launchArgs)
   // ONE binding decision, shared with the phone-registration path (core/project-node-append) so
   // "which agents bind a managed account" has a single definition instead of a ternary the canvas
   // enforces and the registrar does not. It feeds both `data.accountId` below and the color here,
@@ -901,6 +910,7 @@ export function createAgentNode(
     sessionId: resumeSessionId,
     permissionMode,
     model,
+    launchArgs: agentLaunchArgs,
     sharedIdentity: codexSharedIdentity(ssh),
     approvalCaps: codexApprovalCaps(ssh)
   }
@@ -934,7 +944,9 @@ export function createAgentNode(
       // A model picked at creation (e.g. Transfer-to-agent-with-model). `withAgentModel` appends
       // `--model <value>` for a switch-capable agent and no-ops otherwise, so the line stays
       // byte-identical when no model is chosen.
-      model
+      model,
+      // Per-session `--launch-args`: appended in the managed-flags slot (`withLaunchArgs`).
+      launchArgs: agentLaunchArgs
     },
     // The boot-time snapshot of the desktop env (empty on browser/relay by design, where the
     // missing-env warning below is the honest outcome — the same markers the preview shows).
@@ -960,7 +972,8 @@ export function createAgentNode(
     initialPrompt,
     promptFile,
     permissionMode,
-    mintedSessionId
+    mintedSessionId,
+    launchArgs: agentLaunchArgs
   })
   const size = terminalNodeSize()
   return {
@@ -985,6 +998,8 @@ export function createAgentNode(
       // A model chosen at creation (Transfer-to-agent-with-model). Persisted so cold-restore and
       // later restarts keep it; `withAgentModel` re-applies it on relaunch. Only stamped when set.
       ...(model ? { agentModel: model } : {}),
+      // The per-session `--launch-args`, kept so a cold restore / restart relaunches with them.
+      ...(agentLaunchArgs ? { agentLaunchArgs } : {}),
       cwd: ssh ? ssh.remoteCwd : cwd,
       initialCommand,
       ...(launchIntent ? { launchIntent } : {}),
@@ -3008,6 +3023,8 @@ export function nodeStatesToFlow(states: CanvasNodeState[]): CanvasNode[] {
         highScore: n.highScore,
         agentId,
         agentModel: n.agentModel,
+        // Machine-local (@shared/node-exec): re-validated at this seam like every exec field.
+        agentLaunchArgs: normalizeLaunchArgs(n.agentLaunchArgs),
         // Same seam rule as the icon: a git-shared file becoming live data. A malformed or hostile
         // reference becomes no binding (the node is kept — only the chip and history go).
         issueRef: normalizeIssueRef(n.issueRef),
@@ -3116,6 +3133,7 @@ export function flowToNodeStates(nodes: CanvasNode[], retainInitialCommand = tru
         highScore: n.data.highScore,
         agentId: n.data.agentId,
         agentModel: n.data.agentModel,
+        agentLaunchArgs: normalizeLaunchArgs(n.data.agentLaunchArgs),
         // Re-validated on the way OUT as well — the file is only as trustworthy as its last writer.
         issueRef: normalizeIssueRef(n.data.issueRef),
         openedBy: safeOpenedBy(n.data.openedBy),
@@ -3205,6 +3223,7 @@ export function applyMutationToFlow(nodes: CanvasNode[], m: CanvasMutation): Can
       ...prev.data,
       ...incoming.data,
       shell: prev.data.shell,
+      agentLaunchArgs: prev.data.agentLaunchArgs,
       // Ours, unless the core vouched for this copy — then it is authoritative, a clear included.
       pendingLaunch: trustLaunch ? incoming.data.pendingLaunch : prev.data.pendingLaunch,
       launchIntent: trustLaunch ? incoming.data.launchIntent : prev.data.launchIntent,

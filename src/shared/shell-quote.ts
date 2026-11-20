@@ -62,6 +62,14 @@ export function argvHasFlag(cmd: string, flag: string): boolean {
 }
 
 export function shellSplit(input: string): string[] {
+  return shellSplitChecked(input).tokens
+}
+
+/** `shellSplit`, also reporting whether the input ended INSIDE a quote. `shellSplit` itself keeps
+ *  its forgiving read (an unclosed quote runs to the end of the input), which a settings field the
+ *  user is still typing needs; a caller validating input it did not write uses `unterminated` to
+ *  refuse instead of guessing where the quote was meant to end. */
+export function shellSplitChecked(input: string): { tokens: string[]; unterminated: boolean } {
   const tokens: string[] = []
   let buf = ''
   let i = 0
@@ -106,5 +114,5 @@ export function shellSplit(input: string): string[] {
     i++
   }
   push()
-  return tokens
+  return { tokens, unterminated: inSingle || inDouble }
 }

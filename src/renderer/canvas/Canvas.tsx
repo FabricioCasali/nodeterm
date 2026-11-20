@@ -733,6 +733,7 @@ import {
 } from '../lib/backgroundCascade'
 import { prHoldReports, prWaitReplyLine, resolvePrWaitFor, startFreshReadAsks, type PrWaitArmResult } from '../lib/prWait'
 import { RUN_NOW_AFTER_PR_REFUSAL } from '@shared/pr-wait'
+import { launchArgsFlagRefusal } from '@shared/agents/launch-args'
 import {
   afterSuccessFlagRefusal,
   normalizeSuccessWaitHold,
@@ -8510,6 +8511,8 @@ export function Canvas() {
                 data: {
                   ...n.data,
                   ...(targetAgentId ? { agentId: targetAgentId } : {}),
+                  // `--launch-args` belong to the CLI they were written for: another agent drops them.
+                  ...(targetAgentId && targetAgentId !== n.data.agentId ? { agentLaunchArgs: undefined } : {}),
                   ...(targetModel ? { agentModel: targetModel } : {})
                 }
               }
@@ -13527,6 +13530,13 @@ export function Canvas() {
             }
           }
         : {}
+      // `--launch-args`: the shape gate main already ran, re-run as the renderer's belt before any
+      // route (active canvas, `--project` target, cold store) creates a node.
+      const launchArgsGatePre = openVerb ? launchArgsFlagRefusal(verb, args) : null
+      if (launchArgsGatePre) {
+        reply({ ok: false, error: launchArgsGatePre })
+        return
+      }
       // `--after-success` (@shared/station-outcome): stations the new node(s) also need a REPORTED
       // SUCCESS from. Main already ran the shape gate (and refused the `--after <id>:ok` form); this
       // is the renderer's belt, never the only gate. The ids are then FOLDED INTO `after` — a success
@@ -14053,7 +14063,10 @@ export function Canvas() {
                     // `--model` was dropped here too, like `--prompt-file`: honoured as on every
                     // other open path (`withAgentModel` re-validates it at the interpolation site).
                     args.model,
-                    openPrompt.promptFile
+                    openPrompt.promptFile,
+                    // `--launch-args`: per-session extra CLI flags, persisted on the node (`agentLaunchArgs`).
+                    undefined,
+                    args['launch-args']
                   ),
                   tgIssueRef
                 )
@@ -14489,7 +14502,10 @@ export function Canvas() {
                       coldMode,
                       owner.id,
                       args.model,
-                      openPrompt.promptFile
+                      openPrompt.promptFile,
+                      // `--launch-args`: per-session extra CLI flags, persisted on the node (`agentLaunchArgs`).
+                      undefined,
+                      args['launch-args']
                     ),
                     coldIssueRef
                   )
@@ -15356,7 +15372,10 @@ export function Canvas() {
                   // interpolation site and emits nothing for an agent outside MODEL_SWITCH_CAPABLE,
                   // so an unsupported agent's command line stays byte-identical.
                   args.model,
-                  openPrompt.promptFile
+                  openPrompt.promptFile,
+                  // `--launch-args`: per-session extra CLI flags, persisted on the node (`agentLaunchArgs`).
+                  undefined,
+                  args['launch-args']
                 ), openTitle, i, count),
                 after ?? [],
                 intoGroupId,

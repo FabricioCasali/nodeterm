@@ -17,6 +17,7 @@ import * as colors from '../../src/shared/node-colors'
 import * as verbs from '../../src/shared/control-verbs'
 import * as geometry from '../../src/shared/geometry-verbs'
 import * as launch from '../../src/shared/agents/launch'
+import * as launchArgs from '../../src/shared/agents/launch-args'
 import * as config from '../../src/shared/agents/config'
 import * as outcome from '../../src/shared/station-outcome'
 import * as issue from '../../src/renderer/lib/issueFlag'
@@ -125,7 +126,7 @@ function harness(route: 'active' | 'cold' | 'project') {
   vi.stubGlobal('window', { nodeTerminal: api })
   const scope = {
     ...workspace, ...routing, ...cold, ...projectOpen, ...pending, ...batches, ...confirm, ...permission, ...availability,
-    ...colors, ...verbs, ...geometry, ...launch, ...config, ...outcome, ...issue, ...spill, ...prWait, ...placement, ...opener,
+    ...colors, ...verbs, ...geometry, ...launch, ...launchArgs, ...config, ...outcome, ...issue, ...spill, ...prWait, ...placement, ...opener,
     ...noteLink, ...edgeModel, ...oneLine, ...storedGeometry, ...headlessRun,
     useProjects, useSettings, useAgentStatus, useLaunchDelivery, useStationOutcomes, useStationHandovers, useBoardLog, useProjectSetup,
     api, nodesRef, nodesProjectIdRef: { current: 'active' },
@@ -318,6 +319,40 @@ describe('PAR-230 F2 actual Desktop Canvas control callback', () => {
         promptFile: 'C:/fixture/brief.md'
       }))
       if (runNow && route !== 'active') expect.soft(h.scope.startNodesHeadlessRef.current).toHaveBeenCalled()
+    })
+
+    it.each([false, true])(`PAR-255 ${route} open-agent --launch-args reaches the line, the intent and the node; run-now=%s`, async (runNow) => {
+      const h = harness(route)
+      const raw = '--strict-mcp-config --mcp-config C:/x/mcp.json'
+      await h.callback({ requestId: 'launch-args', sourceNodeId: 'source', verb: 'open-agent', args: {
+        agent: 'claude', prompt: 'go', 'launch-args': raw,
+        ...(runNow ? { 'run-now': '' } : {}), ...(route === 'project' ? { project: 'cold' } : {})
+      } })
+      const reply = h.replies[0]?.[0] as { ok: boolean; error?: string }
+      expect(reply, JSON.stringify(reply)).toMatchObject({ ok: true })
+      const target = route === 'active' ? h.nodesRef.current.map((n) => ({ id: n.id, ...n.data }))
+        : useProjects.getState().projects.find((p) => p.id === 'cold')!.nodes
+      const made = target.filter((n) => n.id !== 'source') as Array<Record<string, any>>
+      expect(made).toHaveLength(1)
+      expect(made[0].agentLaunchArgs).toBe(raw)
+      expect(made[0].launchIntent?.intent).toMatchObject({
+        kind: 'agent', action: 'start', agentId: 'claude', prompt: 'go',
+        launchArgs: ['--strict-mcp-config', '--mcp-config', 'C:/x/mcp.json']
+      })
+      // The typed line the intent is bound to carries them too, in the managed-flags slot.
+      expect(made[0].launchIntent?.command).toContain("'go'")
+      expect(made[0].launchIntent?.command).toMatch(/'go'.* '--strict-mcp-config' '--mcp-config' 'C:\/x\/mcp\.json'$/)
+    })
+
+    it(`PAR-255 ${route} open-agent refuses a malformed --launch-args before opening anything`, async () => {
+      const h = harness(route)
+      await h.callback({ requestId: 'launch-args-bad', sourceNodeId: 'source', verb: 'open-agent', args: {
+        agent: 'claude', 'launch-args': "--mcp-config 'C:/open", ...(route === 'project' ? { project: 'cold' } : {})
+      } })
+      const reply = h.replies[0]?.[0] as { ok: boolean; error?: string }
+      expect(reply).toMatchObject({ ok: false, error: 'open-agent: --launch-args has an unterminated quote' })
+      const target = route === 'active' ? h.nodesRef.current : useProjects.getState().projects.find((p) => p.id === 'cold')!.nodes
+      expect(target.filter((n) => n.id !== 'source')).toHaveLength(0)
     })
   }
 })

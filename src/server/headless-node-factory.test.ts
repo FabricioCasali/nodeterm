@@ -319,6 +319,47 @@ describe('HeadlessNodeFactory', () => {
     })
   })
 
+  it('PAR-255 open-agent --launch-args types the flags, keeps them machine-local and holds the intent', async () => {
+    const reply = await factory.openAgent('term-source', {
+      agent: 'codex',
+      prompt: 'go',
+      'launch-args': `-c mcp_servers.linear.enabled=false -c 'skills.config=[{name="a:b",enabled=false}]'`,
+      'run-now': ''
+    }, true)
+    expect(reply.ok, JSON.stringify(reply)).toBe(true)
+    const id = (reply.result as { id: string }).id
+    const typed = pty.sends.find((s) => s.nodeId === id)?.text ?? ''
+    expect(typed).toContain(
+      `'go' '-c' 'mcp_servers.linear.enabled=false' '-c' 'skills.config=[{name="a:b",enabled=false}]'`
+    )
+    expect(published[0].launchIntent).toMatchObject({
+      intent: {
+        kind: 'agent',
+        action: 'start',
+        agentId: 'codex',
+        prompt: 'go',
+        launchArgs: ['-c', 'mcp_servers.linear.enabled=false', '-c', 'skills.config=[{name="a:b",enabled=false}]']
+      }
+    })
+    // Persisted for later relaunches — through the machine-local index, never the shared file.
+    const stored = (await store.load({ sideline: false })).projects[0].nodes.find((n) => n.id === id)
+    expect(stored?.agentLaunchArgs).toBe(
+      `-c mcp_servers.linear.enabled=false -c 'skills.config=[{name="a:b",enabled=false}]'`
+    )
+    const projectFile = fs.readFileSync(path.join(projectDir, '.nodeterm', 'project.json'), 'utf8')
+    expect(projectFile).toContain(id)
+    expect(projectFile).not.toContain('agentLaunchArgs')
+    expect(projectFile).not.toContain('mcp_servers.linear')
+  })
+
+  it('PAR-255 Server open-agent refuses a malformed --launch-args before creating anything', async () => {
+    const before = (await store.load({ sideline: false })).projects[0].nodes.length
+    const reply = await factory.openAgent('term-source', { agent: 'claude', 'launch-args': "--x 'open" }, true)
+    expect(reply.ok).toBe(false)
+    expect((await store.load({ sideline: false })).projects[0].nodes).toHaveLength(before)
+    expect(pty.creates).toHaveLength(0)
+  })
+
   it('creates a terminal PTY, persists both workspace index and project file, and publishes it', async () => {
     const reply = await factory.openTerminal(
       'term-source',

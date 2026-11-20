@@ -39,6 +39,7 @@ import {
 import { stat } from 'fs/promises'
 import { assembleLaunchCommand, promptFilePathError } from '../shared/agents/launch'
 import { heldLaunchIntentFor } from '../shared/agents/launch-intent'
+import { launchArgsFlagRefusal, normalizeLaunchArgs } from '../shared/agents/launch-args'
 import type { AgentState, NormalizedAgentEvent } from '../shared/agents/normalize'
 import { oneLine } from '../shared/one-line'
 import { rootPositionWith } from '../shared/root-position'
@@ -1475,6 +1476,7 @@ export class HeadlessNodeFactory {
               'success-deadline',
               'project',
               'model',
+              'launch-args',
               'issue',
               'run-now'
             ])
@@ -1488,6 +1490,12 @@ export class HeadlessNodeFactory {
       // `--prompt-file`: the brief stays a file the core reads at launch; only its path is checked
       // here, before anything is created.
       const promptFile = args['prompt-file']?.trim()
+      // `--launch-args`: the same shape gate `parseControlRequest` runs, re-run here because this
+      // factory is also called directly; then only a value the launch line honours is typed and
+      // persisted (@shared/agents/launch-args).
+      const launchArgsRefusal = launchArgsFlagRefusal(verb, args)
+      if (launchArgsRefusal) return { ok: false, error: launchArgsRefusal }
+      const launchArgs = verb === 'open-agent' ? normalizeLaunchArgs(args['launch-args']) : undefined
       if (args['prompt-file'] !== undefined) {
         if (args.prompt !== undefined) {
           return { ok: false, error: `${verb}: use --prompt or --prompt-file, not both` }
@@ -1664,7 +1672,8 @@ export class HeadlessNodeFactory {
                 codexApprovalValues: codexCaps.approvalValues,
                 codexNoDaemon: codexCaps.noDaemon ?? null
               },
-              model: args.model
+              model: args.model,
+              launchArgs
             },
             this.deps.env ?? process.env
           ).command
@@ -1680,7 +1689,8 @@ export class HeadlessNodeFactory {
             initialPrompt,
             ...(launchPromptFile ? { promptFile: launchPromptFile } : {}),
             permissionMode,
-            mintedSessionId
+            mintedSessionId,
+            launchArgs
           })
         }
         if (explicitTitle) title = count > 1 ? `${explicitTitle} ${i + 1}` : explicitTitle
@@ -1713,6 +1723,8 @@ export class HeadlessNodeFactory {
           cwd,
           ...(verb === 'open-agent' ? { agentId: agentId as AgentId } : {}),
           ...(args.model && verb === 'open-agent' ? { agentModel: args.model } : {}),
+          // Machine-local (@shared/node-exec): kept in the index's `localExec`, never in a project file.
+          ...(launchArgs ? { agentLaunchArgs: launchArgs } : {}),
           ...(issueRef && verb === 'open-agent' ? { issueRef } : {}),
           ...(mintedSessionId ? { agentSessionId: mintedSessionId } : {}),
           ...(source.node.accountId && verb === 'open-agent' &&

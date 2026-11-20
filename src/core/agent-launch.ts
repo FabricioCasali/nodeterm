@@ -16,6 +16,10 @@ import { approvalFlags } from "../shared/agents/approval-mode";
 import { CODEX_NO_DAEMON_FLAG } from "../shared/agents/codex-daemon";
 import { agentModelArg } from "../shared/agents/model-gateway";
 import { customAgentArgv } from "../shared/agents/launch";
+import {
+  LAUNCH_ARGS_MAX_LENGTH,
+  LAUNCH_ARGS_MAX_TOKENS,
+} from "../shared/agents/launch-args";
 import { SAFE_SESSION_ID } from "../shared/session-id";
 import { isRecord } from "../shared/is-record";
 
@@ -176,6 +180,7 @@ const START_FIELDS = new Set([
   "permissionMode",
   "newSessionId",
   "model",
+  "launchArgs",
 ]);
 const RESUME_FIELDS = new Set([
   "kind",
@@ -240,6 +245,15 @@ function validateIntentRuntime(
     if (
       intent.model !== undefined &&
       (!safeText(intent.model, 500) || !intent.model.trim())
+    )
+      fail("invalid-intent");
+    // Per-session `--launch-args`, already argv: each element is DATA the dialect encoder quotes,
+    // never shell source, so the only rules are the ones every inline value obeys here.
+    if (
+      intent.launchArgs !== undefined &&
+      (!Array.isArray(intent.launchArgs) ||
+        intent.launchArgs.length > LAUNCH_ARGS_MAX_TOKENS ||
+        intent.launchArgs.some((arg) => !safeText(arg, LAUNCH_ARGS_MAX_LENGTH)))
     )
       fail("invalid-intent");
     return;
@@ -439,11 +453,15 @@ function logicalLaunch(
         codexApprovalValues: context.codexApprovalValues,
       })
     : [];
-  // Same rule as `withCodexNoDaemon`, applied to argv instead of a typed line.
+  // `--launch-args` (start only): the managed-flags slot, after the model — `withLaunchArgs`.
+  const launchArgs =
+    intent.action === "start" ? [...(intent.launchArgs ?? [])] : [];
+  // Same rule as `withCodexNoDaemon`, applied to argv instead of a typed line. The typed line sees
+  // the launch args when it looks for `--remote`, so this does too.
   const noDaemon =
     config.capId === "codex" &&
     context.codexNoDaemon === true &&
-    !baseArgs.some(
+    ![...baseArgs, ...launchArgs].some(
       (a) =>
         a === CODEX_NO_DAEMON_FLAG || a === "--remote" || a.startsWith("--remote="),
     )
@@ -483,6 +501,7 @@ function logicalLaunch(
   // flags, and nothing at all for a harness with no model flag.
   const modelId = agentModelArg(config.capId, intent.model);
   if (modelId) sessionArgs.push("--model", modelId);
+  sessionArgs.push(...launchArgs);
 
   const hasPrompt = Object.hasOwn(intent, "prompt");
   const prompt = hasPrompt ? (intent.prompt ?? "") : undefined;

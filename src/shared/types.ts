@@ -90,6 +90,10 @@ export type AgentLaunchIntent =
       /** Per-node model override. The core applies it through the agent's base harness and
        *  ignores it for a harness with no model flag, exactly as the legacy line does. */
       model?: string
+      /** Per-session extra CLI arguments (`open-agent --launch-args`), already split into argv
+       *  elements. The core re-validates each one and places them in the managed-flags slot,
+       *  exactly where the legacy line puts them (`withLaunchArgs`, shared/agents/launch.ts). */
+      launchArgs?: string[]
     }
   | {
       kind: 'agent'
@@ -594,6 +598,14 @@ export interface CanvasNodeState {
   agentId?: AgentId
   /** Model selected for this agent node through the shared model gateway. */
   agentModel?: string
+  /**
+   * Per-session extra CLI arguments this agent node was opened with (`open-agent --launch-args`),
+   * as the raw validated string. Re-applied on every relaunch of the node (cold restore, restart,
+   * wake) so the session keeps its flags. EXEC-ENABLING (`--mcp-config` starts processes), so it is
+   * MACHINE-LOCAL like `shell`: stripped from every shared project file and every inbound peer copy,
+   * round-tripped through the index's `localExec` (@shared/node-exec).
+   */
+  agentLaunchArgs?: string
   /**
    * Agent nodes started on a GitHub issue ("Start with agent" on an issue card, or
    * `open-agent --issue`): WHICH issue this session works on. It drives the binding chips (the

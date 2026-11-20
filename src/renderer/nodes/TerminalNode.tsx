@@ -4343,6 +4343,8 @@ export function TerminalNode({
               sessionId: resume.sessionId,
               permissionMode: mode,
               model: data.agentModel,
+              // The per-session `--launch-args` this node was opened with ride every relaunch.
+              launchArgs: data.agentLaunchArgs,
               sharedIdentity: shared,
               // Which `--ask-for-approval` values the codex that will run this node actually has.
               // Same remoteness question `shared` just answered: an SSH node runs the HOST's codex,
@@ -4414,6 +4416,7 @@ export function TerminalNode({
                     sessionId: undefined,
                     permissionMode: mode,
                     model: data.agentModel,
+                    launchArgs: data.agentLaunchArgs,
                     sharedIdentity: shared,
                     approvalCaps: await ensureCodexLaunchCaps(
                 capabilityAgentId(agentId),
@@ -4603,6 +4606,8 @@ export function TerminalNode({
           updateNodeData(id, (node) => ({
             agentId: target,
             agentModel: selectedModel,
+            // `--launch-args` belong to the CLI they were written for: a switch to another agent drops them.
+            ...(target !== sourceAgentId ? { agentLaunchArgs: undefined } : {}),
             respawnNonce: ((node.data.respawnNonce as number | undefined) ?? 0) + 1
           }))
           return 'restarted'
@@ -4679,6 +4684,12 @@ export function TerminalNode({
                 data.ssh || data.sshRemoteTmux || session.source === 'relay'
               ),
             model: selectedModel ?? undefined,
+            // The node's `--launch-args` were written for ITS agent's CLI: they ride a restart that
+            // keeps the agent, and are dropped when the restart switches to another one.
+            launchArgs:
+              target === sourceAgentId
+                ? (getNode(id)?.data.agentLaunchArgs as string | undefined)
+                : undefined,
             // The launch-command override rides the restart too (the global layer is undefined for
             // a custom target, which already owns its launchCmd) — it is a property of how the
             // agent launches, so the owning project's own value applies here as well.
@@ -4835,6 +4846,7 @@ export function TerminalNode({
                 data.ssh || data.sshRemoteTmux || session.source === 'relay'
               ),
             sharedIdentity: false,
+            launchArgs: data.agentLaunchArgs,
             // The launch-command override lives on the user's own PATH (or is an absolute path),
             // not in a generated launcher dir, so it rides the wake too — project layer included.
             launchCmdOverride: agentLaunchOverride(agentId, ownerProjectId)
