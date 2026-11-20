@@ -29,6 +29,7 @@ import * as storedGeometry from '../../src/renderer/lib/storedGeometry'
 import * as edgeModel from '../../src/renderer/lib/edgeModel'
 import * as oneLine from '../../src/shared/one-line'
 import * as headlessRun from '../../src/renderer/lib/headlessRun'
+import { backgroundCascadeTargets } from '../../src/renderer/lib/backgroundCascade'
 import { useProjects } from '../../src/renderer/state/projects'
 import { useSettings } from '../../src/renderer/state/settings'
 import { useAgentStatus } from '../../src/renderer/state/agentStatus'
@@ -37,7 +38,8 @@ import { useStationOutcomes } from '../../src/renderer/state/stationOutcomes'
 import { useStationHandovers } from '../../src/renderer/state/stationHandovers'
 import { useBoardLog } from '../../src/renderer/state/boardLog'
 import { useProjectSetup } from '../../src/renderer/state/projectSetup'
-import { DEFAULT_SETTINGS } from '../../src/shared/types'
+import { DEFAULT_SETTINGS, type CanvasNodeState, type Project } from '../../src/shared/types'
+import { desktopHeadlessRequest, launchHeadless } from '../../src/core/headless-launch'
 import { WorkspaceStore } from '../../src/core/workspace-store'
 import { fakePlatform } from '../../src/core/platform-fake'
 import { initPlatform, resetPlatformForTests } from '../../src/core/platform'
@@ -48,11 +50,22 @@ function mountCallback(scope: Record<string, unknown>) {
   const source = readFileSync(new URL('../../src/renderer/canvas/Canvas.tsx', import.meta.url), 'utf8')
   const tree = parse(source, { sourceType: 'module', plugins: ['typescript', 'jsx'] })
   let callback: { start?: number | null; end?: number | null } | undefined
+  let canvasLaunches: typeof callback
+  let headlessStarter: typeof callback
   const helpers: string[] = []
   function visit(node: unknown) {
     if (!node || typeof node !== 'object') return
     const n = node as Record<string, any>
     if (n.type === 'CallExpression' && n.callee?.object?.name === 'api' && n.callee?.property?.name === 'onAgentControl') callback = n.arguments[0]
+    if (n.type === 'CallExpression' && n.callee?.name === 'useEffect') {
+      const effect = n.arguments[0]
+      if (effect?.body?.type === 'BlockStatement' && effect.body.body.some((statement: any) => statement.declarations?.[0]?.id?.name === 'briefPresent')) {
+        canvasLaunches = effect
+      }
+    }
+    if (n.type === 'AssignmentExpression' && n.left?.object?.name === 'startNodesHeadlessRef' && n.left?.property?.name === 'current') {
+      headlessStarter = n.right
+    }
     if (n.type === 'VariableDeclarator' && ['setupHoldGroup', 'agentIdOf', 'parentInto', 'ropeEdge', 'linkEndpointOf'].includes(n.id?.name)) {
       const fn = n.init?.type === 'CallExpression' && n.init.callee?.name === 'useCallback' ? n.init.arguments[0] : n.init
       if (!fn || !['ArrowFunctionExpression', 'FunctionExpression'].includes(fn.type)) throw new Error(`Cannot mount Canvas helper ${n.id.name}`)
@@ -65,10 +78,13 @@ function mountCallback(scope: Record<string, unknown>) {
     }
   }
   visit(tree)
-  if (callback?.start == null || callback.end == null) throw new Error('Canvas api.onAgentControl callback not found')
-  const code = transformSync(`${helpers.join('\n')} const callback = ${source.slice(callback.start, callback.end)}; callback`, { loader: 'tsx', format: 'esm', target: 'es2022' }).code
+  const functions = { callback, canvasLaunches, headlessStarter }
+  const code = transformSync(`${helpers.join('\n')} return {${Object.entries(functions).map(([name, fn]) => {
+    if (fn?.start == null || fn.end == null) throw new Error(`Cannot mount Canvas function ${name}`)
+    return `${name}: ${source.slice(fn.start, fn.end)}`
+  }).join(',')}}`, { loader: 'tsx', target: 'es2022' }).code
   const names = new Proxy(scope, {
-    has: (_target, key) => !['callback', 'setupHoldGroup', 'agentIdOf', 'parentInto', 'ropeEdge', 'linkEndpointOf'].includes(String(key)),
+    has: (_target, key) => !['setupHoldGroup', 'agentIdOf', 'parentInto', 'ropeEdge', 'linkEndpointOf'].includes(String(key)),
     get: (target, key) => {
       if (key === Symbol.unscopables) return undefined
       if (key in target) return target[key as string]
@@ -76,7 +92,11 @@ function mountCallback(scope: Record<string, unknown>) {
       throw new ReferenceError(`Canvas fixture missing binding: ${String(key)}`)
     }
   })
-  return new Function('scope', `with (scope) { ${code}; return callback }`)(names) as (request: unknown) => Promise<void>
+  return new Function('scope', `with (scope) { ${code} }`)(names) as {
+    callback: (request: unknown) => Promise<void>
+    canvasLaunches: () => void
+    headlessStarter: (project: Project, nodes: CanvasNodeState[]) => Promise<headlessRun.HeadlessStartBatch>
+  }
 }
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); resetPlatformForTests() })
@@ -91,6 +111,11 @@ function harness(route: 'active' | 'cold' | 'project') {
   ] })
   useSettings.setState({ settings: { ...DEFAULT_SETTINGS } })
   const nodesRef = { current: route === 'cold' ? [] : [source] }
+  type NodesUpdate = (nodes: typeof nodesRef.current) => typeof nodesRef.current
+  const renderQueue: NodesUpdate[] = []
+  const renderNodes = () => {
+    for (const update of renderQueue.splice(0)) nodesRef.current = update(nodesRef.current)
+  }
   const replies: unknown[][] = []
   const api = {
     sendAgentControlResult: vi.fn((...args: unknown[]) => { replies.push(args) }),
@@ -105,21 +130,133 @@ function harness(route: 'active' | 'cold' | 'project') {
     useProjects, useSettings, useAgentStatus, useLaunchDelivery, useStationOutcomes, useStationHandovers, useBoardLog, useProjectSetup,
     api, nodesRef, nodesProjectIdRef: { current: 'active' },
     controlPlaceClaims: { current: [] }, snapGridNow: () => undefined,
+    isBrowserRuntime: () => false, flushSync: <T,>(update: () => T) => update(),
+    launchInFlight: { current: new Set<string>() }, setupDoneForGroup: () => true,
     setNodes: (update: any) => { nodesRef.current = typeof update === 'function' ? update(nodesRef.current) : update },
     markDirty: vi.fn(), persist: vi.fn(async () => {}), writeDisk: vi.fn(async () => {}),
     dirtyRef: { current: false }, conflictRef: { current: false }, confirmBusy: { current: false },
     setConfirm: vi.fn(), setControlWaiveChoice: vi.fn(), setNotice: vi.fn(),
-    controlStatus: () => ({}), startNodesHeadlessRef: { current: vi.fn(async (_project: unknown, ids: string[]) => ({
-      outcomes: ids.map((id) => ({ id, started: true })), unhidden: false
+    controlStatus: () => ({}), startNodesHeadlessRef: { current: vi.fn(async (_project: Project, nodes: CanvasNodeState[]): Promise<headlessRun.HeadlessStartBatch> => ({
+      outcomes: nodes.map(({ id }) => ({ id, started: true })), unhidden: false
     })) },
     runQueuedNodeRef: { current: vi.fn(async () => ({ started: true })) },
     controlEdgesRef: { current: [] }, linkEdgesRef: { current: [] },
     setControlEdges: vi.fn(), setLinkEdges: vi.fn()
   }
-  return { callback: mountCallback(scope), nodesRef, replies, scope }
+  return { ...mountCallback(scope), nodesRef, replies, scope, api, renderQueue, renderNodes }
+}
+
+function activeLaunchHarness(canvasReady: boolean) {
+  const harnessState = harness('active')
+  const { scope, api, canvasLaunches, nodesRef, renderQueue, renderNodes } = harnessState
+  let notifyOpening!: () => void
+  const opening = new Promise<void>((resolve) => { notifyOpening = resolve })
+  const typed = vi.fn(async () => 'submitted')
+  const executeLaunch = vi.fn(async () => {
+    executeIn.push(useProjects.getState().activeProjectId)
+    return { ok: true as const }
+  })
+  const executeIn: string[] = []
+  const start = vi.fn<headlessRun.HeadlessStartDeps['launch']>((request) =>
+    launchHeadless({
+      persistentSpawnAvailable: () => true,
+      createHeadless: async () => ({ sessionId: 'probe', fresh: false, persistent: true, sessionHost: true }),
+      paneCommand: async () => 'pwsh',
+      writeHeadless: () => false,
+      onOutput: () => () => {},
+      releaseHeadless: () => {},
+      executeLaunch
+    }, desktopHeadlessRequest(request))
+  )
+  Object.assign(api, { pty: { launchHeadless: start } })
+  Object.assign(scope, {
+    renderedProjectId: 'active',
+    activeSession: { api },
+    setupDoneForGroup: () => true,
+    pullBoardFor: () => undefined,
+    useGitHubIssues: { getState: () => ({}) },
+    useProjectLimit: { getState: () => ({}) },
+    isSessionReady: () => canvasReady,
+    isBrowserRuntime: () => false,
+    clearStallTimer: () => {},
+    launchStallTimers: { current: new Map() },
+    launchAttempts: { current: new Map() },
+    launchInFlight: { current: new Set() },
+    headlessInFlightRef: { current: new Set() },
+    launchCommand: typed,
+    writeDisk: async () => true,
+    setNodes: (update: Parameters<typeof renderQueue.push>[0]) => {
+      renderQueue.push(update)
+      notifyOpening()
+    },
+    flushSync: <T,>(update: () => T) => {
+      const result = update()
+      renderNodes()
+      if (canvasReady) canvasLaunches()
+      return result
+    }
+  })
+  Object.defineProperty(scope, 'nodes', { get: () => nodesRef.current })
+  scope.startNodesHeadlessRef.current.mockImplementation(harnessState.headlessStarter)
+  const show = (projectId: string) => {
+    renderNodes()
+    const store = useProjects.getState()
+    const outgoing = store.getProject(store.activeProjectId)!
+    store.commitCanvas(outgoing.id, workspace.flowToNodeStates(nodesRef.current), outgoing.viewport)
+    store.setActive(projectId)
+    nodesRef.current = workspace.nodeStatesToFlow(store.getProject(projectId)!.nodes)
+    Object.assign(scope, { renderedProjectId: projectId })
+  }
+  const open = (runNow: boolean) => harnessState.callback({
+    requestId: 'par-250', sourceNodeId: 'source', verb: 'open-agent',
+    args: { agent: 'claude', 'prompt-file': 'C:/fixture/brief.md', ...(runNow ? { 'run-now': '' } : {}) }
+  })
+  return { opening, open, show, typed, executeLaunch, executeIn, start, canvasLaunches, renderNodes, replies: harnessState.replies }
 }
 
 describe('PAR-230 F2 actual Desktop Canvas control callback', () => {
+  it('PAR-250 starts after leaving the opening project before its canvas delivers', async () => {
+    const h = activeLaunchHarness(false)
+    const reply = h.open(true)
+    await h.opening
+    h.show('cold')
+    await reply
+    const { projects, activeProjectId, getProject } = useProjects.getState()
+    expect(activeProjectId).toBe('cold')
+    expect(backgroundCascadeTargets(projects, activeProjectId)).toEqual([])
+    expect(h.typed).not.toHaveBeenCalled()
+    expect(h.executeLaunch).toHaveBeenCalledOnce()
+    expect(h.executeIn).toEqual(['cold'])
+    expect(getProject('active')?.nodes.find(({ id }) => id !== 'source')).toMatchObject({ pendingLaunch: undefined })
+    expect(h.replies[0]?.[0]).toMatchObject({ ok: true, result: { started: true, queued: false } })
+  })
+
+  it.each(['open-terminal', 'open-claude'])('PAR-250 %s --run-now hands the held node to the starter', async (verb) => {
+    const h = harness('active')
+    await h.callback({ requestId: 'par-250', sourceNodeId: 'source', verb, args: {
+      'run-now': '', ...(verb === 'open-terminal' ? { cmd: 'echo fixture' } : { prompt: 'fixture' })
+    } })
+    expect(h.scope.startNodesHeadlessRef.current).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: 'active' }),
+      [expect.objectContaining({ pendingLaunch: expect.objectContaining({ after: [], command: expect.any(String) }) })]
+    )
+    expect(h.replies[0]?.[0]).toMatchObject({ ok: true, result: { started: true, queued: false } })
+  })
+
+  it.each([false, true])('PAR-250 delivers once on the same project (run-now=%s)', async (runNow) => {
+    const h = activeLaunchHarness(true)
+    await h.open(runNow)
+    expect(h.start).not.toHaveBeenCalled()
+    if (!runNow) expect(h.typed).not.toHaveBeenCalled()
+    h.renderNodes()
+    h.canvasLaunches()
+    await vi.waitFor(() => expect(h.typed).toHaveBeenCalledOnce())
+    h.renderNodes()
+    h.canvasLaunches()
+    expect(h.start).not.toHaveBeenCalled()
+    expect(h.typed).toHaveBeenCalledOnce()
+  })
+
   for (const route of ['active', 'cold', 'project'] as const) {
     it.each(['open-agent', 'open-claude', 'open-terminal']) (`T12 ${route} %s preserves explicit title/count`, async (verb) => {
       const h = harness(route)
