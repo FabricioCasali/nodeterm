@@ -26,6 +26,40 @@ export function colourQueryReply(ident: number, data: string): string | null {
   return params.map((_, i) => `\x1b]${ident + i};${xtermRgb(COLOURS[ident + i])}\x1b\\`).join('')
 }
 
+const COLOUR_QUERY = /\x1b\](1[012])((?:;\?)+)(?:\x07|\x1b\\)/g
+const COLOUR_PARTIAL = /^\x1b\](?:1(?:[012](?:;\??)*\x1b?)?)?$/
+const MAX_COLOUR_CARRY = 24
+
+/**
+ * Synchronous OSC 10/11/12 colour-query scanner for PTY output chunks.
+ * `@xterm/headless` defers `term.write()` parsing to a timer tick behind the session output queue,
+ * which misses Codex's startup colour-query deadline on Windows.
+ */
+export class OscColourScanner {
+  private carry = ''
+
+  push(chunk: string): string[] {
+    if (!chunk) return []
+    const text = this.carry + chunk
+    this.carry = ''
+    if (text.indexOf('\x1b') === -1) return []
+    const replies: string[] = []
+    COLOUR_QUERY.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = COLOUR_QUERY.exec(text))) {
+      const reply = colourQueryReply(Number(m[1]), m[2].slice(1))
+      if (reply !== null) replies.push(reply)
+    }
+    const osc = text.lastIndexOf('\x1b]')
+    if (osc !== -1 && text.length - osc <= MAX_COLOUR_CARRY && COLOUR_PARTIAL.test(text.slice(osc))) {
+      this.carry = text.slice(osc)
+    } else if (text.endsWith('\x1b')) {
+      this.carry = '\x1b'
+    }
+    return replies
+  }
+}
+
 /**
  * One session's server-side screen. This is the piece that makes the session host able to
  * reconstruct a fresh client's screen on attach WITHOUT itself being a "painter" the way a real

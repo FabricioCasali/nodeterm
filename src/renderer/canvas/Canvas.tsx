@@ -3628,6 +3628,7 @@ export function Canvas() {
   /** Records one edit: bump the generation, flag the workspace dirty. */
   const bumpDirty = useCallback(() => {
     dirtyGenRef.current += 1
+    dirtyRef.current = true
     setDirty(true)
   }, [])
   const markDirty = useCallback(() => {
@@ -3803,6 +3804,7 @@ export function Canvas() {
     }
     setSaveDelivery(undefined)
     if (canClearDirty(gen, dirtyGenRef.current)) {
+      dirtyRef.current = false
       setDirty(false)
       return true
     }
@@ -15132,11 +15134,12 @@ export function Canvas() {
           autoLayoutAfterCliAdd(intoGroupId ?? src.parentId)
           return ids
         }
-        return liveRunNowProject ? flushSync(add) : add()
+        return flushSync(add)
       }
       const replyLiveOpen = async <T extends { queued: boolean; queuedIds: string[] },>(
         opened: { ok: true; message: string; result: T }
       ) => {
+        if (offCanvas?.created.length) await writeDisk()
         if (!liveRunNowProject || !opened.result.queued) return reply(opened)
         const candidates = nodesRef.current.filter((node) =>
           opened.result.queuedIds.includes(node.id) && !launchInFlight.current.has(node.id)

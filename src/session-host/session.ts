@@ -1,7 +1,7 @@
 import type { Socket } from 'net'
 import { createHash, randomUUID } from 'crypto'
 import * as pty from 'node-pty'
-import { TerminalEmulator } from './terminal-emulator'
+import { OscColourScanner, TerminalEmulator } from './terminal-emulator'
 import { CwdReportScanner } from './cwd-report'
 import { windowsConptySpawnOptions } from '../core/windows-conpty-dll'
 import type {
@@ -160,6 +160,7 @@ export class HostSession {
    *  until one arrives; deliberately never seeded with the spawn cwd. */
   private reportedCwd: string | null = null
   private readonly cwdScanner = new CwdReportScanner()
+  private readonly colourScanner = new OscColourScanner()
   /** A detach/close increments the socket epoch before clearing state. A delayed prepare/rollback
    * from the prior epoch can then observe cancellation instead of resurrecting a ghost socket. */
   private readonly attachmentEpochs = new WeakMap<Socket, number>()
@@ -258,8 +259,7 @@ export class HostSession {
       new TerminalEmulator({
         cols: this.appliedGeometry.cols,
         rows: this.appliedGeometry.rows,
-        scrollback,
-        onColourReply: (reply) => this.proc.write(reply)
+        scrollback
       })
   }
 
@@ -267,6 +267,13 @@ export class HostSession {
    * the retained byte tail. Accounting happens before chaining because promises not yet started
    * still retain their chunk strings and therefore count against the memory bound. */
   recordOutput(data: string): Promise<void> {
+    for (const reply of this.colourScanner.push(data)) {
+      try {
+        this.proc.write(reply)
+      } catch {
+        // A pty that is already gone; the mirror write still settles.
+      }
+    }
     const bytes = Buffer.byteLength(data, 'utf8')
     this.queuedOutputBytes += bytes
     if (this.queuedOutputBytes >= SESSION_EMULATOR_OUTPUT_HIGH_WATER_BYTES) {
