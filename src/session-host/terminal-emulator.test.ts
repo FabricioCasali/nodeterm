@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { TerminalEmulator } from './terminal-emulator'
+import { OscColourScanner, TerminalEmulator } from './terminal-emulator'
 
 const emulators: TerminalEmulator[] = []
 function emulator(cols = 20, rows = 4): TerminalEmulator {
@@ -142,5 +142,15 @@ describe('TerminalEmulator colour queries (OSC 10/11/12)', () => {
     emulators.push(e)
     await e.write('\x1b]10;?;?\x07')
     expect(replies).toEqual(['\x1b]10;rgb:e6e6/e6e6/e6e6\x1b\\\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\'])
+  })
+})
+
+describe('OscColourScanner', () => {
+  it('answers OSC 10/11/12 queries synchronously across split chunks', () => {
+    const scanner = new OscColourScanner()
+    expect(scanner.push('hello\x1b]10;?')).toEqual([])
+    expect(scanner.push('\x1b\\\x1b')).toEqual(['\x1b]10;rgb:e6e6/e6e6/e6e6\x1b\\'])
+    expect(scanner.push(']11;?\x07')).toEqual(['\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\'])
+    expect(scanner.push('\x1b]10;#123456\x1b\\')).toEqual([])
   })
 })

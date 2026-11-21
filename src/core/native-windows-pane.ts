@@ -1,7 +1,7 @@
 import type { TextDeliveryResult } from '../shared/text-delivery'
 import { envelopeGuardAllows, type EnvelopeGuard } from '../shared/agents/message-readiness'
 import { randomUUID } from 'crypto'
-import { TerminalEmulator } from '../session-host/terminal-emulator'
+import { OscColourScanner, TerminalEmulator } from '../session-host/terminal-emulator'
 import { readWindowsConsoleOwner, sameNativeProcess } from '../session-host/windows-pane-owner'
 import { sendTextWhenSettled } from './settled-text'
 import type { PaneOwner } from '../shared/agents/pane-owner-predicate'
@@ -16,6 +16,7 @@ export { sameNativeProcess } from '../session-host/windows-pane-owner'
 export class NativeWindowsPane {
   private readonly generation = randomUUID()
   private readonly screen: TerminalEmulator
+  private readonly colourScanner = new OscColourScanner()
   private tail: Promise<void> = Promise.resolve()
   private alive = true
 
@@ -28,15 +29,19 @@ export class NativeWindowsPane {
     this.screen = new TerminalEmulator({
       cols: size.cols,
       rows: size.rows,
-      scrollback: size.scrollback,
-      onColourReply: (reply) => {
-        if (this.alive) this.proc.write(reply)
-      }
+      scrollback: size.scrollback
     })
   }
 
   recordOutput(data: string): void {
     if (!this.alive) return
+    for (const reply of this.colourScanner.push(data)) {
+      try {
+        this.proc.write(reply)
+      } catch {
+        // A pty that is already gone.
+      }
+    }
     this.tail = this.tail.then(() => this.screen.write(data)).catch(() => { this.alive = false })
   }
 

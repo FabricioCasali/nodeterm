@@ -738,12 +738,17 @@ describe('HostSession cold attach replay', () => {
 })
 
 describe('HostSession colour queries', () => {
-  it("answers Codex's OSC 10/11 query to the pty from the host emulator", async () => {
+  it("answers Codex's OSC 10/11 query to the pty synchronously without waiting for the emulator queue", async () => {
     const proc = fakeProc()
     const write = vi.fn()
     ;(proc.value as unknown as { write: typeof write }).write = write
     const session = new HostSession('colours', SPAWN, 100, { proc: proc.value })
-    await session.recordOutput('\x1b]10;?\x1b\\\x1b]11;?\x1b\\')
-    expect(write.mock.calls).toEqual([['\x1b]10;rgb:e6e6/e6e6/e6e6\x1b\\'], ['\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\']])
+    const pending = session.recordOutput('\x1b]10;?\x1b\\\x1b]11;?\x1b\\')
+    expect(write.mock.calls).toEqual([
+      ['\x1b]10;rgb:e6e6/e6e6/e6e6\x1b\\'],
+      ['\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\']
+    ])
+    await pending
+    expect(write).toHaveBeenCalledTimes(2)
   })
 })
